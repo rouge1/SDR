@@ -40,10 +40,143 @@ from gnuradio import uhd
 import time
 from gnuradio.qtgui import Range, RangeWidget
 from PyQt5 import QtCore
-
-
-
 from gnuradio import qtgui
+
+class ConfigDialog(Qt.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AM Sine Generator Configuration")
+        self.layout = Qt.QVBoxLayout(self)
+        
+        try:
+            with open("usrpXmit.cfg", "r") as ipFile:
+                self.ipList = ipFile.readlines()
+                self.N = len(self.ipList)
+        except:
+            self.ipList = ["192.168.10.2"]
+            self.N = 1
+            
+        # Create all the input widgets
+        self.create_usrp_selector()
+        self.create_frequency_control()
+        self.create_power_control()
+        self.create_carrier_control()
+        self.create_sideband_control()
+        self.create_sine_frequency_control()
+        
+        # Add OK/Cancel buttons
+        self.button_box = Qt.QDialogButtonBox(
+            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self.layout.addWidget(self.button_box)
+
+    def create_usrp_selector(self):
+        self.usrp_combo = Qt.QComboBox()
+        for i in range(self.N):
+            self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
+        self.layout.addWidget(Qt.QLabel("Select USRP:"))
+        self.layout.addWidget(self.usrp_combo)
+
+    def create_frequency_control(self):
+        self.cf_layout = Qt.QHBoxLayout()
+        self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.cf_slider.setMinimum(50)
+        self.cf_slider.setMaximum(2200)
+        self.cf_slider.setValue(300)
+        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
+        self.cf_slider.valueChanged.connect(
+            lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
+        self.cf_layout.addWidget(self.cf_label)
+        self.cf_layout.addWidget(self.cf_slider)
+        self.layout.addLayout(self.cf_layout)
+
+    def create_power_control(self):
+        self.pwr_layout = Qt.QHBoxLayout()
+        self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.pwr_slider.setMinimum(-80)
+        self.pwr_slider.setMaximum(-30)
+        self.pwr_slider.setValue(-50)
+        self.pwr_label = Qt.QLabel("Power Level: -50 dBm")
+        self.pwr_slider.valueChanged.connect(
+            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+        self.pwr_layout.addWidget(self.pwr_label)
+        self.pwr_layout.addWidget(self.pwr_slider)
+        self.layout.addLayout(self.pwr_layout)
+
+    def create_carrier_control(self):
+        self.carrier_combo = Qt.QComboBox()
+        self.carrier_combo.addItems(["Full Carrier", "Suppressed Carrier"])
+        self.layout.addWidget(Qt.QLabel("Carrier Condition:"))
+        self.layout.addWidget(self.carrier_combo)
+
+    def create_sideband_control(self):
+        # Sideband condition
+        self.sideband_combo = Qt.QComboBox()
+        self.sideband_combo.addItems(["Double Sideband", "Single Sideband"])
+        self.layout.addWidget(Qt.QLabel("Sideband Condition:"))
+        self.layout.addWidget(self.sideband_combo)
+        self.sideband_combo.currentIndexChanged.connect(self.toggle_sideband_type)
+        
+        # Sideband type (initially hidden)
+        self.sideband_type_widget = Qt.QWidget()
+        self.sideband_type_layout = Qt.QVBoxLayout(self.sideband_type_widget)
+        self.sideband_type_combo = Qt.QComboBox()
+        self.sideband_type_combo.addItems(["Lower Sideband", "Upper Sideband"])
+        self.sideband_type_layout.addWidget(Qt.QLabel("Sideband Type:"))
+        self.sideband_type_layout.addWidget(self.sideband_type_combo)
+        self.layout.addWidget(self.sideband_type_widget)
+        self.sideband_type_widget.hide()
+
+    def create_sine_frequency_control(self):
+        self.sine_layout = Qt.QHBoxLayout()
+        self.sine_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.sine_slider.setMinimum(1)  # 0.1 Hz * 10
+        self.sine_slider.setMaximum(200000)  # 20000 Hz * 10
+        self.sine_slider.setValue(10000)  # 1000 Hz default
+        self.sine_label = Qt.QLabel("Sine Frequency: 1000 Hz")
+        self.sine_slider.valueChanged.connect(
+            lambda v: self.sine_label.setText(f"Sine Frequency: {v/10} Hz"))
+        self.sine_layout.addWidget(self.sine_label)
+        self.sine_layout.addWidget(self.sine_slider)
+        self.layout.addLayout(self.sine_layout)
+
+    def toggle_sideband_type(self, index):
+        if index == 1:  # Single Sideband selected
+            self.sideband_type_widget.show()
+        else:
+            self.sideband_type_widget.hide()
+
+    def get_values(self):
+        ipNum = self.usrp_combo.currentIndex() + 1
+        ipXmitAddr = self.ipList[ipNum - 1].strip()
+        mikePort = 2020 + ipNum
+        
+        pwr = self.pwr_slider.value()
+        if pwr < -50:
+            rfGain = 0
+            atten = pwr + 50
+        else:
+            atten = 0
+            rfGain = pwr + 50
+            
+        return {
+            'ipNum': ipNum,
+            'ipXmitAddr': ipXmitAddr,
+            'mikePort': mikePort,
+            'cf': self.cf_slider.value(),
+            'pwr': pwr,
+            'rfGain': rfGain,
+            'atten': atten,
+            'rfGainDefault': rfGain,
+            'attenDefault': atten,
+            'carrierDefault': 1 if self.carrier_combo.currentIndex() == 0 else 0,
+            'sidebandDefaultVal': 2 if self.sideband_combo.currentIndex() == 0 else 1,
+            'sidebandDefault': 0 if self.sideband_combo.currentIndex() == 0 else 1,
+            'sidebandTypeDefaultVal': 2 if self.sideband_type_combo.currentIndex() == 1 else 1,
+            'sidebandTypeDefault': 1 if self.sideband_combo.currentIndex() == 0 else (2 * (self.sideband_type_combo.currentIndex() == 1) - 1),
+            'sineFreqDefault': self.sine_slider.value() / 10
+        }
 
 class amSineGenerator(gr.top_block, Qt.QWidget):
 
@@ -81,107 +214,37 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         ##################################################
         # Title of Program
         ##################################################
-
+        
         print("AM w/ Sinewave\n")
 
         ##################################################
         # Variable Entry
         ##################################################
         
-        # Pull in IP list of transmit SDRs
-        ipFile=open("usrpXmit.cfg","r") # Open the file
-        ipList=ipFile.readlines() # Read in list of SDR IP addresses
-        N=len(ipList) # Number of systems available
-                
-        # Enter transmit SDR to use
-        print("Enter signal generator number (1 - ",int(N),")")
-        ipNum=N+1
-        while(ipNum==(N+1)):
-            ipNum=eval(input(": ") or "1")
-            if (ipNum < 1)+(ipNum > N):
-                print("Enter a number between 1 - ",int(N),")")
-                ipNum=N+1
-            else:
-                break
-        ipXmitAddr=ipList[ipNum-1] # IP address of transmit SDR
-        mikePort=2020+ipNum
-        
-        # Input center frequency
-        cf=0
-        while(cf==0):
-            cf=eval(input("Center frequency (MHz, 50 - 2200, default = 300): ") or "300")
-            if (cf<50)+(cf>2200):
-                print("Center frequency must be between 50 - 2200 MHz.")
-                cf=0
-            else:
-                break
-                
-        # Input output power
-        pwr=0
-        while(pwr==0):
-            pwr=eval(input("Enter input power level (dBm, -30 - -80, default= -50): ") or "-50")
-            if(pwr<-80)+(pwr>-30):
-                print("Power level must be between -30 - -80 dBm.")
-                pwr=0
-            else:
-                break
-        if(pwr<-50):
-            rfGain=0
-            atten=pwr+50
-        else:
-            atten=0
-            rfGain=pwr+50
-        rfGainDefault=rfGain
-        attenDefault=atten
+        # Create and show configuration dialog
+        config_dialog = ConfigDialog()
+        if not config_dialog.exec_():
+            sys.exit(0)
             
-        # Enter carrier condition (full / suppressed)
-        carrierDefault=-1
-        while(carrierDefault<0):
-            carrierDefault=eval(input("Carrier condition (1 = full / 0 = suppressed, default = 1): ") or "1")
-            if(carrierDefault<0)+(carrierDefault>1):
-                print("Value must be 0 or 1.")
-                carrierDefault=-1
-            else:
-                break
-                
-        # Enter double or single sideband
-        sidebandDefaultVal=0
-        while(sidebandDefaultVal==0):
-            sidebandDefaultVal=eval(input("Sideband condition (1 = single, 2 = double, default = 2): ") or "2")
-            if(sidebandDefaultVal<1)+(sidebandDefaultVal>2):
-                print("Value must be 1 (for single sideband) or 2 (for double sideband).")
-                sidebandDefaultVal=0
-            else:
-                sidebandDefault=abs(sidebandDefaultVal-2)
-                break
-                
-        # If single sideband, enter lower or upper
-        if(sidebandDefault==1):
-            sidebandTypeDefaultVal=0
-            while(sidebandTypeDefaultVal==0):
-                sidebandTypeDefaultVal=eval(input("1 = lower, 2 = upper, default = 2: ") or "2")
-                if(sidebandTypeDefaultVal<1)+(sidebandTypeDefaultVal>2):
-                    print("Value must be 1 (lower sideband) or 2 (upper sideband).")
-                    sidebandTypeDefaultVal=0
-                else:
-                    sidebandTypeDefault=2*(sidebandTypeDefaultVal-1.5)
-                    break
-        else:
-            sidebandTypeDefault=1
+        values = config_dialog.get_values()
         
-        # Enter frequency of sinewave
-            sineFreq=0
-            while(sineFreq==0):
-                sineFreq=eval(input("Frequency of sinewave (Hz, 0.1 - 20000, default = 1000): ") or "1000")
-                if(sineFreq<0.1)+(sineFreq>20e3):
-                    print("Frequency must be between 0.1 - 20000 Hz.")
-                    sineFreq=0
-                else:
-                    break
-        sineFreqDefault=sineFreq
+        # Assign all values
+        ipNum = values['ipNum']
+        ipXmitAddr = values['ipXmitAddr']
+        mikePort = values['mikePort']
+        cf = values['cf']
+        pwr = values['pwr']
+        rfGain = values['rfGain']
+        atten = values['atten']
+        rfGainDefault = values['rfGainDefault']
+        attenDefault = values['attenDefault']
+        carrierDefault = values['carrierDefault']
+        sidebandDefaultVal = values['sidebandDefaultVal']
+        sidebandDefault = values['sidebandDefault']
+        sidebandTypeDefaultVal = values['sidebandTypeDefaultVal']
+        sidebandTypeDefault = values['sidebandTypeDefault']
+        sineFreqDefault = values['sineFreqDefault']
         
-        input("All settings ready. Press Enter to begin transmitting.")
-
         ##################################################
         # Variables
         ##################################################
@@ -727,23 +790,20 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
 
 
-def main(top_block_cls=amSineGenerator, options=None):
-
-    if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-        style = gr.prefs().get_string('qtgui', 'style', 'raster')
-        Qt.QApplication.setGraphicsSystem(style)
-    qapp = Qt.QApplication(sys.argv)
+def main(top_block_cls=amSineGenerator, options=None, app=None):
+    if app is None:
+        if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
+            style = gr.prefs().get_string('qtgui', 'style', 'raster')
+            Qt.QApplication.setGraphicsSystem(style)
+        app = Qt.QApplication(sys.argv)
 
     tb = top_block_cls()
-
     tb.start()
-
     tb.show()
 
     def sig_handler(sig=None, frame=None):
         tb.stop()
         tb.wait()
-
         Qt.QApplication.quit()
 
     signal.signal(signal.SIGINT, sig_handler)
@@ -753,7 +813,10 @@ def main(top_block_cls=amSineGenerator, options=None):
     timer.start(500)
     timer.timeout.connect(lambda: None)
 
-    qapp.exec_()
+    if app.instance():
+        return tb
+    else:
+        return app.exec_()
 
 if __name__ == '__main__':
     main()
