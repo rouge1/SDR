@@ -727,7 +727,7 @@ def main(top_block_cls=amAudioInternalGeneratorLive, options=None, app=None, con
             Qt.QApplication.setGraphicsSystem(style)
         app = Qt.QApplication(sys.argv)
 
-    tb = top_block_cls()
+    tb = top_block_cls(config_values)
     tb.start()
     tb.show()
 
