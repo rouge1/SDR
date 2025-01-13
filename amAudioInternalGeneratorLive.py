@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: GPL-3.0
 #
 # GNU Radio Python Flow Graph
-# Title: AM Sinewave Signal Generator
+# Title: AM Audio Signal Generator from Internal Audio Card
 # Author: Gary Schafer
 # GNU Radio version: 3.10.1.1
 
@@ -27,7 +27,7 @@ from gnuradio import eng_notation
 from gnuradio import qtgui
 from gnuradio.filter import firdes
 import sip
-from gnuradio import analog
+from gnuradio import audio
 from gnuradio import blocks
 from gnuradio import filter
 from gnuradio import gr
@@ -40,14 +40,17 @@ from gnuradio import uhd
 import time
 from gnuradio.qtgui import Range, RangeWidget
 from PyQt5 import QtCore
+from math import pi
+
 from gnuradio import qtgui
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("AM Sine Generator Configuration")
+        self.setWindowTitle("AM Audio Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
         
+        # Read USRP config
         try:
             with open("usrpXmit.cfg", "r") as ipFile:
                 self.ipList = ipFile.readlines()
@@ -56,13 +59,11 @@ class ConfigDialog(Qt.QDialog):
             self.ipList = ["192.168.10.2"]
             self.N = 1
             
-        # Create all the input widgets
+        # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
         self.create_power_control()
-        self.create_carrier_control()
-        self.create_sideband_control()
-        self.create_sine_frequency_control()
+        self.create_modulation_controls()
         
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
@@ -104,20 +105,20 @@ class ConfigDialog(Qt.QDialog):
         self.pwr_layout.addWidget(self.pwr_slider)
         self.layout.addLayout(self.pwr_layout)
 
-    def create_carrier_control(self):
+    def create_modulation_controls(self):
+        # Carrier condition
         self.carrier_combo = Qt.QComboBox()
-        self.carrier_combo.addItems(["Full Carrier", "Suppressed Carrier"])
+        self.carrier_combo.addItems(["Suppressed Carrier", "Full Carrier"])
         self.layout.addWidget(Qt.QLabel("Carrier Condition:"))
         self.layout.addWidget(self.carrier_combo)
 
-    def create_sideband_control(self):
         # Sideband condition
         self.sideband_combo = Qt.QComboBox()
         self.sideband_combo.addItems(["Double Sideband", "Single Sideband"])
-        self.layout.addWidget(Qt.QLabel("Sideband Condition:"))
+        self.layout.addWidget(Qt.QLabel("Sideband Selection:"))
         self.layout.addWidget(self.sideband_combo)
         self.sideband_combo.currentIndexChanged.connect(self.toggle_sideband_type)
-        
+
         # Sideband type (initially hidden)
         self.sideband_type_widget = Qt.QWidget()
         self.sideband_type_layout = Qt.QVBoxLayout(self.sideband_type_widget)
@@ -128,62 +129,38 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.sideband_type_widget)
         self.sideband_type_widget.hide()
 
-    def create_sine_frequency_control(self):
-        self.sine_layout = Qt.QHBoxLayout()
-        self.sine_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.sine_slider.setMinimum(1)  # 0.1 Hz * 10
-        self.sine_slider.setMaximum(200000)  # 20000 Hz * 10
-        self.sine_slider.setValue(10000)  # 1000 Hz default
-        self.sine_label = Qt.QLabel("Sine Frequency: 1000 Hz")
-        self.sine_slider.valueChanged.connect(
-            lambda v: self.sine_label.setText(f"Sine Frequency: {v/10} Hz"))
-        self.sine_layout.addWidget(self.sine_label)
-        self.sine_layout.addWidget(self.sine_slider)
-        self.layout.addLayout(self.sine_layout)
-
     def toggle_sideband_type(self, index):
-        if index == 1:  # Single Sideband selected
-            self.sideband_type_widget.show()
-        else:
-            self.sideband_type_widget.hide()
+        self.sideband_type_widget.setVisible(index == 1)
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
         ipXmitAddr = self.ipList[ipNum - 1].strip()
-        mikePort = 2020 + ipNum
         
-        pwr = self.pwr_slider.value()
-        if pwr < -50:
-            rfGain = 0
-            atten = pwr + 50
+        # Calculate sideband values
+        sidebandDefault = abs(self.sideband_combo.currentIndex() - 1)  # Reverse the index
+        if sidebandDefault == 1:  # Single sideband
+            sidebandTypeVal = self.sideband_type_combo.currentIndex() + 1
+            sidebandTypeDefault = 2 * (sidebandTypeVal - 1.5)
         else:
-            atten = 0
-            rfGain = pwr + 50
+            sidebandTypeDefault = 1
             
         return {
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
-            'mikePort': mikePort,
+            'mikePort': 2020 + ipNum,
             'cf': self.cf_slider.value(),
-            'pwr': pwr,
-            'rfGain': rfGain,
-            'atten': atten,
-            'rfGainDefault': rfGain,
-            'attenDefault': atten,
-            'carrierDefault': 1 if self.carrier_combo.currentIndex() == 0 else 0,
-            'sidebandDefaultVal': 2 if self.sideband_combo.currentIndex() == 0 else 1,
-            'sidebandDefault': 0 if self.sideband_combo.currentIndex() == 0 else 1,
-            'sidebandTypeDefaultVal': 2 if self.sideband_type_combo.currentIndex() == 1 else 1,
-            'sidebandTypeDefault': 1 if self.sideband_combo.currentIndex() == 0 else (2 * (self.sideband_type_combo.currentIndex() == 1) - 1),
-            'sineFreqDefault': self.sine_slider.value() / 10
+            'pwr': self.pwr_slider.value(),
+            'carrierDefault': self.carrier_combo.currentIndex(),
+            'sidebandDefault': sidebandDefault,
+            'sidebandTypeDefault': sidebandTypeDefault,
         }
 
-class amSineGenerator(gr.top_block, Qt.QWidget):
+class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
     def __init__(self):
-        gr.top_block.__init__(self, "AM Sinewave Signal Generator", catch_exceptions=True)
+        gr.top_block.__init__(self, "AM Audio Signal Generator from Internal Audio Card", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("AM Sinewave Signal Generator")
+        self.setWindowTitle("AM Audio Signal Generator from Internal Audio Card")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
@@ -201,7 +178,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("GNU Radio", "amSineGenerator")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
 
         try:
             if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
@@ -211,7 +188,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         except:
             pass
 
-        ##################################################
+##################################################
         # Variable Entry
         ##################################################
         
@@ -228,21 +205,13 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         mikePort = values['mikePort']
         cf = values['cf']
         pwr = values['pwr']
-        rfGain = values['rfGain']
-        atten = values['atten']
-        rfGainDefault = values['rfGainDefault']
-        attenDefault = values['attenDefault']
         carrierDefault = values['carrierDefault']
-        sidebandDefaultVal = values['sidebandDefaultVal']
         sidebandDefault = values['sidebandDefault']
-        sidebandTypeDefaultVal = values['sidebandTypeDefaultVal']
         sidebandTypeDefault = values['sidebandTypeDefault']
-        sineFreqDefault = values['sineFreqDefault']
-        
+
         ##################################################
         # Variables
         ##################################################
-        self.sineFreqDefault = sineFreqDefault
         self.sidebandTypeDefault = sidebandTypeDefault
         self.sidebandDefault = sidebandDefault
         self.rfPwrDefault = rfPwrDefault = pwr
@@ -250,16 +219,13 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         self.cfDefault = cfDefault = cf
         self.carrierDefault = carrierDefault
         self.usrpNum = usrpNum = ipNum
-        self.sineFreq = sineFreq = sineFreqDefault
         self.sidebandType = sidebandType = sidebandTypeDefault
         self.sideband = sideband = sidebandDefault
         self.samp_rate = samp_rate = 2e6
         self.rfPwr = rfPwr = rfPwrDefault
         self.outputIpAddr = outputIpAddr = ipXmitAddr
-        self.modName = modName = 'AM w/ Sinewave'
+        self.modName = modName = 'AM'
         self.modIndex = modIndex = modIndexDefault
-        self.mikePort = mikePort = 2025
-        self.mikeIpAddr = mikeIpAddr = "192.168.51.100"
         self.inputSelectDefault = inputSelectDefault = 0
         self.centerFreq = centerFreq = cfDefault
         self.carrier = carrier = carrierDefault
@@ -267,13 +233,6 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         ##################################################
         # Blocks
         ##################################################
-        self._sineFreq_range = Range(0, 20e3, 0.1, sineFreqDefault, 200)
-        self._sineFreq_win = RangeWidget(self._sineFreq_range, self.set_sineFreq, "Sinewave Frequency (Hz)", "counter_slider", float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._sineFreq_win, 4, 0, 1, 5)
-        for r in range(4, 5):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 5):
-            self.top_grid_layout.setColumnStretch(c, 1)
         # Create the options list
         self._sidebandType_options = [-1, 1]
         # Create the labels list
@@ -339,7 +298,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(5, 9):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._modIndex_range = Range(0, 10, 0.001, modIndexDefault, 200)
+        self._modIndex_range = Range(0, 10, 0.01, modIndexDefault, 200)
         self._modIndex_win = RangeWidget(self._modIndex_range, self.set_modIndex, "Modulation Index", "counter_slider", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._modIndex_win, 1, 0, 1, 4)
         for r in range(1, 2):
@@ -409,7 +368,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
         self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
 
-        self.uhd_usrp_sink_0.set_center_freq(centerFreq*1e6-330e3, 0)
+        self.uhd_usrp_sink_0.set_center_freq(centerFreq*1e6, 0)
         self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
         self.uhd_usrp_sink_0.set_gain((rfPwr+50)*(rfPwr>-50), 0)
         self.rational_resampler_xxx_1 = filter.rational_resampler_ccc(
@@ -417,9 +376,9 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
                 decimation=10,
                 taps=[],
                 fractional_bw=0)
-        self.rational_resampler_xxx_0 = filter.rational_resampler_ccc(
-                interpolation=40,
-                decimation=1,
+        self.rational_resampler_xxx_0 = filter.rational_resampler_ccf(
+                interpolation=250,
+                decimation=3,
                 taps=[],
                 fractional_bw=0)
         self.qtgui_time_sink_x_0 = qtgui.time_sink_c(
@@ -472,8 +431,8 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_time_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_time_sink_x_0_win = sip.wrapinstance(self.qtgui_time_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 5, 0, 5, 7)
-        for r in range(5, 10):
+        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 4, 0, 5, 7)
+        for r in range(4, 9):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 7):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -519,8 +478,8 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_freq_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_freq_sink_x_0_win = sip.wrapinstance(self.qtgui_freq_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 10, 0, 5, 10)
-        for r in range(10, 15):
+        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 9, 0, 5, 10)
+        for r in range(9, 14):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -565,8 +524,8 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_const_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_const_sink_x_0_win = sip.wrapinstance(self.qtgui_const_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 5, 7, 5, 3)
-        for r in range(5, 10):
+        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 4, 7, 5, 3)
+        for r in range(4, 9):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(7, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -585,37 +544,35 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(1, 3):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.hilbert_fc_0 = filter.hilbert_fc(1500, window.WIN_HAMMING, 6.76)
+        self.hilbert_fc_0 = filter.hilbert_fc(500, window.WIN_HAMMING, 6.76)
         self.blocks_selector_2 = blocks.selector(gr.sizeof_gr_complex*1,sideband,0)
         self.blocks_selector_2.set_enabled(True)
-        self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)
-        self.blocks_multiply_const_vxx_3 = blocks.multiply_const_cc(0.5)
+        self.blocks_multiply_const_vxx_3 = blocks.multiply_const_cc(0.45)
+        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_ff(modIndex)
         self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff(sidebandType)
         self.blocks_float_to_complex_0_0 = blocks.float_to_complex(1)
         self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
         self.blocks_complex_to_float_0 = blocks.complex_to_float(1)
         self.blocks_add_const_vxx_0 = blocks.add_const_ff(carrier)
-        self.analog_sig_source_x_1 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, 330e3, 10**((rfPwr<=-50)*(rfPwr+50)/20)*0.95, 0, 0)
-        self.analog_sig_source_x_0 = analog.sig_source_f(50e3, analog.GR_COS_WAVE, sineFreq, modIndex, 0, 0)
+        self.audio_source_0 = audio.source(24000, '', True)
 
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.analog_sig_source_x_0, 0), (self.blocks_add_const_vxx_0, 0))
-        self.connect((self.analog_sig_source_x_1, 0), (self.blocks_multiply_xx_0, 1))
+        self.connect((self.audio_source_0, 0), (self.blocks_multiply_const_vxx_2, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.blocks_float_to_complex_0, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.hilbert_fc_0, 0))
         self.connect((self.blocks_complex_to_float_0, 0), (self.blocks_float_to_complex_0_0, 0))
         self.connect((self.blocks_complex_to_float_0, 1), (self.blocks_multiply_const_vxx_0, 0))
         self.connect((self.blocks_float_to_complex_0, 0), (self.blocks_selector_2, 0))
-        self.connect((self.blocks_float_to_complex_0_0, 0), (self.blocks_multiply_xx_0, 0))
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_const_sink_x_0, 0))
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_time_sink_x_0, 0))
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.rational_resampler_xxx_1, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.uhd_usrp_sink_0, 0))
         self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_float_to_complex_0_0, 1))
+        self.connect((self.blocks_multiply_const_vxx_2, 0), (self.blocks_add_const_vxx_0, 0))
         self.connect((self.blocks_multiply_const_vxx_3, 0), (self.blocks_complex_to_float_0, 0))
-        self.connect((self.blocks_multiply_xx_0, 0), (self.uhd_usrp_sink_0, 0))
         self.connect((self.blocks_selector_2, 0), (self.rational_resampler_xxx_0, 0))
         self.connect((self.hilbert_fc_0, 0), (self.blocks_selector_2, 1))
         self.connect((self.rational_resampler_xxx_0, 0), (self.blocks_multiply_const_vxx_3, 0))
@@ -623,19 +580,12 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("GNU Radio", "amSineGenerator")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
 
         event.accept()
-
-    def get_sineFreqDefault(self):
-        return self.sineFreqDefault
-
-    def set_sineFreqDefault(self, sineFreqDefault):
-        self.sineFreqDefault = sineFreqDefault
-        self.set_sineFreq(self.sineFreqDefault)
 
     def get_sidebandTypeDefault(self):
         return self.sidebandTypeDefault
@@ -686,13 +636,6 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         self.usrpNum = usrpNum
         Qt.QMetaObject.invokeMethod(self._usrpNum_label, "setText", Qt.Q_ARG("QString", str(self._usrpNum_formatter(self.usrpNum))))
 
-    def get_sineFreq(self):
-        return self.sineFreq
-
-    def set_sineFreq(self, sineFreq):
-        self.sineFreq = sineFreq
-        self.analog_sig_source_x_0.set_frequency(self.sineFreq)
-
     def get_sidebandType(self):
         return self.sidebandType
 
@@ -714,7 +657,6 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
     def set_samp_rate(self, samp_rate):
         self.samp_rate = samp_rate
-        self.analog_sig_source_x_1.set_sampling_freq(self.samp_rate)
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
         self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
@@ -724,7 +666,6 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        self.analog_sig_source_x_1.set_amplitude(10**((self.rfPwr<=-50)*(self.rfPwr+50)/20)*0.95)
         self.uhd_usrp_sink_0.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
 
     def get_outputIpAddr(self):
@@ -745,19 +686,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
     def set_modIndex(self, modIndex):
         self.modIndex = modIndex
-        self.analog_sig_source_x_0.set_amplitude(self.modIndex)
-
-    def get_mikePort(self):
-        return self.mikePort
-
-    def set_mikePort(self, mikePort):
-        self.mikePort = mikePort
-
-    def get_mikeIpAddr(self):
-        return self.mikeIpAddr
-
-    def set_mikeIpAddr(self, mikeIpAddr):
-        self.mikeIpAddr = mikeIpAddr
+        self.blocks_multiply_const_vxx_2.set_k(self.modIndex)
 
     def get_inputSelectDefault(self):
         return self.inputSelectDefault
@@ -771,7 +700,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
     def set_centerFreq(self, centerFreq):
         self.centerFreq = centerFreq
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
-        self.uhd_usrp_sink_0.set_center_freq(self.centerFreq*1e6-330e3, 0)
+        self.uhd_usrp_sink_0.set_center_freq(self.centerFreq*1e6, 0)
 
     def get_carrier(self):
         return self.carrier
@@ -784,7 +713,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
 
 
-def main(top_block_cls=amSineGenerator, options=None, app=None):
+def main(top_block_cls=amAudioInternalGeneratorLive, options=None, app=None):
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')

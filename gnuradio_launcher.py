@@ -4,7 +4,8 @@
 import sys
 from PyQt5 import Qt
 from PyQt5.QtWidgets import QMainWindow, QWidget, QGridLayout, QPushButton, QLabel, QApplication
-from PyQt5.QtCore import Qt as QtCore
+from PyQt5.QtCore import Qt as QtCore, QSize
+from PyQt5.QtGui import QIcon
 import importlib.util
 
 class GNURadioLauncher(QMainWindow):
@@ -26,16 +27,46 @@ class GNURadioLauncher(QMainWindow):
         grid.addWidget(title, 0, 0, 1, 3)
         
         # Add application buttons
-        self.create_app_button("AM Sine Generator", "amSineGenerator", grid, 1, 0)
-        self.create_app_button("ASK Generator", "askGenerator", grid, 1, 1)
+        self.create_app_button("AM Sine Generator", "amSineGenerator", "amSine.jpg", grid, 1, 0)
+        self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 1)
+        self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 1, 2)
+        #self.create_app_button("ATSC Transmitter", "atscXmitter2", "atscXmit.jpg", grid, 1, 3)
         # Add more buttons here for future applications
         
-    def create_app_button(self, name, module_name, grid, row, col):
-        btn = QPushButton(name)
-        btn.setMinimumSize(200, 100)
+        # Apply stylesheet
+        self.apply_stylesheet()
+
+    def create_app_button(self, name, module_name, icon_name, grid, row, col):
+        # Create container widget for button and label
+        container = QWidget()
+        container_layout = Qt.QVBoxLayout(container)
+        container_layout.setSpacing(5)
+        container_layout.setAlignment(QtCore.AlignCenter)
+        
+        # Create square button
+        btn = QPushButton()
+        size = 200  # Square size
+        btn.setFixedSize(size, size)
         btn.setFont(Qt.QFont('Arial', 12))
+        
+        # Set the button icon to fill the button
+        icon_path = f"icons/{icon_name}"
+        btn.setIcon(QIcon(icon_path))
+        btn.setIconSize(QSize(size - 20, size - 20))  # Slightly smaller than button for padding
+        
+        # Create label below button
+        label = QLabel(name)
+        label.setFont(Qt.QFont('Arial', 12))
+        label.setAlignment(QtCore.AlignCenter)
+        label.setWordWrap(True)  # Enable word wrapping
+        label.setFixedWidth(size)  # Match button width
+        
+        # Add widgets to container
+        container_layout.addWidget(btn)
+        container_layout.addWidget(label)
+        
         btn.clicked.connect(lambda: self.launch_application(module_name))
-        grid.addWidget(btn, row, col)
+        grid.addWidget(container, row, col, QtCore.AlignCenter)
         
     def launch_application(self, module_name):
         try:
@@ -56,6 +87,36 @@ class GNURadioLauncher(QMainWindow):
             error_dialog.setInformativeText(str(e))
             error_dialog.setWindowTitle("Error")
             error_dialog.exec_()
+            
+    def apply_stylesheet(self):
+        stylesheet = """
+        QMainWindow {
+            background-color: #2e2e2e;
+        }
+        QLabel {
+            color: #ffffff;
+        }
+        QPushButton {
+            background-color: #4b4b4b;
+            color: #ffffff;
+            border: 2px solid #5c5c5c;
+            border-radius: 10px;
+            padding: 0px;  /* Remove padding to allow icon to fill */
+        }
+        QPushButton:hover {
+            background-color: #656565;
+            border: 2px solid #767676;
+        }
+        QPushButton:pressed {
+            background-color: #3d3d3d;
+            border: 2px solid #4e4e4e;
+        }
+        QMessageBox {
+            background-color: #2e2e2e;
+            color: #ffffff;
+        }
+        """
+        self.setStyleSheet(stylesheet)
 
 if __name__ == '__main__':
     app = Qt.QApplication.instance()
