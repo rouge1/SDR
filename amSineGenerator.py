@@ -41,6 +41,8 @@ import time
 from gnuradio.qtgui import Range, RangeWidget
 from PyQt5 import QtCore
 from gnuradio import qtgui
+from utils import apply_dark_theme 
+
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -70,6 +72,8 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         self.layout.addWidget(self.button_box)
+        # Apply dark theme
+        apply_dark_theme(self)
 
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()

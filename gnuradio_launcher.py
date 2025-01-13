@@ -6,6 +6,7 @@ from PyQt5 import Qt
 from PyQt5.QtWidgets import QMainWindow, QWidget, QGridLayout, QPushButton, QLabel, QApplication
 from PyQt5.QtCore import Qt as QtCore, QSize
 from PyQt5.QtGui import QIcon
+from utils import apply_launcher_theme
 import importlib.util
 
 class GNURadioLauncher(QMainWindow):
@@ -34,7 +35,8 @@ class GNURadioLauncher(QMainWindow):
         # Add more buttons here for future applications
         
         # Apply stylesheet
-        self.apply_stylesheet()
+        apply_launcher_theme(self)
+
 
     def create_app_button(self, name, module_name, icon_name, grid, row, col):
         # Create container widget for button and label
