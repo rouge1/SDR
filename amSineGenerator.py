@@ -183,10 +183,10 @@ class ConfigDialog(Qt.QDialog):
         }
 
 class amSineGenerator(gr.top_block, Qt.QWidget):
-
-    def __init__(self):
+    def __init__(self, config_values=None):
         gr.top_block.__init__(self, "AM Sinewave Signal Generator", catch_exceptions=True)
         Qt.QWidget.__init__(self)
+        
         self.setWindowTitle("AM Sinewave Signal Generator")
         qtgui.util.check_set_qss()
         try:
@@ -219,13 +219,15 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         # Variable Entry
         ##################################################
         
-        # Create and show configuration dialog
-        config_dialog = ConfigDialog()
-        if not config_dialog.exec_():
-            sys.exit(0)
+        # Use provided config values or get them from dialog
+        if config_values is None:
+            config_dialog = ConfigDialog()
+            if not config_dialog.exec_():
+                sys.exit(0)
+            values = config_dialog.get_values()
+        else:
+            values = config_values
             
-        values = config_dialog.get_values()
-        
         # Assign all values
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
@@ -242,6 +244,8 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         sidebandTypeDefaultVal = values['sidebandTypeDefaultVal']
         sidebandTypeDefault = values['sidebandTypeDefault']
         sineFreqDefault = values['sineFreqDefault']
+        
+        # Continue with the rest of the initialization...
         
         ##################################################
         # Variables
@@ -788,14 +792,14 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
 
 
 
-def main(top_block_cls=amSineGenerator, options=None, app=None):
+def main(top_block_cls=amSineGenerator, options=None, app=None, config_values=None):
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')
             Qt.QApplication.setGraphicsSystem(style)
         app = Qt.QApplication(sys.argv)
 
-    tb = top_block_cls()
+    tb = top_block_cls(config_values)
     tb.start()
     tb.show()
 

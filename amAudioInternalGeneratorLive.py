@@ -161,7 +161,7 @@ class ConfigDialog(Qt.QDialog):
 
 class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
-    def __init__(self):
+    def __init__(self, config_values=None):
         gr.top_block.__init__(self, "AM Audio Signal Generator from Internal Audio Card", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("AM Audio Signal Generator from Internal Audio Card")
@@ -192,16 +192,18 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         except:
             pass
 
-##################################################
+        ##################################################
         # Variable Entry
         ##################################################
         
-        # Create and show configuration dialog
-        config_dialog = ConfigDialog()
-        if not config_dialog.exec_():
-            sys.exit(0)
-            
-        values = config_dialog.get_values()
+        # Use provided config values or get them from dialog
+        if config_values is None:
+            config_dialog = ConfigDialog()
+            if not config_dialog.exec_():
+                sys.exit(0)
+            values = config_dialog.get_values()
+        else:
+            values = config_values
         
         # Assign all values
         ipNum = values['ipNum']
@@ -717,7 +719,8 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
 
 
-def main(top_block_cls=amAudioInternalGeneratorLive, options=None, app=None):
+def main(top_block_cls=amAudioInternalGeneratorLive, options=None, app=None, config_values=None):
+
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')

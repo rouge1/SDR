@@ -31,12 +31,9 @@ class GNURadioLauncher(QMainWindow):
         self.create_app_button("AM Sine Generator", "amSineGenerator", "amSine.jpg", grid, 1, 0)
         self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 1)
         self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 1, 2)
-        #self.create_app_button("ATSC Transmitter", "atscXmitter2", "atscXmit.jpg", grid, 1, 3)
-        # Add more buttons here for future applications
         
         # Apply stylesheet
         apply_launcher_theme(self)
-
 
     def create_app_button(self, name, module_name, icon_name, grid, row, col):
         # Create container widget for button and label
@@ -54,14 +51,14 @@ class GNURadioLauncher(QMainWindow):
         # Set the button icon to fill the button
         icon_path = f"icons/{icon_name}"
         btn.setIcon(QIcon(icon_path))
-        btn.setIconSize(QSize(size - 20, size - 20))  # Slightly smaller than button for padding
+        btn.setIconSize(QSize(size - 20, size - 20))
         
         # Create label below button
         label = QLabel(name)
         label.setFont(Qt.QFont('Arial', 12))
         label.setAlignment(QtCore.AlignCenter)
-        label.setWordWrap(True)  # Enable word wrapping
-        label.setFixedWidth(size)  # Match button width
+        label.setWordWrap(True)
+        label.setFixedWidth(size)
         
         # Add widgets to container
         container_layout.addWidget(btn)
@@ -78,9 +75,29 @@ class GNURadioLauncher(QMainWindow):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
-            # Hide launcher and start the GNU Radio application
-            self.hide()
-            module.main(app=self.app)
+            # Create configuration dialog
+            config_dialog = module.ConfigDialog()
+            
+            # Show dialog and wait for user response
+            if config_dialog.exec_() == Qt.QDialog.Accepted:
+                # Get configuration values
+                config_values = config_dialog.get_values()
+                
+                # Hide launcher
+                self.hide()
+                
+                # Start the GNU Radio application with configuration
+                tb = module.main(app=self.app, config_values=config_values)
+                
+                # Connect close event to show launcher again
+                if hasattr(tb, 'closeEvent'):
+                    original_close_event = tb.closeEvent
+                    def new_close_event(event):
+                        original_close_event(event)
+                        self.show()
+                    tb.closeEvent = new_close_event
+                
+            # If user clicks Cancel, launcher stays visible and nothing happens
             
         except Exception as e:
             error_dialog = Qt.QMessageBox()
@@ -89,36 +106,6 @@ class GNURadioLauncher(QMainWindow):
             error_dialog.setInformativeText(str(e))
             error_dialog.setWindowTitle("Error")
             error_dialog.exec_()
-            
-    def apply_stylesheet(self):
-        stylesheet = """
-        QMainWindow {
-            background-color: #2e2e2e;
-        }
-        QLabel {
-            color: #ffffff;
-        }
-        QPushButton {
-            background-color: #4b4b4b;
-            color: #ffffff;
-            border: 2px solid #5c5c5c;
-            border-radius: 10px;
-            padding: 0px;  /* Remove padding to allow icon to fill */
-        }
-        QPushButton:hover {
-            background-color: #656565;
-            border: 2px solid #767676;
-        }
-        QPushButton:pressed {
-            background-color: #3d3d3d;
-            border: 2px solid #4e4e4e;
-        }
-        QMessageBox {
-            background-color: #2e2e2e;
-            color: #ffffff;
-        }
-        """
-        self.setStyleSheet(stylesheet)
 
 if __name__ == '__main__':
     app = Qt.QApplication.instance()
