@@ -29,10 +29,12 @@ class GNURadioLauncher(QMainWindow):
         
         # Add application buttons
         self.create_app_button("AM Sine Generator", "amSineGenerator", "amSine.jpg", grid, 1, 0)
-        self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 1)
-        self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 1, 2)
+        self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 1, 1)
+        self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 2)
         self.create_app_button("FSK Signal Generator", "fskGenerator", "fsk.jpg", grid, 1, 3)
         self.create_app_button("PSK Signal Generator", "pskGenerator", "psk.jpg", grid, 1, 4)
+        self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 2, 0)
+        
         # Apply stylesheet
         apply_launcher_theme(self)
 
