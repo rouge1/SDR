@@ -21,7 +21,7 @@ from PyQt5.QtCore import Qt as QtCore, QSize, QPoint # type: ignore
 from PyQt5.QtGui import QIcon # type: ignore
 
 # Local imports 
-from utils import apply_launcher_theme
+from apps.utils import apply_launcher_theme
 
 class GNURadioLauncher(QMainWindow):
     def __init__(self, app, parent=None):
@@ -138,9 +138,11 @@ class GNURadioLauncher(QMainWindow):
         
     def launch_application(self, module_name):
         try:
+            # Construct the path to the module
+            module_path = os.path.join('apps', f"{module_name}.py")
+            
             # Import the module
-            spec = importlib.util.spec_from_file_location(
-                module_name, f"{module_name}.py")
+            spec = importlib.util.spec_from_file_location(module_name, module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
@@ -164,9 +166,7 @@ class GNURadioLauncher(QMainWindow):
             except Exception as e:
                 print(f"Error loading dialog position: {e}")
                 config_dialog.move(self.pos() + QPoint(50, 50))  # Offset from main window
-            
 
-            
             # Show dialog and wait for user response
             result = config_dialog.exec_()
             
@@ -180,7 +180,7 @@ class GNURadioLauncher(QMainWindow):
                     json.dump(position, f)
             except Exception as e:
                 print(f"Error saving dialog position: {e}")
-            
+
             if result == Qt.QDialog.Accepted:
                 # Get configuration values
                 config_values = config_dialog.get_values()
@@ -212,6 +212,7 @@ class GNURadioLauncher(QMainWindow):
             error_dialog.setInformativeText(str(e))
             error_dialog.setWindowTitle("Error")
             error_dialog.exec_()
+
 
     def closeEvent(self, event):
         """Save window position when closing the application"""
