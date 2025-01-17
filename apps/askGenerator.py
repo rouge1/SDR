@@ -121,11 +121,17 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(Qt.QLabel("Bits per Symbol:"))
         self.layout.addWidget(self.bits_combo)
         
-        # Carrier condition
-        self.carrier_combo = Qt.QComboBox()
-        self.carrier_combo.addItems(["Carrier Off", "Carrier On"])
-        self.layout.addWidget(Qt.QLabel("Carrier Condition:"))
-        self.layout.addWidget(self.carrier_combo)
+        # Carrier condition (ON/OFF Radio Buttons)
+        self.carrier_layout = Qt.QHBoxLayout()
+        self.carrier_label = Qt.QLabel("Carrier Condition:")
+        self.carrier_on_radio = Qt.QRadioButton("ON")
+        self.carrier_off_radio = Qt.QRadioButton("OFF")
+        self.carrier_off_radio.setChecked(True)  # Default to OFF
+        
+        self.carrier_layout.addWidget(self.carrier_label)
+        self.carrier_layout.addWidget(self.carrier_on_radio)
+        self.carrier_layout.addWidget(self.carrier_off_radio)
+        self.layout.addLayout(self.carrier_layout)
         
         # Symbol rate
         self.symrate_layout = Qt.QHBoxLayout()
@@ -147,13 +153,14 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(Qt.QLabel("Pulse Shape Filter:"))
         self.layout.addWidget(self.filter_combo)
         
-        # Alpha value (initially hidden)
+        # Alpha value (dimmed initially)
         self.alpha_widget = Qt.QWidget()
         self.alpha_layout = Qt.QHBoxLayout(self.alpha_widget)
         self.alpha_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.alpha_slider.setMinimum(1)
         self.alpha_slider.setMaximum(100)
         self.alpha_slider.setValue(35)
+        self.alpha_slider.setEnabled(False)  # Initially disabled (dimmed)
         self.alpha_label = Qt.QLabel("Alpha: 0.35")
         self.alpha_slider.valueChanged.connect(
             lambda v: self.alpha_label.setText(f"Alpha: {v/100:.2f}"))
@@ -161,11 +168,22 @@ class ConfigDialog(Qt.QDialog):
         self.alpha_layout.addWidget(self.alpha_slider)
         self.layout.addWidget(self.alpha_widget)
         
+        # Add opacity effect
+        self.alpha_opacity = Qt.QGraphicsOpacityEffect()
+        self.alpha_widget.setGraphicsEffect(self.alpha_opacity)
+        self.update_alpha_state()  # Set initial opacity
+        
         self.filter_combo.currentIndexChanged.connect(self.toggle_alpha)
-        self.alpha_widget.setVisible(False)
         
     def toggle_alpha(self, index):
-        self.alpha_widget.setVisible(index == 1)
+        enabled = index == 1
+        self.alpha_slider.setEnabled(enabled)
+        self.alpha_opacity.setOpacity(1.0 if enabled else 0.5)
+        
+    def update_alpha_state(self):
+        enabled = self.filter_combo.currentIndex() == 1
+        self.alpha_slider.setEnabled(enabled)
+        self.alpha_opacity.setOpacity(1.0 if enabled else 0.5)
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -177,10 +195,12 @@ class ConfigDialog(Qt.QDialog):
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(config.get('power_level', -50))
                 self.bits_combo.setCurrentIndex(config.get('bits_index', 0))
-                self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
+                self.carrier_on_radio.setChecked(config.get('carrier_condition', 0) == 1)
+                self.carrier_off_radio.setChecked(config.get('carrier_condition', 0) == 0)
                 self.symrate_slider.setValue(config.get('symbol_rate', 100))
                 self.filter_combo.setCurrentIndex(config.get('filter_index', 0))
                 self.alpha_slider.setValue(config.get('alpha_value', 35))
+                self.update_alpha_state()  # Update opacity based on loaded config
             except:
                 # If loading fails, keep default values
                 pass
@@ -194,7 +214,7 @@ class ConfigDialog(Qt.QDialog):
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
             'bits_index': self.bits_combo.currentIndex(),
-            'carrier_index': self.carrier_combo.currentIndex(),
+            'carrier_condition': 1 if self.carrier_on_radio.isChecked() else 0,
             'symbol_rate': self.symrate_slider.value(),
             'filter_index': self.filter_combo.currentIndex(),
             'alpha_value': self.alpha_slider.value()
@@ -231,7 +251,7 @@ class ConfigDialog(Qt.QDialog):
             'pwr': pwr,
             'bitsPerSym': bitsPerSym,
             'modNameDefault': modNameDefault,
-            'carrierDefault': self.carrier_combo.currentIndex(),
+            'carrierDefault': 1 if self.carrier_on_radio.isChecked() else 0,
             'symRate': self.symrate_slider.value(),
             'filterDefault': self.filter_combo.currentIndex(),
             'alphaDefault': self.alpha_slider.value() / 100
