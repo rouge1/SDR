@@ -23,33 +23,38 @@ if __name__ == '__main__':
             print("Warning: failed to XInitThreads()")
 
 from PyQt5 import Qt
+from PyQt5 import QtCore
 from PyQt5.QtCore import QObject, pyqtSlot
 from gnuradio import eng_notation
 from gnuradio import qtgui
-from gnuradio.filter import firdes
-import sip
 from gnuradio import analog
 from gnuradio import blocks
 from gnuradio import filter
 from gnuradio import gr
-from gnuradio.fft import window
-import sys
-import signal
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
 from gnuradio import uhd
-import time
+from gnuradio.fft import window
 from gnuradio.qtgui import Range, RangeWidget
-from PyQt5 import QtCore
+from gnuradio.filter import firdes
+from gnuradio.eng_arg import eng_float, intx
+from argparse import ArgumentParser
 from math import pi
 from utils import apply_dark_theme 
-from gnuradio import qtgui
+import time
+import os
+import json
+import sys
+import signal
+import sip
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ASK Signal Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
+        
+        # Add config file path setup
+        self.config_dir = "config"
+        self.config_file = os.path.join(self.config_dir, "askGenerator_config.json")
         
         # Read USRP config
         try:
@@ -66,6 +71,9 @@ class ConfigDialog(Qt.QDialog):
         self.create_power_control()
         self.create_modulation_controls()
         self.create_filter_controls()
+        
+        # Load saved configuration
+        self.load_config()
         
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
@@ -162,6 +170,46 @@ class ConfigDialog(Qt.QDialog):
         
     def toggle_alpha(self, index):
         self.alpha_widget.setVisible(index == 1)
+
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    
+                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.pwr_slider.setValue(config.get('power_level', -50))
+                self.bits_combo.setCurrentIndex(config.get('bits_index', 0))
+                self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
+                self.symrate_slider.setValue(config.get('symbol_rate', 100))
+                self.filter_combo.setCurrentIndex(config.get('filter_index', 0))
+                self.alpha_slider.setValue(config.get('alpha_value', 35))
+            except:
+                # If loading fails, keep default values
+                pass
+        else:
+            # Create config directory if it doesn't exist
+            os.makedirs(self.config_dir, exist_ok=True)
+
+    def save_config(self):
+        config = {
+            'usrp_index': self.usrp_combo.currentIndex(),
+            'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
+            'bits_index': self.bits_combo.currentIndex(),
+            'carrier_index': self.carrier_combo.currentIndex(),
+            'symbol_rate': self.symrate_slider.value(),
+            'filter_index': self.filter_combo.currentIndex(),
+            'alpha_value': self.alpha_slider.value()
+        }
+        
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+
+    def accept(self):
+        self.save_config()
+        super().accept()
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
