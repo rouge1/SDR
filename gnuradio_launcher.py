@@ -138,10 +138,8 @@ class GNURadioLauncher(QMainWindow):
         
     def launch_application(self, module_name):
         try:
-            # Construct the path to the module
+            #Import the module
             module_path = os.path.join('apps', f"{module_name}.py")
-            
-            # Import the module
             spec = importlib.util.spec_from_file_location(module_name, module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -151,13 +149,15 @@ class GNURadioLauncher(QMainWindow):
             
             # Load saved dialog position
             dialog_config_file = os.path.join(self.config_dir, "dialog_position.json")
-            default_pos = self.pos() + QPoint(50, 50)  # Default offset from main window
+
+            # Remove the default offset - only use it if no saved position exists
+            screen = self.app.primaryScreen().geometry()
+            default_pos = self.pos() + QPoint(50, 50)
 
             try:
                 if os.path.exists(dialog_config_file):
                     with open(dialog_config_file, 'r') as f:
                         position = json.load(f)
-                        screen = self.app.primaryScreen().geometry()
                         
                         # Check if position is within screen bounds
                         valid_position = (
@@ -165,8 +165,13 @@ class GNURadioLauncher(QMainWindow):
                             0 <= position['y'] <= screen.height() - config_dialog.height()
                         )
                         
-                        config_dialog.move(QPoint(position['x'], position['y']) if valid_position else default_pos)
+                        if valid_position:
+                            # Don't add any offset when loading saved position
+                            config_dialog.move(QPoint(position['x'], position['y']))
+                        else:
+                            config_dialog.move(default_pos)
                 else:
+                    # Only use default offset for first time dialog is shown
                     config_dialog.move(default_pos)
             except Exception as e:
                 print(f"Error loading dialog position: {e}")
@@ -178,9 +183,11 @@ class GNURadioLauncher(QMainWindow):
             # Save dialog position regardless of OK/Cancel
             try:
                 with open(dialog_config_file, 'w') as f:
+                    # Save the actual geometry position
+                    geo = config_dialog.geometry()
                     position = {
-                        'x': config_dialog.pos().x(),
-                        'y': config_dialog.pos().y()
+                        'x': geo.x(),
+                        'y': geo.y()
                     }
                     json.dump(position, f)
             except Exception as e:
