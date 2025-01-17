@@ -46,12 +46,18 @@ from math import pi
 import numpy as np
 from utils import apply_dark_theme
 from gnuradio import qtgui
+import os
+import json
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("PSK Signal Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
+        
+        # Add config file path setup
+        self.config_dir = "config"
+        self.config_file = os.path.join(self.config_dir, "pskGenerator_config.json")
         
         # Read USRP config
         try:
@@ -68,6 +74,9 @@ class ConfigDialog(Qt.QDialog):
         self.create_power_control()
         self.create_modulation_controls()
         
+        # Load saved configuration
+        self.load_config()
+        
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
             Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
@@ -77,7 +86,8 @@ class ConfigDialog(Qt.QDialog):
 
         # Apply dark theme
         apply_dark_theme(self)
-        
+
+    # Existing methods remain unchanged
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()
         for i in range(self.N):
@@ -125,6 +135,42 @@ class ConfigDialog(Qt.QDialog):
         self.sym_rate.setSuffix(" kHz")
         self.layout.addWidget(Qt.QLabel("Symbol Rate:"))
         self.layout.addWidget(self.sym_rate)
+
+    # Add new methods for config handling
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    
+                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.pwr_slider.setValue(config.get('power_level', -50))
+                self.psk_combo.setCurrentIndex(config.get('psk_mode', 0))
+                self.sym_rate.setValue(config.get('symbol_rate', 100))
+            except:
+                # If loading fails, keep default values
+                pass
+        else:
+            # Create config directory if it doesn't exist
+            os.makedirs(self.config_dir, exist_ok=True)
+
+    def save_config(self):
+        config = {
+            'usrp_index': self.usrp_combo.currentIndex(),
+            'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
+            'psk_mode': self.psk_combo.currentIndex(),
+            'symbol_rate': self.sym_rate.value()
+        }
+        
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+
+    # Modify accept method to save config
+    def accept(self):
+        self.save_config()
+        super().accept()
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
