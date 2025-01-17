@@ -9,7 +9,7 @@
 # Author: student
 # GNU Radio version: 3.10.1.1
 
-from packaging.version import Version as StrictVersion
+from packaging.version import Version as StrictVersion # type: ignore
 
 if __name__ == '__main__':
     import ctypes
@@ -21,34 +21,41 @@ if __name__ == '__main__':
         except:
             print("Warning: failed to XInitThreads()")
 
-from PyQt5 import Qt
-from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import eng_notation
-from gnuradio import qtgui
-from gnuradio.filter import firdes
-import sip
-from gnuradio import analog
-from gnuradio import blocks
-import pmt
-from gnuradio import filter
-from gnuradio import gr
-from gnuradio.fft import window
-import sys
+# Standard library imports
+import json
+import os
 import signal
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import uhd
+import sys
 import time
-from gnuradio.qtgui import Range, RangeWidget
-from PyQt5 import QtCore
 from math import pi
-from utils import apply_dark_theme  # Add this import
+
+# Third party imports
+from gnuradio import analog #type: ignore
+from gnuradio import blocks #type: ignore
+from gnuradio import filter #type: ignore
+from gnuradio import gr #type: ignore
+from gnuradio import qtgui #type: ignore
+from gnuradio import uhd #type: ignore
+from gnuradio.fft import window #type: ignore
+from gnuradio.filter import firdes #type: ignore
+from gnuradio.qtgui import Range, RangeWidget #type: ignore
+import pmt #type: ignore
+from PyQt5 import Qt, QtCore #type: ignore
+from PyQt5.QtCore import pyqtSlot #type: ignore
+import sip #type: ignore
+
+# Local imports 
+from utils import apply_dark_theme
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("NTSC Analog Video Configuration")
         self.layout = Qt.QVBoxLayout(self)
+        
+        # Add config file path setup
+        self.config_dir = "config"
+        self.config_file = os.path.join(self.config_dir, "ntscAnalogVideoRecorded_config.json")
         
         # Read USRP config
         try:
@@ -65,6 +72,9 @@ class ConfigDialog(Qt.QDialog):
         self.create_power_control()
         self.create_video_controls()
         self.create_audio_controls()
+        
+        # Load saved configuration
+        self.load_config()
         
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
@@ -114,7 +124,6 @@ class ConfigDialog(Qt.QDialog):
         
         # Scan media directory for .flt files
         try:
-            import os
             video_files = sorted([f for f in os.listdir("media") if f.endswith('.flt')])
             # Create display names by cleaning up filenames
             video_names = [os.path.splitext(f)[0].replace('-', ' ') for f in video_files]
@@ -136,7 +145,6 @@ class ConfigDialog(Qt.QDialog):
         
         # Scan media directory for .wav files
         try:
-            import os
             audio_files = sorted([f for f in os.listdir("media") if f.endswith('.wav')])
             # Create display names by cleaning up filenames
             audio_names = [os.path.splitext(f)[0].replace('-', ' ') for f in audio_files]
@@ -149,6 +157,46 @@ class ConfigDialog(Qt.QDialog):
 
         self.layout.addWidget(Qt.QLabel("Audio File:"))
         self.layout.addWidget(self.audio_combo)
+
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    
+                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.pwr_slider.setValue(config.get('power_level', -50))
+                video_index = config.get('video_index', 0)
+                if video_index < self.video_combo.count():
+                    self.video_combo.setCurrentIndex(video_index)
+                audio_index = config.get('audio_index', 0)
+                if audio_index < self.audio_combo.count():
+                    self.audio_combo.setCurrentIndex(audio_index)
+                self.video_invert.setChecked(config.get('video_invert', False))
+            except:
+                # If loading fails, keep default values
+                pass
+        else:
+            # Create config directory if it doesn't exist
+            os.makedirs(self.config_dir, exist_ok=True)
+
+    def save_config(self):
+        config = {
+            'usrp_index': self.usrp_combo.currentIndex(),
+            'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
+            'video_index': self.video_combo.currentIndex(),
+            'audio_index': self.audio_combo.currentIndex(),
+            'video_invert': self.video_invert.isChecked()
+        }
+        
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+
+    def accept(self):
+        self.save_config()
+        super().accept()
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
@@ -164,8 +212,6 @@ class ConfigDialog(Qt.QDialog):
             'audioFileName': self.audio_paths[self.audio_combo.currentIndex()],
             'videoInvert': 1 if self.video_invert.isChecked() else -1
         }
-
-from gnuradio import qtgui
 
 class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
 

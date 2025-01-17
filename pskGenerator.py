@@ -10,7 +10,7 @@
 # Description: User-selectable number of bits per symbol (2, 4, 8)
 # GNU Radio version: 3.10.1.1
 
-from packaging.version import Version as StrictVersion
+from packaging.version import Version as StrictVersion #type: ignore
 
 if __name__ == '__main__':
     import ctypes
@@ -22,32 +22,34 @@ if __name__ == '__main__':
         except:
             print("Warning: failed to XInitThreads()")
 
-from PyQt5 import Qt
-from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import eng_notation
-from gnuradio import qtgui
-from gnuradio.filter import firdes
-import sip
-from gnuradio import analog
-from gnuradio import blocks
-from gnuradio import digital
-from gnuradio import filter
-from gnuradio import gr
-from gnuradio.fft import window
-import sys
-import signal
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import uhd
-import time
-from gnuradio.qtgui import Range, RangeWidget
-from PyQt5 import QtCore
-from math import pi
-import numpy as np
-from utils import apply_dark_theme
-from gnuradio import qtgui
-import os
+# Standard library imports
 import json
+import os
+import signal 
+import sys
+import time
+from math import pi
+
+# Third party imports 
+import numpy as np #type: ignore
+import sip #type: ignore
+from gnuradio import analog #type: ignore
+from gnuradio import blocks #type: ignore
+from gnuradio import digital #type: ignore
+from gnuradio import eng_notation #type: ignore
+from gnuradio import filter #type: ignore
+from gnuradio import gr #type: ignore
+from gnuradio import qtgui #type: ignore
+from gnuradio import uhd #type: ignore
+from gnuradio.fft import window #type: ignore
+from gnuradio.filter import firdes #type: ignore
+from gnuradio.qtgui import Range, RangeWidget #type: ignore
+from PyQt5 import Qt #type: ignore
+from PyQt5 import QtCore #type: ignore
+from PyQt5.QtCore import pyqtSlot #type: ignore
+
+# Local imports
+from utils import apply_dark_theme
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):

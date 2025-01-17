@@ -10,7 +10,7 @@
 # Description: User-selectable number of bits per symbol (2, 4, 8)
 # GNU Radio version: 3.10.1.1
 
-from packaging.version import Version as StrictVersion
+from packaging.version import Version as StrictVersion  # type: ignore
 
 if __name__ == '__main__':
     import ctypes
@@ -22,29 +22,25 @@ if __name__ == '__main__':
         except:
             print("Warning: failed to XInitThreads()")
 
-from PyQt5 import Qt
-from PyQt5 import QtCore
-from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import eng_notation
-from gnuradio import qtgui
-from gnuradio import analog
-from gnuradio import blocks
-from gnuradio import filter
-from gnuradio import gr
-from gnuradio import uhd
-from gnuradio.fft import window
-from gnuradio.qtgui import Range, RangeWidget
-from gnuradio.filter import firdes
-from gnuradio.eng_arg import eng_float, intx
-from argparse import ArgumentParser
-from math import pi
-from utils import apply_dark_theme 
-import time
-import os
+# Standard library imports
 import json
-import sys
+import os
 import signal
-import sip
+import sys
+import time
+
+# Third party imports 
+from PyQt5 import Qt, QtCore # type: ignore
+from PyQt5.QtCore import pyqtSlot # type: ignore
+import sip # type: ignore
+
+from gnuradio import analog, blocks, eng_notation, filter, gr, qtgui, uhd # type: ignore
+from gnuradio.fft import window # type: ignore
+from gnuradio.filter import firdes # type: ignore
+from gnuradio.qtgui import Range, RangeWidget # type: ignore
+
+# Local imports
+from utils import apply_dark_theme
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):

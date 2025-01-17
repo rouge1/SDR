@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+# Standard library imports
 import sys
 import os
 import json
-from PyQt5 import Qt
-from PyQt5.QtWidgets import QMainWindow, QWidget, QGridLayout, QPushButton, QLabel, QApplication
-from PyQt5.QtCore import Qt as QtCore, QSize, QPoint
-from PyQt5.QtGui import QIcon
-from utils import apply_launcher_theme
 import importlib.util
+
+# Third party imports
+from PyQt5 import Qt # type: ignore
+from PyQt5.QtWidgets import ( # type: ignore
+    QMainWindow, 
+    QWidget, 
+    QGridLayout, 
+    QPushButton, 
+    QLabel, 
+    QApplication
+)
+from PyQt5.QtCore import Qt as QtCore, QSize, QPoint # type: ignore
+from PyQt5.QtGui import QIcon # type: ignore
+
+# Local imports 
+from utils import apply_launcher_theme
 
 class GNURadioLauncher(QMainWindow):
     def __init__(self, app, parent=None):

@@ -1,4 +1,4 @@
-from PyQt5 import Qt
+from PyQt5 import Qt  #type: ignore
 
 
 #This function is called to apply the theme to the launcher
