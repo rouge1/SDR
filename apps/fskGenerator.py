@@ -150,7 +150,7 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(Qt.QLabel("Pulse Shaping Filter:"))
         self.layout.addWidget(self.filter_combo)
 
-        # BT value (initially hidden)
+        # BT value (always visible but conditionally enabled)
         self.bt_widget = Qt.QWidget()
         self.bt_layout = Qt.QVBoxLayout(self.bt_widget)
         self.bt_value = Qt.QDoubleSpinBox()
@@ -160,10 +160,19 @@ class ConfigDialog(Qt.QDialog):
         self.bt_layout.addWidget(Qt.QLabel("BT Value:"))
         self.bt_layout.addWidget(self.bt_value)
         self.layout.addWidget(self.bt_widget)
-        self.bt_widget.hide()
 
+        # Create opacity effect
+        self.bt_opacity = Qt.QGraphicsOpacityEffect()
+        self.bt_widget.setGraphicsEffect(self.bt_opacity)
+        
+        def update_bt_state(enabled):
+            self.bt_widget.setEnabled(enabled)
+            self.bt_opacity.setOpacity(1.0 if enabled else 0.5)
+            
+        # Initialize disabled and connect
+        update_bt_state(False)
         self.filter_combo.currentIndexChanged.connect(
-            lambda idx: self.bt_widget.setVisible(idx == 1))
+            lambda idx: update_bt_state(idx == 1))
 
     def load_config(self):
         if os.path.exists(self.config_file):
