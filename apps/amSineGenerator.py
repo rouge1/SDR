@@ -124,22 +124,35 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.carrier_combo)
 
     def create_sideband_control(self):
-        # Sideband condition
+        # Sideband condition combo (keep existing)
         self.sideband_combo = Qt.QComboBox()
         self.sideband_combo.addItems(["Double Sideband", "Single Sideband"])
         self.layout.addWidget(Qt.QLabel("Sideband Condition:"))
         self.layout.addWidget(self.sideband_combo)
-        self.sideband_combo.currentIndexChanged.connect(self.toggle_sideband_type)
         
-        # Sideband type (initially hidden)
-        self.sideband_type_widget = Qt.QWidget()
-        self.sideband_type_layout = Qt.QVBoxLayout(self.sideband_type_widget)
-        self.sideband_type_combo = Qt.QComboBox()
-        self.sideband_type_combo.addItems(["Lower Sideband", "Upper Sideband"])
-        self.sideband_type_layout.addWidget(Qt.QLabel("Sideband Type:"))
-        self.sideband_type_layout.addWidget(self.sideband_type_combo)
+        # Replace combo box with radio button group
+        self.sideband_type_widget = Qt.QGroupBox("Sideband Type")
+        self.sideband_type_layout = Qt.QHBoxLayout()
+        self.lower_sideband = Qt.QRadioButton("Lower")
+        self.upper_sideband = Qt.QRadioButton("Upper")
+        self.lower_sideband.setChecked(True)
+        self.sideband_type_layout.addWidget(self.lower_sideband)
+        self.sideband_type_layout.addWidget(self.upper_sideband)
+        self.sideband_type_widget.setLayout(self.sideband_type_layout)
         self.layout.addWidget(self.sideband_type_widget)
-        self.sideband_type_widget.hide()
+
+        # Add opacity effect
+        self.sideband_opacity = Qt.QGraphicsOpacityEffect()
+        self.sideband_type_widget.setGraphicsEffect(self.sideband_opacity)
+        
+        def update_sideband_state(index):
+            enabled = index == 1  # Enable for Single Sideband
+            self.sideband_type_widget.setEnabled(enabled)
+            self.sideband_opacity.setOpacity(1.0 if enabled else 0.5)
+        
+        # Initialize disabled and connect
+        update_sideband_state(0)
+        self.sideband_combo.currentIndexChanged.connect(update_sideband_state)
 
     def create_sine_frequency_control(self):
         self.sine_layout = Qt.QHBoxLayout()
@@ -161,7 +174,6 @@ class ConfigDialog(Qt.QDialog):
             self.sideband_type_widget.hide()
 
     def load_config(self):
-        
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
@@ -172,7 +184,11 @@ class ConfigDialog(Qt.QDialog):
                 self.pwr_slider.setValue(config.get('power_level', -50))
                 self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
                 self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
-                self.sideband_type_combo.setCurrentIndex(config.get('sideband_type_index', 0))
+                # Update radio button state
+                if config.get('sideband_type', 'lower') == 'upper':
+                    self.upper_sideband.setChecked(True)
+                else:
+                    self.lower_sideband.setChecked(True)
                 self.sine_slider.setValue(config.get('sine_freq', 10000))
             except:
                 # If loading fails, keep default values
@@ -188,7 +204,7 @@ class ConfigDialog(Qt.QDialog):
             'power_level': self.pwr_slider.value(),
             'carrier_index': self.carrier_combo.currentIndex(),
             'sideband_index': self.sideband_combo.currentIndex(),
-            'sideband_type_index': self.sideband_type_combo.currentIndex(),
+            'sideband_type_index': 1 if self.upper_sideband.isChecked() else 0,
             'sine_freq': self.sine_slider.value()
         }
         
@@ -225,8 +241,8 @@ class ConfigDialog(Qt.QDialog):
             'carrierDefault': 1 if self.carrier_combo.currentIndex() == 0 else 0,
             'sidebandDefaultVal': 2 if self.sideband_combo.currentIndex() == 0 else 1,
             'sidebandDefault': 0 if self.sideband_combo.currentIndex() == 0 else 1,
-            'sidebandTypeDefaultVal': 2 if self.sideband_type_combo.currentIndex() == 1 else 1,
-            'sidebandTypeDefault': 1 if self.sideband_combo.currentIndex() == 0 else (2 * (self.sideband_type_combo.currentIndex() == 1) - 1),
+            'sidebandTypeDefaultVal': 2 if self.upper_sideband.isChecked() else 1,
+            'sidebandTypeDefault': 1 if self.sideband_combo.currentIndex() == 0 else (2 if self.upper_sideband.isChecked() else -1),
             'sineFreqDefault': self.sine_slider.value() / 10
         }
 

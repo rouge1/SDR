@@ -117,31 +117,41 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_modulation_controls(self):
-        # Carrier condition
+        # Carrier condition (unchanged)
         self.carrier_combo = Qt.QComboBox()
         self.carrier_combo.addItems(["Suppressed Carrier", "Full Carrier"])
         self.layout.addWidget(Qt.QLabel("Carrier Condition:"))
         self.layout.addWidget(self.carrier_combo)
 
-        # Sideband condition
+        # Sideband condition (unchanged)
         self.sideband_combo = Qt.QComboBox()
         self.sideband_combo.addItems(["Double Sideband", "Single Sideband"])
         self.layout.addWidget(Qt.QLabel("Sideband Selection:"))
         self.layout.addWidget(self.sideband_combo)
-        self.sideband_combo.currentIndexChanged.connect(self.toggle_sideband_type)
 
-        # Sideband type (initially hidden)
-        self.sideband_type_widget = Qt.QWidget()
-        self.sideband_type_layout = Qt.QVBoxLayout(self.sideband_type_widget)
-        self.sideband_type_combo = Qt.QComboBox()
-        self.sideband_type_combo.addItems(["Lower Sideband", "Upper Sideband"])
-        self.sideband_type_layout.addWidget(Qt.QLabel("Sideband Type:"))
-        self.sideband_type_layout.addWidget(self.sideband_type_combo)
+        # Replace combo with radio buttons
+        self.sideband_type_widget = Qt.QGroupBox("Sideband Type")
+        self.sideband_type_layout = Qt.QHBoxLayout()
+        self.lower_sideband = Qt.QRadioButton("Lower")
+        self.upper_sideband = Qt.QRadioButton("Upper")
+        self.lower_sideband.setChecked(True)
+        self.sideband_type_layout.addWidget(self.lower_sideband)
+        self.sideband_type_layout.addWidget(self.upper_sideband)
+        self.sideband_type_widget.setLayout(self.sideband_type_layout)
         self.layout.addWidget(self.sideband_type_widget)
-        self.sideband_type_widget.hide()
 
-    def toggle_sideband_type(self, index):
-        self.sideband_type_widget.setVisible(index == 1)
+        # Add opacity effect
+        self.sideband_opacity = Qt.QGraphicsOpacityEffect()
+        self.sideband_type_widget.setGraphicsEffect(self.sideband_opacity)
+        
+        def update_sideband_state(index):
+            enabled = index == 1  # Enable for Single Sideband
+            self.sideband_type_widget.setEnabled(enabled)
+            self.sideband_opacity.setOpacity(1.0 if enabled else 0.5)
+        
+        # Initialize disabled and connect
+        update_sideband_state(0)
+        self.sideband_combo.currentIndexChanged.connect(update_sideband_state)
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -154,12 +164,14 @@ class ConfigDialog(Qt.QDialog):
                 self.pwr_slider.setValue(config.get('power_level', -50))
                 self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
                 self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
-                self.sideband_type_combo.setCurrentIndex(config.get('sideband_type_index', 0))
+                # Update radio button state
+                if config.get('sideband_type', 'lower') == 'upper':
+                    self.upper_sideband.setChecked(True)
+                else:
+                    self.lower_sideband.setChecked(True)
             except:
-                # If loading fails, keep default values
                 pass
         else:
-            # Create config directory if it doesn't exist
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
@@ -169,7 +181,7 @@ class ConfigDialog(Qt.QDialog):
             'power_level': self.pwr_slider.value(),
             'carrier_index': self.carrier_combo.currentIndex(),
             'sideband_index': self.sideband_combo.currentIndex(),
-            'sideband_type_index': self.sideband_type_combo.currentIndex()
+            'sideband_type': 'upper' if self.upper_sideband.isChecked() else 'lower'
         }
         
         with open(self.config_file, 'w') as f:
@@ -184,12 +196,11 @@ class ConfigDialog(Qt.QDialog):
         ipXmitAddr = self.ipList[ipNum - 1].strip()
         
         # Calculate sideband values
-        sidebandDefault = abs(self.sideband_combo.currentIndex() - 1)  # Reverse the index
+        sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0  # 1 for Single, 0 for Double
         if sidebandDefault == 1:  # Single sideband
-            sidebandTypeVal = self.sideband_type_combo.currentIndex() + 1
-            sidebandTypeDefault = 2 * (sidebandTypeVal - 1.5)
+            sidebandTypeDefault = 1 if self.upper_sideband.isChecked() else -1
         else:
-            sidebandTypeDefault = 1
+            sidebandTypeDefault = 1  # Default to upper for double sideband
             
         return {
             'ipNum': ipNum,
