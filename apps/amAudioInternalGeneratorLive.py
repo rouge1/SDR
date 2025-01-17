@@ -5,12 +5,11 @@
 # SPDX-License-Identifier: GPL-3.0
 #
 # GNU Radio Python Flow Graph
-# Title: PSK Signal Generator
-# Author: instructor
-# Description: User-selectable number of bits per symbol (2, 4, 8)
+# Title: AM Audio Signal Generator from Internal Audio Card
+# Author: Gary Schafer
 # GNU Radio version: 3.10.1.1
 
-from packaging.version import Version as StrictVersion #type: ignore
+from packaging.version import Version as StrictVersion # type: ignore
 
 if __name__ == '__main__':
     import ctypes
@@ -25,41 +24,36 @@ if __name__ == '__main__':
 # Standard library imports
 import json
 import os
-import signal 
+import signal
+import sip # type: ignore
 import sys
 import time
-from math import pi
 
-# Third party imports 
-import numpy as np #type: ignore
-import sip #type: ignore
-from gnuradio import analog #type: ignore
-from gnuradio import blocks #type: ignore
-from gnuradio import digital #type: ignore
-from gnuradio import eng_notation #type: ignore
-from gnuradio import filter #type: ignore
-from gnuradio import gr #type: ignore
-from gnuradio import qtgui #type: ignore
-from gnuradio import uhd #type: ignore
-from gnuradio.fft import window #type: ignore
-from gnuradio.filter import firdes #type: ignore
-from gnuradio.qtgui import Range, RangeWidget #type: ignore
-from PyQt5 import Qt #type: ignore
-from PyQt5 import QtCore #type: ignore
-from PyQt5.QtCore import pyqtSlot #type: ignore
+# Third party imports
+from gnuradio import audio # type: ignore
+from gnuradio import blocks  # type: ignore
+from gnuradio import filter # type: ignore
+from gnuradio import gr # type: ignore
+from gnuradio import qtgui # type: ignore
+from gnuradio import uhd # type: ignore
+from gnuradio.fft import window # type: ignore
+from gnuradio.qtgui import Range, RangeWidget # type: ignore
+from PyQt5 import Qt # type: ignore
+from PyQt5 import QtCore # type: ignore
+from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
-from utils import apply_dark_theme
+from apps.utils import apply_dark_theme
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PSK Signal Generator Configuration")
+        self.setWindowTitle("AM Audio Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
         
         # Add config file path setup
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "pskGenerator_config.json")
+        self.config_file = os.path.join(self.config_dir, "amAudioInternalGeneratorLive_config.json")
         
         # Read USRP config
         try:
@@ -88,8 +82,7 @@ class ConfigDialog(Qt.QDialog):
 
         # Apply dark theme
         apply_dark_theme(self)
-
-    # Existing methods remain unchanged
+        
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()
         for i in range(self.N):
@@ -124,21 +117,32 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_modulation_controls(self):
-        # PSK Mode selector
-        self.psk_combo = Qt.QComboBox()
-        self.psk_combo.addItems(["BPSK", "QPSK", "8PSK"])
-        self.layout.addWidget(Qt.QLabel("PSK Mode:"))
-        self.layout.addWidget(self.psk_combo)
-        
-        # Symbol rate control
-        self.sym_rate = Qt.QSpinBox()
-        self.sym_rate.setRange(1, 500)
-        self.sym_rate.setValue(100)
-        self.sym_rate.setSuffix(" kHz")
-        self.layout.addWidget(Qt.QLabel("Symbol Rate:"))
-        self.layout.addWidget(self.sym_rate)
+        # Carrier condition
+        self.carrier_combo = Qt.QComboBox()
+        self.carrier_combo.addItems(["Suppressed Carrier", "Full Carrier"])
+        self.layout.addWidget(Qt.QLabel("Carrier Condition:"))
+        self.layout.addWidget(self.carrier_combo)
 
-    # Add new methods for config handling
+        # Sideband condition
+        self.sideband_combo = Qt.QComboBox()
+        self.sideband_combo.addItems(["Double Sideband", "Single Sideband"])
+        self.layout.addWidget(Qt.QLabel("Sideband Selection:"))
+        self.layout.addWidget(self.sideband_combo)
+        self.sideband_combo.currentIndexChanged.connect(self.toggle_sideband_type)
+
+        # Sideband type (initially hidden)
+        self.sideband_type_widget = Qt.QWidget()
+        self.sideband_type_layout = Qt.QVBoxLayout(self.sideband_type_widget)
+        self.sideband_type_combo = Qt.QComboBox()
+        self.sideband_type_combo.addItems(["Lower Sideband", "Upper Sideband"])
+        self.sideband_type_layout.addWidget(Qt.QLabel("Sideband Type:"))
+        self.sideband_type_layout.addWidget(self.sideband_type_combo)
+        self.layout.addWidget(self.sideband_type_widget)
+        self.sideband_type_widget.hide()
+
+    def toggle_sideband_type(self, index):
+        self.sideband_type_widget.setVisible(index == 1)
+
     def load_config(self):
         if os.path.exists(self.config_file):
             try:
@@ -148,8 +152,9 @@ class ConfigDialog(Qt.QDialog):
                 self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(config.get('power_level', -50))
-                self.psk_combo.setCurrentIndex(config.get('psk_mode', 0))
-                self.sym_rate.setValue(config.get('symbol_rate', 100))
+                self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
+                self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
+                self.sideband_type_combo.setCurrentIndex(config.get('sideband_type_index', 0))
             except:
                 # If loading fails, keep default values
                 pass
@@ -162,14 +167,14 @@ class ConfigDialog(Qt.QDialog):
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
-            'psk_mode': self.psk_combo.currentIndex(),
-            'symbol_rate': self.sym_rate.value()
+            'carrier_index': self.carrier_combo.currentIndex(),
+            'sideband_index': self.sideband_combo.currentIndex(),
+            'sideband_type_index': self.sideband_type_combo.currentIndex()
         }
         
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
 
-    # Modify accept method to save config
     def accept(self):
         self.save_config()
         super().accept()
@@ -178,22 +183,31 @@ class ConfigDialog(Qt.QDialog):
         ipNum = self.usrp_combo.currentIndex() + 1
         ipXmitAddr = self.ipList[ipNum - 1].strip()
         
+        # Calculate sideband values
+        sidebandDefault = abs(self.sideband_combo.currentIndex() - 1)  # Reverse the index
+        if sidebandDefault == 1:  # Single sideband
+            sidebandTypeVal = self.sideband_type_combo.currentIndex() + 1
+            sidebandTypeDefault = 2 * (sidebandTypeVal - 1.5)
+        else:
+            sidebandTypeDefault = 1
+            
         return {
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
             'cf': self.cf_slider.value(),
             'pwr': self.pwr_slider.value(),
-            'pskMode': self.psk_combo.currentIndex() + 1,  # 1=BPSK, 2=QPSK, 3=8PSK
-            'symRate': self.sym_rate.value()
+            'carrierDefault': self.carrier_combo.currentIndex(),
+            'sidebandDefault': sidebandDefault,
+            'sidebandTypeDefault': sidebandTypeDefault,
         }
 
-class pskGenerator(gr.top_block, Qt.QWidget):
+class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "PSK Signal Generator", catch_exceptions=True)
+        gr.top_block.__init__(self, "AM Audio Signal Generator from Internal Audio Card", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("PSK Signal Generator")
+        self.setWindowTitle("AM Audio Signal Generator from Internal Audio Card")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
@@ -211,7 +225,7 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("GNU Radio", "pskGenerator")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
 
         try:
             if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
@@ -221,6 +235,10 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         except:
             pass
 
+        ##################################################
+        # Variable Entry
+        ##################################################
+        
         # Use provided config values or get them from dialog
         if config_values is None:
             config_dialog = ConfigDialog()
@@ -229,119 +247,163 @@ class pskGenerator(gr.top_block, Qt.QWidget):
             values = config_dialog.get_values()
         else:
             values = config_values
-            
-        # Assign configuration values
+        
+        # Assign all values
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         mikePort = values['mikePort']
         cf = values['cf']
         pwr = values['pwr']
-        pskMode = values['pskMode']
-        symRate = values['symRate']
-
-        # Calculate bits per symbol based on PSK mode
-        bitsPerSym = pskMode if pskMode <= 2 else 3  # BPSK=1, QPSK=2, 8PSK=3
-        
-        # Set modulation name
-        modNameDefault = f"{2**bitsPerSym}PSK"
+        carrierDefault = values['carrierDefault']
+        sidebandDefault = values['sidebandDefault']
+        sidebandTypeDefault = values['sidebandTypeDefault']
 
         ##################################################
         # Variables
         ##################################################
-        self.symRate = symRate 
-        self.samp_rate = samp_rate = 5e6
+        self.sidebandTypeDefault = sidebandTypeDefault
+        self.sidebandDefault = sidebandDefault
         self.rfPwrDefault = rfPwrDefault = pwr
+        self.modIndexDefault = modIndexDefault = 1
         self.cfDefault = cfDefault = cf
-        self.bitsPerSym = bitsPerSym
-        self.alphaDefault = alphaDefault = 0.35  # Add default alpha value
-        self.rrcOption = rrcOption = 1  # Add default RRC filter option
-        self.actualSymRate = actualSymRate = samp_rate/int(samp_rate/symRate/1000)/1000
-        self.sps = sps = samp_rate/actualSymRate/1000
+        self.carrierDefault = carrierDefault
+        self.usrpNum = usrpNum = ipNum
+        self.sidebandType = sidebandType = sidebandTypeDefault
+        self.sideband = sideband = sidebandDefault
+        self.samp_rate = samp_rate = 2e6
         self.rfPwr = rfPwr = rfPwrDefault
         self.outputIpAddr = outputIpAddr = ipXmitAddr
-        self.modName = modName = modNameDefault
-        self.cf = cf
-        self.bitRate = bitRate = samp_rate/int(samp_rate/symRate/1000)/1000*bitsPerSym
-        self.alphaVal = alphaVal = alphaDefault
+        self.modName = modName = 'AM'
+        self.modIndex = modIndex = modIndexDefault
+        self.inputSelectDefault = inputSelectDefault = 0
+        self.centerFreq = centerFreq = cfDefault
+        self.carrier = carrier = carrierDefault
 
         ##################################################
         # Blocks
         ##################################################
-        self._symRate_tool_bar = Qt.QToolBar(self)
-        self._symRate_tool_bar.addWidget(Qt.QLabel("Symbol Rate (kHz)" + ": "))
-        self._symRate_line_edit = Qt.QLineEdit(str(self.symRate))
-        self._symRate_tool_bar.addWidget(self._symRate_line_edit)
-        self._symRate_line_edit.returnPressed.connect(
-            lambda: self.set_symRate(eng_notation.str_to_num(str(self._symRate_line_edit.text()))))
-        self.top_grid_layout.addWidget(self._symRate_tool_bar, 2, 0, 1, 3)
-        for r in range(2, 3):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 3):
-            self.top_grid_layout.setColumnStretch(c, 1)
         # Create the options list
-        self._rrcOption_options = [0, 1]
+        self._sidebandType_options = [-1, 1]
         # Create the labels list
-        self._rrcOption_labels = ['Filter Off', 'Filter On']
+        self._sidebandType_labels = ['Lower', 'Upper']
         # Create the combo box
         # Create the radio buttons
-        self._rrcOption_group_box = Qt.QGroupBox("RRC Filter On / Off" + ": ")
-        self._rrcOption_box = Qt.QHBoxLayout()
+        self._sidebandType_group_box = Qt.QGroupBox("Lower / Upper Sideband" + ": ")
+        self._sidebandType_box = Qt.QHBoxLayout()
         class variable_chooser_button_group(Qt.QButtonGroup):
             def __init__(self, parent=None):
                 Qt.QButtonGroup.__init__(self, parent)
             @pyqtSlot(int)
             def updateButtonChecked(self, button_id):
                 self.button(button_id).setChecked(True)
-        self._rrcOption_button_group = variable_chooser_button_group()
-        self._rrcOption_group_box.setLayout(self._rrcOption_box)
-        for i, _label in enumerate(self._rrcOption_labels):
+        self._sidebandType_button_group = variable_chooser_button_group()
+        self._sidebandType_group_box.setLayout(self._sidebandType_box)
+        for i, _label in enumerate(self._sidebandType_labels):
             radio_button = Qt.QRadioButton(_label)
-            self._rrcOption_box.addWidget(radio_button)
-            self._rrcOption_button_group.addButton(radio_button, i)
-        self._rrcOption_callback = lambda i: Qt.QMetaObject.invokeMethod(self._rrcOption_button_group, "updateButtonChecked", Qt.Q_ARG("int", self._rrcOption_options.index(i)))
-        self._rrcOption_callback(self.rrcOption)
-        self._rrcOption_button_group.buttonClicked[int].connect(
-            lambda i: self.set_rrcOption(self._rrcOption_options[i]))
-        self.top_grid_layout.addWidget(self._rrcOption_group_box, 0, 7, 1, 3)
-        for r in range(0, 1):
+            self._sidebandType_box.addWidget(radio_button)
+            self._sidebandType_button_group.addButton(radio_button, i)
+        self._sidebandType_callback = lambda i: Qt.QMetaObject.invokeMethod(self._sidebandType_button_group, "updateButtonChecked", Qt.Q_ARG("int", self._sidebandType_options.index(i)))
+        self._sidebandType_callback(self.sidebandType)
+        self._sidebandType_button_group.buttonClicked[int].connect(
+            lambda i: self.set_sidebandType(self._sidebandType_options[i]))
+        self.top_grid_layout.addWidget(self._sidebandType_group_box, 2, 7, 1, 3)
+        for r in range(2, 3):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(7, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._rfPwr_range = Range(-80, -30, 1, rfPwrDefault, 200)
+        # Create the options list
+        self._sideband_options = [0, 1]
+        # Create the labels list
+        self._sideband_labels = ['Double', 'Single']
+        # Create the combo box
+        # Create the radio buttons
+        self._sideband_group_box = Qt.QGroupBox("Single / Double Sideband" + ": ")
+        self._sideband_box = Qt.QHBoxLayout()
+        class variable_chooser_button_group(Qt.QButtonGroup):
+            def __init__(self, parent=None):
+                Qt.QButtonGroup.__init__(self, parent)
+            @pyqtSlot(int)
+            def updateButtonChecked(self, button_id):
+                self.button(button_id).setChecked(True)
+        self._sideband_button_group = variable_chooser_button_group()
+        self._sideband_group_box.setLayout(self._sideband_box)
+        for i, _label in enumerate(self._sideband_labels):
+            radio_button = Qt.QRadioButton(_label)
+            self._sideband_box.addWidget(radio_button)
+            self._sideband_button_group.addButton(radio_button, i)
+        self._sideband_callback = lambda i: Qt.QMetaObject.invokeMethod(self._sideband_button_group, "updateButtonChecked", Qt.Q_ARG("int", self._sideband_options.index(i)))
+        self._sideband_callback(self.sideband)
+        self._sideband_button_group.buttonClicked[int].connect(
+            lambda i: self.set_sideband(self._sideband_options[i]))
+        self.top_grid_layout.addWidget(self._sideband_group_box, 2, 4, 1, 3)
+        for r in range(2, 3):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(4, 7):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        self._rfPwr_range = Range(-140, -30, 1, rfPwrDefault, 200)
         self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power", "counter_slider", float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._rfPwr_win, 1, 0, 1, 4)
+        self.top_grid_layout.addWidget(self._rfPwr_win, 1, 5, 1, 4)
+        for r in range(1, 2):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(5, 9):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        self._modIndex_range = Range(0, 10, 0.01, modIndexDefault, 200)
+        self._modIndex_win = RangeWidget(self._modIndex_range, self.set_modIndex, "Modulation Index", "counter_slider", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._modIndex_win, 1, 0, 1, 4)
         for r in range(1, 2):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 4):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._cf_range = Range(50, 2100, 0.01, cfDefault, 200)
-        self._cf_win = RangeWidget(self._cf_range, self.set_cf, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._cf_win, 0, 0, 1, 5)
+        self._centerFreq_range = Range(50, 2200, 0.01, cfDefault, 200)
+        self._centerFreq_win = RangeWidget(self._centerFreq_range, self.set_centerFreq, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._centerFreq_win, 0, 5, 1, 3)
         for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 5):
+        for c in range(5, 8):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._alphaVal_range = Range(0.01, 1, 0.01, alphaDefault, 200)
-        self._alphaVal_win = RangeWidget(self._alphaVal_range, self.set_alphaVal, "RRC Alpha Value", "counter", float, QtCore.Qt.Horizontal)
-        self.top_grid_layout.addWidget(self._alphaVal_win, 2, 8, 1, 2)
+        # Create the options list
+        self._carrier_options = [0, 1]
+        # Create the labels list
+        self._carrier_labels = ['Suppressed', 'Full']
+        # Create the combo box
+        # Create the radio buttons
+        self._carrier_group_box = Qt.QGroupBox("Carrier Condition" + ": ")
+        self._carrier_box = Qt.QHBoxLayout()
+        class variable_chooser_button_group(Qt.QButtonGroup):
+            def __init__(self, parent=None):
+                Qt.QButtonGroup.__init__(self, parent)
+            @pyqtSlot(int)
+            def updateButtonChecked(self, button_id):
+                self.button(button_id).setChecked(True)
+        self._carrier_button_group = variable_chooser_button_group()
+        self._carrier_group_box.setLayout(self._carrier_box)
+        for i, _label in enumerate(self._carrier_labels):
+            radio_button = Qt.QRadioButton(_label)
+            self._carrier_box.addWidget(radio_button)
+            self._carrier_button_group.addButton(radio_button, i)
+        self._carrier_callback = lambda i: Qt.QMetaObject.invokeMethod(self._carrier_button_group, "updateButtonChecked", Qt.Q_ARG("int", self._carrier_options.index(i)))
+        self._carrier_callback(self.carrier)
+        self._carrier_button_group.buttonClicked[int].connect(
+            lambda i: self.set_carrier(self._carrier_options[i]))
+        self.top_grid_layout.addWidget(self._carrier_group_box, 2, 0, 1, 4)
         for r in range(2, 3):
             self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(8, 10):
+        for c in range(0, 4):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._actualSymRate_tool_bar = Qt.QToolBar(self)
+        self._usrpNum_tool_bar = Qt.QToolBar(self)
 
         if None:
-            self._actualSymRate_formatter = None
+            self._usrpNum_formatter = None
         else:
-            self._actualSymRate_formatter = lambda x: eng_notation.num_to_str(x)
+            self._usrpNum_formatter = lambda x: str(x)
 
-        self._actualSymRate_tool_bar.addWidget(Qt.QLabel("Actual Symbol Rate (kHz): "))
-        self._actualSymRate_label = Qt.QLabel(str(self._actualSymRate_formatter(self.actualSymRate)))
-        self._actualSymRate_tool_bar.addWidget(self._actualSymRate_label)
-        self.top_grid_layout.addWidget(self._actualSymRate_tool_bar, 2, 3, 1, 3)
-        for r in range(2, 3):
+        self._usrpNum_tool_bar.addWidget(Qt.QLabel("USRP # "))
+        self._usrpNum_label = Qt.QLabel(str(self._usrpNum_formatter(self.usrpNum)))
+        self._usrpNum_tool_bar.addWidget(self._usrpNum_label)
+        self.top_grid_layout.addWidget(self._usrpNum_tool_bar, 0, 0, 1, 1)
+        for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(3, 6):
+        for c in range(0, 1):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.uhd_usrp_sink_0 = uhd.usrp_sink(
             ",".join(('addr='+outputIpAddr, '')),
@@ -355,13 +417,23 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
         self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
 
-        self.uhd_usrp_sink_0.set_center_freq(cf*1e6, 0)
+        self.uhd_usrp_sink_0.set_center_freq(centerFreq*1e6, 0)
         self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
         self.uhd_usrp_sink_0.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        self.rational_resampler_xxx_1 = filter.rational_resampler_ccc(
+                interpolation=1,
+                decimation=10,
+                taps=[],
+                fractional_bw=0)
+        self.rational_resampler_xxx_0 = filter.rational_resampler_ccf(
+                interpolation=250,
+                decimation=3,
+                taps=[],
+                fractional_bw=0)
         self.qtgui_time_sink_x_0 = qtgui.time_sink_c(
-            5000, #size
+            25000, #size
             samp_rate, #samp_rate
-            'IQ Time-Domain', #name
+            'Baseband Time Domain', #name
             1, #number of inputs
             None # parent
         )
@@ -373,7 +445,7 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self.qtgui_time_sink_x_0.enable_tags(True)
         self.qtgui_time_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
         self.qtgui_time_sink_x_0.enable_autoscale(False)
-        self.qtgui_time_sink_x_0.enable_grid(False)
+        self.qtgui_time_sink_x_0.enable_grid(True)
         self.qtgui_time_sink_x_0.enable_axis_labels(True)
         self.qtgui_time_sink_x_0.enable_control_panel(False)
         self.qtgui_time_sink_x_0.enable_stem_plot(False)
@@ -408,27 +480,27 @@ class pskGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_time_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_time_sink_x_0_win = sip.wrapinstance(self.qtgui_time_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 3, 0, 5, 7)
-        for r in range(3, 8):
+        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 4, 0, 5, 7)
+        for r in range(4, 9):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 7):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.qtgui_freq_sink_x_0 = qtgui.freq_sink_c(
             4096, #size
             window.WIN_BLACKMAN_hARRIS, #wintype
-            cf*1e6, #fc
-            samp_rate, #bw
-            'RF Spectrum', #name
+            centerFreq*1e6, #fc
+            samp_rate/10, #bw
+            'Modulated Spectrum', #name
             1,
             None # parent
         )
         self.qtgui_freq_sink_x_0.set_update_time(0.10)
-        self.qtgui_freq_sink_x_0.set_y_axis(-120, -20)
+        self.qtgui_freq_sink_x_0.set_y_axis(-140, 10)
         self.qtgui_freq_sink_x_0.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.qtgui_freq_sink_x_0.enable_autoscale(False)
         self.qtgui_freq_sink_x_0.enable_grid(True)
-        self.qtgui_freq_sink_x_0.set_fft_average(0.1)
+        self.qtgui_freq_sink_x_0.set_fft_average(1.0)
         self.qtgui_freq_sink_x_0.enable_axis_labels(True)
         self.qtgui_freq_sink_x_0.enable_control_panel(False)
         self.qtgui_freq_sink_x_0.set_fft_window_normalized(False)
@@ -455,14 +527,14 @@ class pskGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_freq_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_freq_sink_x_0_win = sip.wrapinstance(self.qtgui_freq_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 8, 0, 5, 10)
-        for r in range(8, 13):
+        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 9, 0, 5, 10)
+        for r in range(9, 14):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.qtgui_const_sink_x_0 = qtgui.const_sink_c(
-            4000, #size
-            'RF Constellation', #name
+            2500, #size
+            'IQ Polar Plot', #name
             1, #number of inputs
             None # parent
         )
@@ -501,8 +573,8 @@ class pskGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_const_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_const_sink_x_0_win = sip.wrapinstance(self.qtgui_const_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 3, 7, 5, 3)
-        for r in range(3, 8):
+        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 4, 7, 5, 3)
+        for r in range(4, 9):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(7, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -516,89 +588,67 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self._modName_tool_bar.addWidget(Qt.QLabel("Modulation: "))
         self._modName_label = Qt.QLabel(str(self._modName_formatter(self.modName)))
         self._modName_tool_bar.addWidget(self._modName_label)
-        self.top_grid_layout.addWidget(self._modName_tool_bar, 0, 5, 1, 2)
+        self.top_grid_layout.addWidget(self._modName_tool_bar, 0, 1, 1, 2)
         for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(5, 7):
+        for c in range(1, 3):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.filter_fft_rrc_filter_0 = filter.fft_filter_ccc(1, firdes.root_raised_cosine(1, samp_rate, actualSymRate*1000, alphaVal, int(11*sps)), 1)
-        self.digital_glfsr_source_x_0 = digital.glfsr_source_b(31, True, 0b1100000000010000000000010000000, 1001)
-        self.blocks_uchar_to_float_0 = blocks.uchar_to_float()
-        self.blocks_selector_0 = blocks.selector(gr.sizeof_gr_complex*1,int(rrcOption),0)
-        self.blocks_selector_0.set_enabled(True)
-        self.blocks_repeat_0 = blocks.repeat(gr.sizeof_float*1, int(samp_rate/symRate/1000))
-        self.blocks_pack_k_bits_bb_0 = blocks.pack_k_bits_bb(bitsPerSym)
-        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(10**((rfPwr<=-50)*(rfPwr+50)/20)*0.95)
-        self.blocks_multiply_const_vxx_1 = blocks.multiply_const_cc(0.9*np.exp(1j*pi/(2**(bitsPerSym-0))))
-        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(1/np.sqrt(2))
-        self._bitRate_tool_bar = Qt.QToolBar(self)
-
-        if None:
-            self._bitRate_formatter = None
-        else:
-            self._bitRate_formatter = lambda x: eng_notation.num_to_str(x)
-
-        self._bitRate_tool_bar.addWidget(Qt.QLabel("Bit Rate (kHz): "))
-        self._bitRate_label = Qt.QLabel(str(self._bitRate_formatter(self.bitRate)))
-        self._bitRate_tool_bar.addWidget(self._bitRate_label)
-        self.top_grid_layout.addWidget(self._bitRate_tool_bar, 2, 6, 1, 2)
-        for r in range(2, 3):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(6, 8):
-            self.top_grid_layout.setColumnStretch(c, 1)
-        self.analog_phase_modulator_fc_0 = analog.phase_modulator_fc(2*pi/(2**bitsPerSym))
+        self.hilbert_fc_0 = filter.hilbert_fc(500, window.WIN_HAMMING, 6.76)
+        self.blocks_selector_2 = blocks.selector(gr.sizeof_gr_complex*1,sideband,0)
+        self.blocks_selector_2.set_enabled(True)
+        self.blocks_multiply_const_vxx_3 = blocks.multiply_const_cc(0.45)
+        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_ff(modIndex)
+        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff(sidebandType)
+        self.blocks_float_to_complex_0_0 = blocks.float_to_complex(1)
+        self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
+        self.blocks_complex_to_float_0 = blocks.complex_to_float(1)
+        self.blocks_add_const_vxx_0 = blocks.add_const_ff(carrier)
+        self.audio_source_0 = audio.source(24000, '', True)
 
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.analog_phase_modulator_fc_0, 0), (self.blocks_selector_0, 0))
-        self.connect((self.analog_phase_modulator_fc_0, 0), (self.filter_fft_rrc_filter_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_multiply_const_vxx_2, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.qtgui_freq_sink_x_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.qtgui_time_sink_x_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.blocks_multiply_const_vxx_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.qtgui_const_sink_x_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_2, 0), (self.uhd_usrp_sink_0, 0))
-        self.connect((self.blocks_pack_k_bits_bb_0, 0), (self.blocks_uchar_to_float_0, 0))
-        self.connect((self.blocks_repeat_0, 0), (self.analog_phase_modulator_fc_0, 0))
-        self.connect((self.blocks_selector_0, 0), (self.blocks_multiply_const_vxx_1, 0))
-        self.connect((self.blocks_uchar_to_float_0, 0), (self.blocks_repeat_0, 0))
-        self.connect((self.digital_glfsr_source_x_0, 0), (self.blocks_pack_k_bits_bb_0, 0))
-        self.connect((self.filter_fft_rrc_filter_0, 0), (self.blocks_selector_0, 1))
+        self.connect((self.audio_source_0, 0), (self.blocks_multiply_const_vxx_2, 0))
+        self.connect((self.blocks_add_const_vxx_0, 0), (self.blocks_float_to_complex_0, 0))
+        self.connect((self.blocks_add_const_vxx_0, 0), (self.hilbert_fc_0, 0))
+        self.connect((self.blocks_complex_to_float_0, 0), (self.blocks_float_to_complex_0_0, 0))
+        self.connect((self.blocks_complex_to_float_0, 1), (self.blocks_multiply_const_vxx_0, 0))
+        self.connect((self.blocks_float_to_complex_0, 0), (self.blocks_selector_2, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_const_sink_x_0, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_time_sink_x_0, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.rational_resampler_xxx_1, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.uhd_usrp_sink_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_float_to_complex_0_0, 1))
+        self.connect((self.blocks_multiply_const_vxx_2, 0), (self.blocks_add_const_vxx_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_3, 0), (self.blocks_complex_to_float_0, 0))
+        self.connect((self.blocks_selector_2, 0), (self.rational_resampler_xxx_0, 0))
+        self.connect((self.hilbert_fc_0, 0), (self.blocks_selector_2, 1))
+        self.connect((self.rational_resampler_xxx_0, 0), (self.blocks_multiply_const_vxx_3, 0))
+        self.connect((self.rational_resampler_xxx_1, 0), (self.qtgui_freq_sink_x_0, 0))
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("GNU Radio", "pskGenerator")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
 
         event.accept()
 
-    def get_symRate(self):
-        return self.symRate
+    def get_sidebandTypeDefault(self):
+        return self.sidebandTypeDefault
 
-    def set_symRate(self, symRate):
-        self.symRate = symRate
-        self.set_actualSymRate(self.samp_rate/int(self.samp_rate/self.symRate/1000)/1000)
-        self.set_bitRate(self.samp_rate/int(self.samp_rate/self.symRate/1000)/1000*self.bitsPerSym)
-        Qt.QMetaObject.invokeMethod(self._symRate_line_edit, "setText", Qt.Q_ARG("QString", eng_notation.num_to_str(self.symRate)))
-        self.blocks_repeat_0.set_interpolation(int(self.samp_rate/self.symRate/1000))
+    def set_sidebandTypeDefault(self, sidebandTypeDefault):
+        self.sidebandTypeDefault = sidebandTypeDefault
+        self.set_sidebandType(self.sidebandTypeDefault)
 
-    def get_samp_rate(self):
-        return self.samp_rate
+    def get_sidebandDefault(self):
+        return self.sidebandDefault
 
-    def set_samp_rate(self, samp_rate):
-        self.samp_rate = samp_rate
-        self.set_actualSymRate(self.samp_rate/int(self.samp_rate/self.symRate/1000)/1000)
-        self.set_bitRate(self.samp_rate/int(self.samp_rate/self.symRate/1000)/1000*self.bitsPerSym)
-        self.set_sps(self.samp_rate/self.actualSymRate/1000)
-        self.blocks_repeat_0.set_interpolation(int(self.samp_rate/self.symRate/1000))
-        self.filter_fft_rrc_filter_0.set_taps(firdes.root_raised_cosine(1, self.samp_rate, self.actualSymRate*1000, self.alphaVal, int(11*self.sps)))
-        self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
-        self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
-        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
+    def set_sidebandDefault(self, sidebandDefault):
+        self.sidebandDefault = sidebandDefault
+        self.set_sideband(self.sidebandDefault)
 
     def get_rfPwrDefault(self):
         return self.rfPwrDefault
@@ -607,59 +657,64 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self.rfPwrDefault = rfPwrDefault
         self.set_rfPwr(self.rfPwrDefault)
 
+    def get_modIndexDefault(self):
+        return self.modIndexDefault
+
+    def set_modIndexDefault(self, modIndexDefault):
+        self.modIndexDefault = modIndexDefault
+        self.set_modIndex(self.modIndexDefault)
+
     def get_cfDefault(self):
         return self.cfDefault
 
     def set_cfDefault(self, cfDefault):
         self.cfDefault = cfDefault
-        self.set_cf(self.cfDefault)
+        self.set_centerFreq(self.cfDefault)
 
-    def get_bitsPerSym(self):
-        return self.bitsPerSym
+    def get_carrierDefault(self):
+        return self.carrierDefault
 
-    def set_bitsPerSym(self, bitsPerSym):
-        self.bitsPerSym = bitsPerSym
-        self.set_bitRate(self.samp_rate/int(self.samp_rate/self.symRate/1000)/1000*self.bitsPerSym)
-        self.analog_phase_modulator_fc_0.set_sensitivity(2*pi/(2**self.bitsPerSym))
-        self.blocks_multiply_const_vxx_1.set_k(0.9*np.exp(1j*pi/(2**(self.bitsPerSym-0))))
+    def set_carrierDefault(self, carrierDefault):
+        self.carrierDefault = carrierDefault
+        self.set_carrier(self.carrierDefault)
 
-    def get_alphaDefault(self):
-        return self.alphaDefault
+    def get_usrpNum(self):
+        return self.usrpNum
 
-    def set_alphaDefault(self, alphaDefault):
-        self.alphaDefault = alphaDefault
-        self.set_alphaVal(self.alphaDefault)
+    def set_usrpNum(self, usrpNum):
+        self.usrpNum = usrpNum
+        Qt.QMetaObject.invokeMethod(self._usrpNum_label, "setText", Qt.Q_ARG("QString", str(self._usrpNum_formatter(self.usrpNum))))
 
-    def get_actualSymRate(self):
-        return self.actualSymRate
+    def get_sidebandType(self):
+        return self.sidebandType
 
-    def set_actualSymRate(self, actualSymRate):
-        self.actualSymRate = actualSymRate
-        Qt.QMetaObject.invokeMethod(self._actualSymRate_label, "setText", Qt.Q_ARG("QString", str(self._actualSymRate_formatter(self.actualSymRate))))
-        self.set_sps(self.samp_rate/self.actualSymRate/1000)
-        self.filter_fft_rrc_filter_0.set_taps(firdes.root_raised_cosine(1, self.samp_rate, self.actualSymRate*1000, self.alphaVal, int(11*self.sps)))
+    def set_sidebandType(self, sidebandType):
+        self.sidebandType = sidebandType
+        self._sidebandType_callback(self.sidebandType)
+        self.blocks_multiply_const_vxx_0.set_k(self.sidebandType)
 
-    def get_sps(self):
-        return self.sps
+    def get_sideband(self):
+        return self.sideband
 
-    def set_sps(self, sps):
-        self.sps = sps
-        self.filter_fft_rrc_filter_0.set_taps(firdes.root_raised_cosine(1, self.samp_rate, self.actualSymRate*1000, self.alphaVal, int(11*self.sps)))
+    def set_sideband(self, sideband):
+        self.sideband = sideband
+        self._sideband_callback(self.sideband)
+        self.blocks_selector_2.set_input_index(self.sideband)
 
-    def get_rrcOption(self):
-        return self.rrcOption
+    def get_samp_rate(self):
+        return self.samp_rate
 
-    def set_rrcOption(self, rrcOption):
-        self.rrcOption = rrcOption
-        self._rrcOption_callback(self.rrcOption)
-        self.blocks_selector_0.set_input_index(int(self.rrcOption))
+    def set_samp_rate(self, samp_rate):
+        self.samp_rate = samp_rate
+        self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
+        self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
+        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
 
     def get_rfPwr(self):
         return self.rfPwr
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        self.blocks_multiply_const_vxx_2.set_k(10**((self.rfPwr<=-50)*(self.rfPwr+50)/20)*0.95)
         self.uhd_usrp_sink_0.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
 
     def get_outputIpAddr(self):
@@ -675,32 +730,40 @@ class pskGenerator(gr.top_block, Qt.QWidget):
         self.modName = modName
         Qt.QMetaObject.invokeMethod(self._modName_label, "setText", Qt.Q_ARG("QString", str(self._modName_formatter(self.modName))))
 
-    def get_cf(self):
-        return self.cf
+    def get_modIndex(self):
+        return self.modIndex
 
-    def set_cf(self, cf):
-        self.cf = cf
-        self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
-        self.uhd_usrp_sink_0.set_center_freq(self.cf*1e6, 0)
+    def set_modIndex(self, modIndex):
+        self.modIndex = modIndex
+        self.blocks_multiply_const_vxx_2.set_k(self.modIndex)
 
-    def get_bitRate(self):
-        return self.bitRate
+    def get_inputSelectDefault(self):
+        return self.inputSelectDefault
 
-    def set_bitRate(self, bitRate):
-        self.bitRate = bitRate
-        Qt.QMetaObject.invokeMethod(self._bitRate_label, "setText", Qt.Q_ARG("QString", str(self._bitRate_formatter(self.bitRate))))
+    def set_inputSelectDefault(self, inputSelectDefault):
+        self.inputSelectDefault = inputSelectDefault
 
-    def get_alphaVal(self):
-        return self.alphaVal
+    def get_centerFreq(self):
+        return self.centerFreq
 
-    def set_alphaVal(self, alphaVal):
-        self.alphaVal = alphaVal
-        self.filter_fft_rrc_filter_0.set_taps(firdes.root_raised_cosine(1, self.samp_rate, self.actualSymRate*1000, self.alphaVal, int(11*self.sps)))
+    def set_centerFreq(self, centerFreq):
+        self.centerFreq = centerFreq
+        self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
+        self.uhd_usrp_sink_0.set_center_freq(self.centerFreq*1e6, 0)
+
+    def get_carrier(self):
+        return self.carrier
+
+    def set_carrier(self, carrier):
+        self.carrier = carrier
+        self._carrier_callback(self.carrier)
+        self.blocks_add_const_vxx_0.set_k(self.carrier)
 
 
 
 
-def main(top_block_cls=pskGenerator, options=None, app=None, config_values=None):
+def main(top_block_cls=amAudioInternalGeneratorLive, options=None, app=None, config_values=None):
+
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')
@@ -708,15 +771,12 @@ def main(top_block_cls=pskGenerator, options=None, app=None, config_values=None)
         app = Qt.QApplication(sys.argv)
 
     tb = top_block_cls(config_values)
-
     tb.start()
-
     tb.show()
 
     def sig_handler(sig=None, frame=None):
         tb.stop()
         tb.wait()
-
         Qt.QApplication.quit()
 
     signal.signal(signal.SIGINT, sig_handler)

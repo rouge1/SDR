@@ -47,7 +47,7 @@ from PyQt5.QtCore import pyqtSlot # type: ignore
 import sip # type: ignore
 
 # Local imports
-from utils import apply_dark_theme
+from apps.utils import apply_dark_theme
 
 
 class ConfigDialog(Qt.QDialog):
