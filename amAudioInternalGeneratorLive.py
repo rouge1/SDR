@@ -43,12 +43,18 @@ from PyQt5 import QtCore
 from math import pi
 from utils import apply_dark_theme 
 from gnuradio import qtgui
+import os
+import json
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AM Audio Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
+        
+        # Add config file path setup
+        self.config_dir = "config"
+        self.config_file = os.path.join(self.config_dir, "amAudioInternalGeneratorLive_config.json")
         
         # Read USRP config
         try:
@@ -65,6 +71,9 @@ class ConfigDialog(Qt.QDialog):
         self.create_power_control()
         self.create_modulation_controls()
         
+        # Load saved configuration
+        self.load_config()
+        
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
             Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
@@ -74,8 +83,7 @@ class ConfigDialog(Qt.QDialog):
 
         # Apply dark theme
         apply_dark_theme(self)
-
-
+        
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()
         for i in range(self.N):
@@ -135,6 +143,42 @@ class ConfigDialog(Qt.QDialog):
 
     def toggle_sideband_type(self, index):
         self.sideband_type_widget.setVisible(index == 1)
+
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                    
+                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.pwr_slider.setValue(config.get('power_level', -50))
+                self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
+                self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
+                self.sideband_type_combo.setCurrentIndex(config.get('sideband_type_index', 0))
+            except:
+                # If loading fails, keep default values
+                pass
+        else:
+            # Create config directory if it doesn't exist
+            os.makedirs(self.config_dir, exist_ok=True)
+
+    def save_config(self):
+        config = {
+            'usrp_index': self.usrp_combo.currentIndex(),
+            'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
+            'carrier_index': self.carrier_combo.currentIndex(),
+            'sideband_index': self.sideband_combo.currentIndex(),
+            'sideband_type_index': self.sideband_type_combo.currentIndex()
+        }
+        
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+
+    def accept(self):
+        self.save_config()
+        super().accept()
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
