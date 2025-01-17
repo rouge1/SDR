@@ -149,23 +149,28 @@ class GNURadioLauncher(QMainWindow):
             # Load or create configuration dialog
             config_dialog = module.ConfigDialog()
             
-            # Load saved dialog position from shared config
+            # Load saved dialog position
             dialog_config_file = os.path.join(self.config_dir, "dialog_position.json")
+            default_pos = self.pos() + QPoint(50, 50)  # Default offset from main window
+
             try:
                 if os.path.exists(dialog_config_file):
                     with open(dialog_config_file, 'r') as f:
                         position = json.load(f)
                         screen = self.app.primaryScreen().geometry()
-                        if (0 <= position['x'] <= screen.width() - config_dialog.width() and 
-                            0 <= position['y'] <= screen.height() - config_dialog.height()):
-                            config_dialog.move(QPoint(position['x'], position['y']))
-                        else:
-                            config_dialog.move(self.pos() + QPoint(50, 50))  # Offset from main window
+                        
+                        # Check if position is within screen bounds
+                        valid_position = (
+                            0 <= position['x'] <= screen.width() - config_dialog.width() and 
+                            0 <= position['y'] <= screen.height() - config_dialog.height()
+                        )
+                        
+                        config_dialog.move(QPoint(position['x'], position['y']) if valid_position else default_pos)
                 else:
-                    config_dialog.move(self.pos() + QPoint(50, 50))  # Offset from main window
+                    config_dialog.move(default_pos)
             except Exception as e:
                 print(f"Error loading dialog position: {e}")
-                config_dialog.move(self.pos() + QPoint(50, 50))  # Offset from main window
+                config_dialog.move(default_pos)
 
             # Show dialog and wait for user response
             result = config_dialog.exec_()
