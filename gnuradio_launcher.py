@@ -8,20 +8,31 @@ import json
 import importlib.util
 
 # Third party imports
-from PyQt5 import Qt # type: ignore
-from PyQt5.QtWidgets import ( # type: ignore
+from PyQt5.QtWidgets import (
     QMainWindow, 
     QWidget, 
     QGridLayout, 
     QPushButton, 
     QLabel, 
-    QApplication
+    QApplication,
+    QFileDialog,
+    QLineEdit,
+    QListWidget,
+    QVBoxLayout,
+    QDialog,
+    QHBoxLayout,
+    QMessageBox
 )
-from PyQt5.QtCore import Qt as QtCore, QSize, QPoint # type: ignore
-from PyQt5.QtGui import QIcon # type: ignore
+from PyQt5.QtCore import Qt, QSize, QPoint
+from PyQt5.QtGui import QIcon, QPixmap, QFont
+
+# Add PIL import at the top with other imports
+from PIL import Image, ImageEnhance
+import io
 
 # Local imports 
-from apps.utils import apply_launcher_theme
+from apps.utils import apply_launcher_theme, apply_dark_theme
+from apps.settings_dialog import SettingsDialog
 
 class GNURadioLauncher(QMainWindow):
     def __init__(self, app, parent=None):
@@ -33,6 +44,7 @@ class GNURadioLauncher(QMainWindow):
         # Create config directory if it doesn't exist
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "window_position.json")
+        self.settings_file = os.path.join(self.config_dir, "window_settings.json")
         os.makedirs(self.config_dir, exist_ok=True)
         
         # Create main widget and layout
@@ -40,10 +52,48 @@ class GNURadioLauncher(QMainWindow):
         self.setCentralWidget(main_widget)
         grid = QGridLayout(main_widget)
         
+        # Add settings button in top right with transparent background
+        settings_btn = QPushButton()
+        icon_path = "icons/settings.png"
+        
+        # Process image with PIL
+        img = Image.open(icon_path)
+        img = img.convert("RGBA")
+        
+        # Add brightness enhancement
+        enhancer = ImageEnhance.Brightness(img)
+        img = enhancer.enhance(1.1)  # Adjust this value to make it brighter/darker
+        
+        datas = img.getdata()
+        new_data = []
+        threshold = 100
+        
+        for item in datas:
+            if item[0] >= threshold and item[1] >= threshold and item[2] >= threshold:
+                new_data.append((255, 255, 255, 0))
+            else:
+                new_data.append(item)
+        
+        img.putdata(new_data)
+        
+        # Convert PIL image to QPixmap
+        buffer = io.BytesIO()
+        img.save(buffer, "PNG")
+        buffer.seek(0)
+        pixmap = QPixmap()
+        pixmap.loadFromData(buffer.getvalue())
+        
+        icon = QIcon(pixmap)
+        settings_btn.setIcon(icon)
+        settings_btn.setFixedSize(40, 40)
+        settings_btn.setIconSize(QSize(40, 40))
+        settings_btn.clicked.connect(self.show_settings)
+        grid.addWidget(settings_btn, 0, 4, Qt.AlignRight | Qt.AlignTop)
+        
         # Add title
         title = QLabel("GNU Radio Applications")
-        title.setFont(Qt.QFont('Arial', 20))
-        title.setAlignment(QtCore.AlignCenter)
+        title.setFont(QFont('Arial', 20))
+        title.setAlignment(Qt.AlignCenter)
         grid.addWidget(title, 0, 0, 1, 3)
         
         # Add application buttons
@@ -105,36 +155,44 @@ class GNURadioLauncher(QMainWindow):
             self.center_window()
 
     def create_app_button(self, name, module_name, icon_name, grid, row, col):
-        # Create container widget for button and label
-        container = QWidget()
-        container_layout = Qt.QVBoxLayout(container)
-        container_layout.setSpacing(5)
-        container_layout.setAlignment(QtCore.AlignCenter)
-        
-        # Create square button
+        # Create button
         btn = QPushButton()
         size = 200  # Square size
         btn.setFixedSize(size, size)
-        btn.setFont(Qt.QFont('Arial', 12))
         
-        # Set the button icon to fill the button
+        # Create a widget to hold the icon and text vertically
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setSpacing(5)
+        layout.setAlignment(Qt.AlignCenter)
+        
+        # Create label for icon
+        icon_label = QLabel()
         icon_path = f"icons/{icon_name}"
-        btn.setIcon(QIcon(icon_path))
-        btn.setIconSize(QSize(size - 20, size - 20))
+        icon = QIcon(icon_path)
+        pixmap = icon.pixmap(QSize(size - 0, size - 0))  # Slightly smaller to accommodate text
+        icon_label.setPixmap(pixmap)
+        icon_label.setAlignment(Qt.AlignCenter)
         
-        # Create label below button
-        label = QLabel(name)
-        label.setFont(Qt.QFont('Arial', 12))
-        label.setAlignment(QtCore.AlignCenter)
-        label.setWordWrap(True)
-        label.setFixedWidth(size)
+        # Create label for text
+        text_label = QLabel(name)
+        text_label.setFont(QFont('Arial', 11))
+        text_label.setAlignment(Qt.AlignCenter)
+        text_label.setWordWrap(True)
         
-        # Add widgets to container
-        container_layout.addWidget(btn)
-        container_layout.addWidget(label)
+        # Add widgets to layout
+        layout.addWidget(icon_label)
+        layout.addWidget(text_label)
         
+        # Set the content widget as the button's layout
+        btn.setLayout(layout)
+        
+        # Connect click event
         btn.clicked.connect(lambda: self.launch_application(module_name))
-        grid.addWidget(container, row, col, QtCore.AlignCenter)
+        
+        # Add button to grid
+        grid.addWidget(btn, row, col, Qt.AlignCenter)
+
         
     def launch_application(self, module_name):
         try:
@@ -193,7 +251,7 @@ class GNURadioLauncher(QMainWindow):
             except Exception as e:
                 print(f"Error saving dialog position: {e}")
 
-            if result == Qt.QDialog.Accepted:
+            if result == QDialog.Accepted:
                 # Get configuration values
                 config_values = config_dialog.get_values()
                 
@@ -218,13 +276,17 @@ class GNURadioLauncher(QMainWindow):
             # If user clicks Cancel, launcher stays visible and nothing happens
             
         except Exception as e:
-            error_dialog = Qt.QMessageBox()
-            error_dialog.setIcon(Qt.QMessageBox.Critical)
+            error_dialog = QMessageBox()
+            error_dialog.setIcon(QMessageBox.Critical)
             error_dialog.setText(f"Error launching {module_name}")
             error_dialog.setInformativeText(str(e))
             error_dialog.setWindowTitle("Error")
             error_dialog.exec_()
 
+    def show_settings(self):
+        settings_dialog = SettingsDialog(self.settings_file, parent=self)
+        apply_dark_theme(settings_dialog)
+        settings_dialog.exec_()
 
     def closeEvent(self, event):
         """Save window position when closing the application"""
@@ -232,9 +294,9 @@ class GNURadioLauncher(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == '__main__':
-    app = Qt.QApplication.instance()
+    app = QApplication.instance()
     if not app:
-        app = Qt.QApplication(sys.argv)
+        app = QApplication(sys.argv)
     
     launcher = GNURadioLauncher(app)
     launcher.show()
