@@ -112,13 +112,22 @@ def apply_dark_theme(widget):
     widget.setStyleSheet(stylesheet)
 
 def read_settings():
-    """Read settings from window_settings.json"""
+    """Read settings from window_settings.json and ensure required fields exist"""
     settings_file = os.path.join("config", "window_settings.json")
+    settings = {'media_directory': '', 'ip_addresses': []}
+    
     try:
         if os.path.exists(settings_file):
-            with open(settings_file, 'r') as f:
-                settings = json.load(f)
-                return settings
+            with open(settings_file) as f:
+                saved_settings = json.load(f)
+                settings.update(saved_settings)
+                
+                # If any defaults were missing, write them back
+                if 'media_directory' not in saved_settings or 'ip_addresses' not in saved_settings:
+                    with open(settings_file, 'w') as f:
+                        json.dump(settings, f, indent=4)
+                        
     except Exception as e:
-        print(f"Error reading settings: {e}")
-    return {'media_directory': '', 'ip_addresses': ['192.168.10.2']}
+        print(f"Error reading settings:", e)
+        
+    return settings

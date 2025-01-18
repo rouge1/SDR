@@ -61,6 +61,12 @@ class ConfigDialog(Qt.QDialog):
         self.media_dir = settings['media_directory']
         self.N = len(self.ipList)
         
+        # Add OK/Cancel buttons
+        self.button_box = Qt.QDialogButtonBox(
+            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        
         # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
@@ -68,23 +74,33 @@ class ConfigDialog(Qt.QDialog):
         self.create_video_controls()
         self.create_audio_controls()
         
+        self.layout.addWidget(self.button_box)
+        
         # Load saved configuration
         self.load_config()
         
-        # Add OK/Cancel buttons
-        self.button_box = Qt.QDialogButtonBox(
-            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        self.layout.addWidget(self.button_box)
-
         # Apply dark theme
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()
-        for i in range(self.N):
-            self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        
+        if not self.ipList:  # If list is empty
+            self.usrp_combo.addItem("IP addr missing - Go to Settings")
+            ok_button.setEnabled(False)  # Disable the OK button
+            
+            # Add opacity effect to dim the button
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)  # 30% opacity
+            ok_button.setGraphicsEffect(opacity_effect)
+        else:
+            for i in range(self.N):
+                self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
+            ok_button.setEnabled(True)
+            # Clear any existing opacity effect
+            ok_button.setGraphicsEffect(None)
+                    
         self.layout.addWidget(Qt.QLabel("Select USRP:"))
         self.layout.addWidget(self.usrp_combo)
 
@@ -120,7 +136,7 @@ class ConfigDialog(Qt.QDialog):
         
         # Check if media directory exists
         if not os.path.exists(self.media_dir):
-            self.video_combo.addItem("Error - Setup Media directory in settings")
+            self.video_combo.addItem("Error - Setup Media directory in Settings")
             self.video_paths = [os.path.join(self.media_dir, "default.flt")]
             self.video_combo.setEnabled(False)
         else:
@@ -146,7 +162,7 @@ class ConfigDialog(Qt.QDialog):
         
         # Check if media directory exists
         if not os.path.exists(self.media_dir):
-            self.audio_combo.addItem("Error - Setup Media directory in settings")
+            self.audio_combo.addItem("Error - Setup Media directory in Settings")
             self.audio_paths = [os.path.join(self.media_dir, "default.wav")]
             self.audio_combo.setEnabled(False)
         else:

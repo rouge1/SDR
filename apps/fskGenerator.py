@@ -63,29 +63,45 @@ class ConfigDialog(Qt.QDialog):
         self.ipList = settings['ip_addresses']  # Get all IP addresses
         self.N = len(self.ipList)
             
+        # Add OK/Cancel buttons
+        self.button_box = Qt.QDialogButtonBox(
+            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        
         # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
         self.create_power_control()
         self.create_modulation_controls()
         
+        self.layout.addWidget(self.button_box)
+
         # Load saved configuration
         self.load_config()
-        
-        # Add OK/Cancel buttons
-        self.button_box = Qt.QDialogButtonBox(
-            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        self.layout.addWidget(self.button_box)
 
         # Apply dark theme
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
         self.usrp_combo = Qt.QComboBox()
-        for i in range(self.N):
-            self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        
+        if not self.ipList:  # If list is empty
+            self.usrp_combo.addItem("IP addr missing - Go to Settings")
+            ok_button.setEnabled(False)  # Disable the OK button
+            
+            # Add opacity effect to dim the button
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)  # 30% opacity
+            ok_button.setGraphicsEffect(opacity_effect)
+        else:
+            for i in range(self.N):
+                self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
+            ok_button.setEnabled(True)
+            # Clear any existing opacity effect
+            ok_button.setGraphicsEffect(None)
+                    
         self.layout.addWidget(Qt.QLabel("Select USRP:"))
         self.layout.addWidget(self.usrp_combo)
 
