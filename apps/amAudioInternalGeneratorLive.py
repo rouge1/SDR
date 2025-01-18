@@ -43,7 +43,7 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme
+from apps.utils import apply_dark_theme, read_settings
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -55,15 +55,11 @@ class ConfigDialog(Qt.QDialog):
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "amAudioInternalGeneratorLive_config.json")
         
-        # Read USRP config
-        try:
-            with open("usrpXmit.cfg", "r") as ipFile:
-                self.ipList = ipFile.readlines()
-                self.N = len(self.ipList)
-        except:
-            self.ipList = ["192.168.10.2"]
-            self.N = 1
-            
+        # Read settings from window_settings.json
+        settings = read_settings()
+        self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.N = len(self.ipList)
+        
         # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
@@ -192,15 +188,19 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[ipNum - 1].strip()
+        # Get all existing values
+        values = super().get_values() if hasattr(super(), 'get_values') else {}
         
-        # Calculate sideband values
-        sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0  # 1 for Single, 0 for Double
-        if sidebandDefault == 1:  # Single sideband
+        ipNum = self.usrp_combo.currentIndex() + 1
+        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        mikePort = 2020 + ipNum
+        
+        # Calculate sideband values 
+        sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0
+        if sidebandDefault == 1:
             sidebandTypeDefault = 1 if self.upper_sideband.isChecked() else -1
         else:
-            sidebandTypeDefault = 1  # Default to upper for double sideband
+            sidebandTypeDefault = 1
             
         return {
             'ipNum': ipNum,

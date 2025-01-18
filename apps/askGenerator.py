@@ -40,27 +40,21 @@ from gnuradio.filter import firdes # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme
+from apps.utils import apply_dark_theme, read_settings
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ASK Signal Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
-        
-        # Add config file path setup
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "askGenerator_config.json")
         
-        # Read USRP config
-        try:
-            with open("usrpXmit.cfg", "r") as ipFile:
-                self.ipList = ipFile.readlines()
-                self.N = len(self.ipList)
-        except:
-            self.ipList = ["192.168.10.2"]
-            self.N = 1
-            
+        # Read settings from window_settings.json
+        settings = read_settings()
+        self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.N = len(self.ipList)
+                
         # USRP Selection
         self.create_usrp_selector()
         self.create_frequency_control()
@@ -229,7 +223,7 @@ class ConfigDialog(Qt.QDialog):
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[ipNum - 1].strip()
+        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
         
         # Get bits per symbol and set mod name
         bitsPerSym = self.bits_combo.currentIndex() + 1

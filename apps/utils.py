@@ -1,3 +1,5 @@
+import json
+import os
 from PyQt5 import Qt  #type: ignore
 
 
@@ -108,3 +110,15 @@ def apply_dark_theme(widget):
     }
     """
     widget.setStyleSheet(stylesheet)
+
+def read_settings():
+    """Read settings from window_settings.json"""
+    settings_file = os.path.join("config", "window_settings.json")
+    try:
+        if os.path.exists(settings_file):
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                return settings
+    except Exception as e:
+        print(f"Error reading settings: {e}")
+    return {'media_directory': '', 'ip_addresses': ['192.168.10.2']}

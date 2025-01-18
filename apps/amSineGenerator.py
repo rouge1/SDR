@@ -44,7 +44,7 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme
+from apps.utils import apply_dark_theme, read_settings
 
 
 class ConfigDialog(Qt.QDialog):
@@ -53,17 +53,13 @@ class ConfigDialog(Qt.QDialog):
         self.setWindowTitle("AM Sine Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "amSineGenerator_config.json")  # Changed config filename
+        self.config_file = os.path.join(self.config_dir, "amSineGenerator_config.json")
         
-        # Read USRP IP addresses from file
-        try:
-            with open("usrpXmit.cfg", "r") as ipFile:
-                self.ipList = ipFile.readlines()
-                self.N = len(self.ipList)
-        except:
-            self.ipList = ["192.168.10.2"]
-            self.N = 1
-            
+        # Read settings from window_settings.json
+        settings = read_settings()
+        self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.N = len(self.ipList)
+        
         # Create all the input widgets
         self.create_usrp_selector()
         self.create_frequency_control()
@@ -216,8 +212,11 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
+        # Get all existing values
+        values = super().get_values() if hasattr(super(), 'get_values') else {}
+        
         ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[ipNum - 1].strip()
+        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
         mikePort = 2020 + ipNum
         
         pwr = self.pwr_slider.value()

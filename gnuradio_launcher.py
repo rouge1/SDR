@@ -203,13 +203,13 @@ class GNURadioLauncher(QMainWindow):
         
     def launch_application(self, module_name):
         try:
-            #Import the module
+            # Import the module
             module_path = os.path.join('apps', f"{module_name}.py")
             spec = importlib.util.spec_from_file_location(module_name, module_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
-            # Load or create configuration dialog
+            # Create configuration dialog (no need to pass parameters)
             config_dialog = module.ConfigDialog()
             
             # Load saved dialog position from settings file

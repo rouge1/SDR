@@ -17,6 +17,10 @@ class SettingsDialog(QDialog):
         # Load existing settings
         self.settings = self.load_settings()
         
+        # Ensure ip_addresses exists in settings
+        if 'ip_addresses' not in self.settings:
+            self.settings['ip_addresses'] = []
+            
         layout = QVBoxLayout(self)
         
         # Media Directory Section
@@ -44,7 +48,7 @@ class SettingsDialog(QDialog):
         
         # IP list
         self.ip_list = QListWidget()
-        self.ip_list.addItems(self.settings.get('ip_addresses', []))
+        self.ip_list.addItems(self.settings['ip_addresses'])  # Now safe since we initialized it
         
         # Remove IP button
         remove_ip_btn = QPushButton("Remove Selected")
@@ -82,11 +86,14 @@ class SettingsDialog(QDialog):
             self.media_path.setText(directory)
     
     def add_ip(self):
-        ip_address = self.ip_input.text()
+        ip_address = self.ip_input.text().strip()
         if self.validate_ip(ip_address):
-            self.ip_list.addItem(ip_address)
-            self.settings['ip_addresses'].append(ip_address)
-            self.ip_input.clear()
+            if ip_address not in self.settings['ip_addresses']:  # Check for duplicates
+                self.ip_list.addItem(ip_address)
+                self.settings['ip_addresses'].append(ip_address)
+                self.ip_input.clear()
+            else:
+                QMessageBox.warning(self, "Duplicate IP", "This IP address is already in the list.")
         else:
             QMessageBox.warning(self, "Invalid IP", "The IP address entered is invalid.")
     
@@ -109,6 +116,8 @@ class SettingsDialog(QDialog):
     
     def remove_ip(self):
         for item in self.ip_list.selectedItems():
+            ip_address = item.text()
+            self.settings['ip_addresses'].remove(ip_address)  # Remove from settings
             self.ip_list.takeItem(self.ip_list.row(item))
     
     def load_settings(self):
@@ -118,7 +127,7 @@ class SettingsDialog(QDialog):
                     return json.load(f)
         except Exception as e:
             print(f"Error loading settings: {e}")
-        return {'media_directory': '', 'ip_addresses': []}
+        return {'media_directory': '', 'ip_addresses': []}  # Initialize with empty list
     
     def accept(self):
         # Load existing settings first to preserve other data
@@ -133,8 +142,7 @@ class SettingsDialog(QDialog):
         # Update only the settings managed by this dialog
         existing_settings.update({
             'media_directory': self.media_path.text(),
-            'ip_addresses': [self.ip_list.item(i).text() 
-                           for i in range(self.ip_list.count())]
+            'ip_addresses': self.settings['ip_addresses']  # Use maintained list instead of rebuilding
         })
 
         # Save the combined settings

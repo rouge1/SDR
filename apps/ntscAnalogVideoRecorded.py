@@ -45,27 +45,22 @@ from PyQt5.QtCore import pyqtSlot #type: ignore
 import sip #type: ignore
 
 # Local imports 
-from apps.utils import apply_dark_theme
+from apps.utils import apply_dark_theme, read_settings
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("NTSC Analog Video Configuration")
         self.layout = Qt.QVBoxLayout(self)
-        
-        # Add config file path setup
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "ntscAnalogVideoRecorded_config.json")
         
-        # Read USRP config
-        try:
-            with open("usrpXmit.cfg", "r") as ipFile:
-                self.ipList = ipFile.readlines()
-                self.N = len(self.ipList)
-        except:
-            self.ipList = ["192.168.10.2"]
-            self.N = 1
-            
+        # Read settings from window_settings.json
+        settings = read_settings()
+        self.ipList = settings['ip_addresses']
+        self.media_dir = settings['media_directory']
+        self.N = len(self.ipList)
+        
         # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
@@ -121,41 +116,52 @@ class ConfigDialog(Qt.QDialog):
 
     def create_video_controls(self):
         self.video_combo = Qt.QComboBox()
-        
-        # Scan media directory for .flt files
-        try:
-            video_files = sorted([f for f in os.listdir("media") if f.endswith('.flt')])
-            # Create display names by cleaning up filenames
-            video_names = [os.path.splitext(f)[0].replace('-', ' ') for f in video_files]
-            self.video_paths = [os.path.join("media", f) for f in video_files]
-            self.video_combo.addItems(video_names)
-        except (OSError, FileNotFoundError):
-            # Fallback if directory doesn't exist
-            self.video_paths = ["media/default.flt"]
-            self.video_combo.addItem("No video files found")
-
         self.layout.addWidget(Qt.QLabel("Video File:"))
+        
+        # Check if media directory exists
+        if not os.path.exists(self.media_dir):
+            self.video_combo.addItem("Error - Setup Media directory in settings")
+            self.video_paths = [os.path.join(self.media_dir, "default.flt")]
+            self.video_combo.setEnabled(False)
+        else:
+            # Scan media directory for .flt files
+            video_files = sorted([f for f in os.listdir(self.media_dir) if f.endswith('.flt')])
+            if video_files:
+                # Create display names by cleaning up filenames
+                video_names = [os.path.splitext(f)[0].replace('-', ' ') for f in video_files]
+                self.video_paths = [os.path.join(self.media_dir, f) for f in video_files]
+                self.video_combo.addItems(video_names)
+            else:
+                self.video_combo.addItem("No video files found")
+                self.video_paths = [os.path.join(self.media_dir, "default.flt")]
+                self.video_combo.setEnabled(False)
+                
         self.layout.addWidget(self.video_combo)
-
         self.video_invert = Qt.QCheckBox("Invert Video")
         self.layout.addWidget(self.video_invert)
 
     def create_audio_controls(self):
         self.audio_combo = Qt.QComboBox()
-        
-        # Scan media directory for .wav files
-        try:
-            audio_files = sorted([f for f in os.listdir("media") if f.endswith('.wav')])
-            # Create display names by cleaning up filenames
-            audio_names = [os.path.splitext(f)[0].replace('-', ' ') for f in audio_files]
-            self.audio_paths = [os.path.join("media", f) for f in audio_files]
-            self.audio_combo.addItems(audio_names)
-        except (OSError, FileNotFoundError):
-            # Fallback if directory doesn't exist
-            self.audio_paths = ["media/default.wav"]
-            self.audio_combo.addItem("No audio files found")
-
         self.layout.addWidget(Qt.QLabel("Audio File:"))
+        
+        # Check if media directory exists
+        if not os.path.exists(self.media_dir):
+            self.audio_combo.addItem("Error - Setup Media directory in settings")
+            self.audio_paths = [os.path.join(self.media_dir, "default.wav")]
+            self.audio_combo.setEnabled(False)
+        else:
+            # Scan media directory for .wav files
+            audio_files = sorted([f for f in os.listdir(self.media_dir) if f.endswith('.wav')])
+            if audio_files:
+                # Create display names by cleaning up filenames
+                audio_names = [os.path.splitext(f)[0].replace('-', ' ') for f in audio_files]
+                self.audio_paths = [os.path.join(self.media_dir, f) for f in audio_files]
+                self.audio_combo.addItems(audio_names)
+            else:
+                self.audio_combo.addItem("No audio files found")
+                self.audio_paths = [os.path.join(self.media_dir, "default.wav")]
+                self.audio_combo.setEnabled(False)
+                
         self.layout.addWidget(self.audio_combo)
 
     def load_config(self):
@@ -200,7 +206,7 @@ class ConfigDialog(Qt.QDialog):
 
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[ipNum - 1].strip()
+        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
 
         return {
             'ipNum': ipNum,
