@@ -264,27 +264,35 @@ class GNURadioLauncher(QMainWindow):
                 print(f"Error saving dialog position: {e}")
 
             if result == QDialog.Accepted:
-                # Get configuration values
                 config_values = config_dialog.get_values()
                 
-                # Save current position before hiding
-                self.save_window_position()
-                # Hide launcher
-                self.hide()
+                # Load radio mode setting
+                radio_mode = 'single'
+                try:
+                    if os.path.exists(self.settings_file):
+                        with open(self.settings_file, 'r') as f:
+                            settings = json.load(f)
+                            radio_mode = settings.get('radio_mode', 'single')
+                except Exception as e:
+                    print(f"Error loading radio mode setting: {e}")
+
+                # Only hide launcher in single mode
+                if radio_mode == 'single':
+                    self.save_window_position()
+                    self.hide()
                 
-                # Start the GNU Radio application with configuration
+                # Start the GNU Radio application
                 tb = module.main(app=self.app, config_values=config_values)
                 
-                # Connect close event to show launcher again and restore position
-                if hasattr(tb, 'closeEvent'):
+                # Modify close event only in single mode
+                if radio_mode == 'single' and hasattr(tb, 'closeEvent'):
                     original_close_event = tb.closeEvent
                     def new_close_event(event):
                         original_close_event(event)
-                        # Show launcher and restore its last position
                         self.load_window_position()
                         self.show()
                     tb.closeEvent = new_close_event
-                
+
         except Exception as e:
             error_dialog = QMessageBox()
             error_dialog.setIcon(QMessageBox.Critical)

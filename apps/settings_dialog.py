@@ -4,7 +4,7 @@
 import os
 import json
 import re
-from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox # type: ignore
+from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton # type: ignore
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_file, parent=None):
@@ -32,6 +32,25 @@ class SettingsDialog(QDialog):
         media_layout.addWidget(self.media_path)
         media_layout.addWidget(browse_btn)
         media_group.setLayout(media_layout)
+        
+        # Add Radio Mode Section (after media_group)
+        mode_group = QGroupBox("GNUradio Launcher Mode")
+        mode_layout = QHBoxLayout()
+        self.single_mode = QRadioButton("Single")
+        self.multi_mode = QRadioButton("Multi")
+        
+        # Set default or load saved mode
+        current_mode = self.settings.get('radio_mode', 'single')
+        self.single_mode.setChecked(current_mode == 'single')
+        self.multi_mode.setChecked(current_mode == 'multi')
+        
+        # Connect mode change handlers
+        self.single_mode.clicked.connect(self.validate_mode)
+        self.multi_mode.clicked.connect(self.validate_mode)
+        
+        mode_layout.addWidget(self.single_mode)
+        mode_layout.addWidget(self.multi_mode)
+        mode_group.setLayout(mode_layout)
         
         # IP Addresses Section
         ip_group = QGroupBox("Software Defined Radio IP Addresses:")
@@ -62,6 +81,7 @@ class SettingsDialog(QDialog):
         # Add groups to main layout
         layout.addWidget(media_group)
         layout.addWidget(ip_group)
+        layout.addWidget(mode_group)
         
         # Add Save/Cancel buttons
         button_layout = QHBoxLayout()
@@ -129,8 +149,18 @@ class SettingsDialog(QDialog):
             print(f"Error loading settings: {e}")
         return {'media_directory': '', 'ip_addresses': []}  # Initialize with empty list
     
+    def validate_mode(self):
+        if self.multi_mode.isChecked() and len(self.settings['ip_addresses']) < 2:
+            QMessageBox.warning(self, "Invalid Mode", 
+                              "Multi mode requires at least 2 IP addresses.")
+            self.single_mode.setChecked(True)
+            return False
+        return True
+
     def accept(self):
-        # Load existing settings first to preserve other data
+        if not self.validate_mode():
+            return
+            
         existing_settings = {}
         try:
             if os.path.exists(self.settings_file):
@@ -139,10 +169,10 @@ class SettingsDialog(QDialog):
         except Exception as e:
             print(f"Error loading existing settings: {e}")
 
-        # Update only the settings managed by this dialog
         existing_settings.update({
             'media_directory': self.media_path.text(),
-            'ip_addresses': self.settings['ip_addresses']  # Use maintained list instead of rebuilding
+            'ip_addresses': self.settings['ip_addresses'],
+            'radio_mode': 'multi' if self.multi_mode.isChecked() else 'single'
         })
 
         # Save the combined settings
