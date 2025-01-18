@@ -8,26 +8,22 @@ import json
 import importlib.util
 
 # Third party imports
-from PyQt5.QtWidgets import (
+from PyQt5.QtWidgets import ( # type: ignore
     QMainWindow, 
     QWidget, 
     QGridLayout, 
     QPushButton, 
     QLabel, 
     QApplication,
-    QFileDialog,
-    QLineEdit,
-    QListWidget,
     QVBoxLayout,
     QDialog,
-    QHBoxLayout,
     QMessageBox
 )
-from PyQt5.QtCore import Qt, QSize, QPoint
-from PyQt5.QtGui import QIcon, QPixmap, QFont
+from PyQt5.QtCore import Qt, QSize, QPoint # type: ignore
+from PyQt5.QtGui import QIcon, QPixmap, QFont # type: ignore
 
 # Add PIL import at the top with other imports
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance # type: ignore
 import io
 
 # Local imports 
@@ -43,7 +39,6 @@ class GNURadioLauncher(QMainWindow):
         
         # Create config directory if it doesn't exist
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "window_position.json")
         self.settings_file = os.path.join(self.config_dir, "window_settings.json")
         os.makedirs(self.config_dir, exist_ok=True)
         
@@ -124,28 +119,41 @@ class GNURadioLauncher(QMainWindow):
         self.save_window_position()
         
     def save_window_position(self):
-        """Save the current window position to config file"""
-        position = {
-            'x': self.pos().x(),
-            'y': self.pos().y()
-        }
+        """Save the current window position to settings file"""
         try:
-            with open(self.config_file, 'w') as f:
-                json.dump(position, f)
+            # Load existing settings
+            settings = {}
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+            
+            # Update window position
+            settings['window_position'] = {
+                'x': self.pos().x(),
+                'y': self.pos().y()
+            }
+            
+            # Save updated settings
+            with open(self.settings_file, 'w') as f:
+                json.dump(settings, f)
         except Exception as e:
             print(f"Error saving window position: {e}")
             
     def load_window_position(self):
-        """Load the saved window position or center if none exists"""
+        """Load the saved window position from settings file or center if none exists"""
         try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r') as f:
-                    position = json.load(f)
-                    # Validate position is on screen
-                    screen = self.app.primaryScreen().geometry()
-                    if (0 <= position['x'] <= screen.width() - self.width() and 
-                        0 <= position['y'] <= screen.height() - self.height()):
-                        self.move(QPoint(position['x'], position['y']))
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+                    if 'window_position' in settings:
+                        position = settings['window_position']
+                        # Validate position is on screen
+                        screen = self.app.primaryScreen().geometry()
+                        if (0 <= position['x'] <= screen.width() - self.width() and 
+                            0 <= position['y'] <= screen.height() - self.height()):
+                            self.move(QPoint(position['x'], position['y']))
+                        else:
+                            self.center_window()
                     else:
                         self.center_window()
             else:
@@ -192,7 +200,6 @@ class GNURadioLauncher(QMainWindow):
         
         # Add button to grid
         grid.addWidget(btn, row, col, Qt.AlignCenter)
-
         
     def launch_application(self, module_name):
         try:
@@ -205,31 +212,30 @@ class GNURadioLauncher(QMainWindow):
             # Load or create configuration dialog
             config_dialog = module.ConfigDialog()
             
-            # Load saved dialog position
-            dialog_config_file = os.path.join(self.config_dir, "dialog_position.json")
-
-            # Remove the default offset - only use it if no saved position exists
+            # Load saved dialog position from settings file
             screen = self.app.primaryScreen().geometry()
             default_pos = self.pos() + QPoint(50, 50)
 
             try:
-                if os.path.exists(dialog_config_file):
-                    with open(dialog_config_file, 'r') as f:
-                        position = json.load(f)
-                        
-                        # Check if position is within screen bounds
-                        valid_position = (
-                            0 <= position['x'] <= screen.width() - config_dialog.width() and 
-                            0 <= position['y'] <= screen.height() - config_dialog.height()
-                        )
-                        
-                        if valid_position:
-                            # Don't add any offset when loading saved position
-                            config_dialog.move(QPoint(position['x'], position['y']))
+                if os.path.exists(self.settings_file):
+                    with open(self.settings_file, 'r') as f:
+                        settings = json.load(f)
+                        if 'dialog_position' in settings:
+                            position = settings['dialog_position']
+                            
+                            # Check if position is within screen bounds
+                            valid_position = (
+                                0 <= position['x'] <= screen.width() - config_dialog.width() and 
+                                0 <= position['y'] <= screen.height() - config_dialog.height()
+                            )
+                            
+                            if valid_position:
+                                config_dialog.move(QPoint(position['x'], position['y']))
+                            else:
+                                config_dialog.move(default_pos)
                         else:
                             config_dialog.move(default_pos)
                 else:
-                    # Only use default offset for first time dialog is shown
                     config_dialog.move(default_pos)
             except Exception as e:
                 print(f"Error loading dialog position: {e}")
@@ -238,16 +244,22 @@ class GNURadioLauncher(QMainWindow):
             # Show dialog and wait for user response
             result = config_dialog.exec_()
             
-            # Save dialog position regardless of OK/Cancel
+            # Save dialog position to settings file
             try:
-                with open(dialog_config_file, 'w') as f:
-                    # Save the actual geometry position
-                    geo = config_dialog.geometry()
-                    position = {
-                        'x': geo.x(),
-                        'y': geo.y()
-                    }
-                    json.dump(position, f)
+                settings = {}
+                if os.path.exists(self.settings_file):
+                    with open(self.settings_file, 'r') as f:
+                        settings = json.load(f)
+                
+                # Save the actual geometry position
+                geo = config_dialog.geometry()
+                settings['dialog_position'] = {
+                    'x': geo.x(),
+                    'y': geo.y()
+                }
+                
+                with open(self.settings_file, 'w') as f:
+                    json.dump(settings, f)
             except Exception as e:
                 print(f"Error saving dialog position: {e}")
 
@@ -273,8 +285,6 @@ class GNURadioLauncher(QMainWindow):
                         self.show()
                     tb.closeEvent = new_close_event
                 
-            # If user clicks Cancel, launcher stays visible and nothing happens
-            
         except Exception as e:
             error_dialog = QMessageBox()
             error_dialog.setIcon(QMessageBox.Critical)

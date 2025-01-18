@@ -3,16 +3,16 @@
 
 import os
 import json
-from PyQt5 import Qt
-from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog
+import re
+from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox # type: ignore
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_file, parent=None):
         super().__init__(parent)
         self.settings_file = settings_file
         self.setWindowTitle("Settings")
-        self.setMinimumSize(800, 400)
-        self.resize(900,400)
+        self.setMinimumSize(500, 400)
+        self.resize(500, 400)
         
         # Load existing settings
         self.settings = self.load_settings()
@@ -30,7 +30,7 @@ class SettingsDialog(QDialog):
         media_group.setLayout(media_layout)
         
         # IP Addresses Section
-        ip_group = QGroupBox("IP Addresses")
+        ip_group = QGroupBox("Software Defined Radio IP Addresses:")
         ip_layout = QVBoxLayout()
         
         # IP input and add button
@@ -82,10 +82,30 @@ class SettingsDialog(QDialog):
             self.media_path.setText(directory)
     
     def add_ip(self):
-        ip = self.ip_input.text().strip()
-        if ip and ip not in [self.ip_list.item(i).text() for i in range(self.ip_list.count())]:
-            self.ip_list.addItem(ip)
+        ip_address = self.ip_input.text()
+        if self.validate_ip(ip_address):
+            self.ip_list.addItem(ip_address)
+            self.settings['ip_addresses'].append(ip_address)
             self.ip_input.clear()
+        else:
+            QMessageBox.warning(self, "Invalid IP", "The IP address entered is invalid.")
+    
+    def validate_ip(self, ip):
+        # Check if IP address has 4 octets
+        octets = ip.split('.')
+        if len(octets) != 4:
+            return False
+        
+        # Check if each octet is a number between 0 and 255
+        for octet in octets:
+            if not octet.isdigit() or not 0 <= int(octet) <= 255:
+                return False
+        
+        # Check if IP address is forbidden
+        if ip == "0.0.0.0" or ip == "255.255.255.255":
+            return False
+        
+        return True
     
     def remove_ip(self):
         for item in self.ip_list.selectedItems():
@@ -101,15 +121,26 @@ class SettingsDialog(QDialog):
         return {'media_directory': '', 'ip_addresses': []}
     
     def accept(self):
-        # Save settings before closing
-        settings = {
+        # Load existing settings first to preserve other data
+        existing_settings = {}
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    existing_settings = json.load(f)
+        except Exception as e:
+            print(f"Error loading existing settings: {e}")
+
+        # Update only the settings managed by this dialog
+        existing_settings.update({
             'media_directory': self.media_path.text(),
             'ip_addresses': [self.ip_list.item(i).text() 
                            for i in range(self.ip_list.count())]
-        }
+        })
+
+        # Save the combined settings
         try:
             with open(self.settings_file, 'w') as f:
-                json.dump(settings, f)
+                json.dump(existing_settings, f)
         except Exception as e:
             print(f"Error saving settings: {e}")
         
