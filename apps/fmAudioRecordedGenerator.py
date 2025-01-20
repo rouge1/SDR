@@ -236,9 +236,30 @@ class ConfigDialog(Qt.QDialog):
                     
                 self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
-                self.source_combo.setCurrentIndex(config.get('source_index', 0))
                 self.dev_slider.setValue(config.get('freq_dev', 100))
                 self.sine_slider.setValue(config.get('sine_freq', 1000))
+                
+                # Load source by saved identifier
+                saved_source = config.get('source', 'sinewave')
+                found = False
+                
+                # First try to find the saved source in current combo box items
+                for i in range(self.source_combo.count()):
+                    if (self.source_combo.itemData(i) == saved_source or 
+                        (isinstance(saved_source, str) and os.path.basename(saved_source) == 
+                         os.path.basename(str(self.source_combo.itemData(i))))):
+                        self.source_combo.setCurrentIndex(i)
+                        found = True
+                        break
+                
+                # If not found and it's not a special source, select sinewave as fallback
+                if not found and saved_source not in ['sinewave', 'none']:
+                    # Find sinewave index
+                    for i in range(self.source_combo.count()):
+                        if self.source_combo.itemData(i) == 'sinewave':
+                            self.source_combo.setCurrentIndex(i)
+                            break
+                
             except:
                 # If loading fails, keep default values
                 pass
@@ -250,9 +271,9 @@ class ConfigDialog(Qt.QDialog):
         config = {
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
-            'source_index': self.source_combo.currentIndex(),
             'freq_dev': self.dev_slider.value(),
-            'sine_freq': self.sine_slider.value()
+            'sine_freq': self.sine_slider.value(),
+            'source': self.source_combo.currentData()  # Save the actual source identifier
         }
         
         with open(self.config_file, 'w') as f:
