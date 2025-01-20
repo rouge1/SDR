@@ -60,6 +60,7 @@ class SettingsDialog(QDialog):
         ip_input_layout = QHBoxLayout()
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("Enter IP address")
+        self.ip_input.returnPressed.connect(self.add_ip)
         add_ip_btn = QPushButton("Add")
         add_ip_btn.clicked.connect(self.add_ip)
         ip_input_layout.addWidget(self.ip_input)
