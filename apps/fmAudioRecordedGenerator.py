@@ -9,7 +9,7 @@
 # Author: Gary Schafer
 # GNU Radio version: 3.10.1.1
 
-from packaging.version import Version as StrictVersion
+from packaging.version import Version as StrictVersion # type: ignore
 
 if __name__ == '__main__':
     import ctypes
