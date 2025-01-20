@@ -21,30 +21,23 @@ if __name__ == '__main__':
         except:
             print("Warning: failed to XInitThreads()")
 
-# Third party imports
-from PyQt5 import Qt
-from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import eng_notation
-from gnuradio import qtgui
-from gnuradio.filter import firdes
-import sip
-from gnuradio import analog
-from gnuradio import blocks
-from gnuradio import filter
-from gnuradio import gr
-from gnuradio.fft import window
-import sys
-import signal
+# Standard library imports
 import json
 import os
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import uhd
+import signal
+import sys
 import time
-from gnuradio.qtgui import Range, RangeWidget
-from PyQt5 import QtCore
 from math import pi
 import glob
+
+# Third party imports 
+from PyQt5 import Qt, QtCore # type: ignore
+from PyQt5.QtCore import pyqtSlot # type: ignore
+import sip # type: ignore
+
+from gnuradio import analog, blocks, filter, gr, qtgui, uhd # type: ignore
+from gnuradio.fft import window # type: ignore
+from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
 from apps.utils import apply_dark_theme, read_settings
