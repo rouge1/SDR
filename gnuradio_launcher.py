@@ -98,6 +98,7 @@ class GNURadioLauncher(QMainWindow):
         self.create_app_button("FSK Signal Generator", "fskGenerator", "fsk.jpg", grid, 1, 3)
         self.create_app_button("PSK Signal Generator", "pskGenerator", "psk.jpg", grid, 1, 4)
         self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 2, 0)
+        self.create_app_button("FM Audio Generator", "fmAudioRecordedGenerator", "fmAudio.png", grid, 2, 1)
         
         # Apply stylesheet
         apply_launcher_theme(self)
