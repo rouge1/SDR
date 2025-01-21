@@ -91,39 +91,62 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.source_combo)
 
     def create_subcarrier_controls(self):
-        # Subcarrier Level slider
+        # Subcarrier Level slider and label
+        slider_layout = Qt.QHBoxLayout()
         self.sub_level_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.sub_level_slider.setMinimum(-50)
         self.sub_level_slider.setMaximum(0)
         self.sub_level_slider.setValue(-20)
-        self.layout.addWidget(Qt.QLabel("Subcarrier Level (dB):"))
-        self.layout.addWidget(self.sub_level_slider)
+        self.sub_level_label = Qt.QLabel("-20 dB")
+        slider_layout.addWidget(Qt.QLabel("Subcarrier Level:"))
+        slider_layout.addWidget(self.sub_level_slider)
+        slider_layout.addWidget(self.sub_level_label)
+        self.layout.addLayout(slider_layout)
+        self.sub_level_slider.valueChanged.connect(
+            lambda value: self.sub_level_label.setText(f"{value} dB"))
 
-        # Subcarrier Frequency slider
+        # Subcarrier Frequency slider and label
+        slider_layout = Qt.QHBoxLayout()
         self.sub_freq_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.sub_freq_slider.setMinimum(10)
         self.sub_freq_slider.setMaximum(100)
         self.sub_freq_slider.setValue(60)
-        self.layout.addWidget(Qt.QLabel("Subcarrier Frequency (kHz):"))
-        self.layout.addWidget(self.sub_freq_slider)
+        self.sub_freq_label = Qt.QLabel("60 kHz")
+        slider_layout.addWidget(Qt.QLabel("Subcarrier Frequency:"))
+        slider_layout.addWidget(self.sub_freq_slider)
+        slider_layout.addWidget(self.sub_freq_label)
+        self.layout.addLayout(slider_layout)
+        self.sub_freq_slider.valueChanged.connect(
+            lambda value: self.sub_freq_label.setText(f"{value} kHz"))
 
     def create_noise_controls(self):
-        """Create noise frequency and amplitude controls"""
-        # Noise Frequency slider
+        # Noise Frequency slider and label
+        slider_layout = Qt.QHBoxLayout()
         self.noise_freq_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.noise_freq_slider.setMinimum(100)
         self.noise_freq_slider.setMaximum(2000)
         self.noise_freq_slider.setValue(1000)
-        self.layout.addWidget(Qt.QLabel("Noise Frequency (Hz):"))
-        self.layout.addWidget(self.noise_freq_slider)
+        self.noise_freq_label = Qt.QLabel("1000 Hz")
+        slider_layout.addWidget(Qt.QLabel("Noise Frequency:"))
+        slider_layout.addWidget(self.noise_freq_slider)
+        slider_layout.addWidget(self.noise_freq_label)
+        self.layout.addLayout(slider_layout)
+        self.noise_freq_slider.valueChanged.connect(
+            lambda value: self.noise_freq_label.setText(f"{value} Hz"))
 
-        # Noise Amplitude slider
+        # Noise Amplitude slider and label
+        slider_layout = Qt.QHBoxLayout()
         self.noise_amp_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.noise_amp_slider.setMinimum(0)
         self.noise_amp_slider.setMaximum(20)
         self.noise_amp_slider.setValue(0)
-        self.layout.addWidget(Qt.QLabel("Noise Amplitude (dB):"))
-        self.layout.addWidget(self.noise_amp_slider)
+        self.noise_amp_label = Qt.QLabel("0 dB")
+        slider_layout.addWidget(Qt.QLabel("Noise Amplitude:"))
+        slider_layout.addWidget(self.noise_amp_slider)
+        slider_layout.addWidget(self.noise_amp_label)
+        self.layout.addLayout(slider_layout)
+        self.noise_amp_slider.valueChanged.connect(
+            lambda value: self.noise_amp_label.setText(f"{value} dB"))
 
     def create_button_box(self):
         self.button_box = Qt.QDialogButtonBox(

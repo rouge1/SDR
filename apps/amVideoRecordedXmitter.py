@@ -136,7 +136,7 @@ class ConfigDialog(Qt.QDialog):
             if file.endswith('.dat'):
                 full_path = os.path.join(self.media_dir, file)
                 # Use filename without extension as display name
-                display_name = os.path.splitext(file)[0]
+                display_name = os.path.splitext(file)[0].replace('-', ' ')
                 self.video_files.append((display_name, file))
                 
         # Sort video files alphabetically by display name
@@ -176,7 +176,16 @@ class ConfigDialog(Qt.QDialog):
                 self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.power_slider.setValue(config.get('power', 0))
-                self.video_combo.setCurrentIndex(config.get('video_index', 0))
+                
+                # Load video file by name from current media directory
+                saved_video_name = config.get('video_filename')
+                if saved_video_name:
+                    # Find the index of the file in current video_files list
+                    for i, (_, filename) in enumerate(self.video_files):
+                        if filename == saved_video_name:
+                            self.video_combo.setCurrentIndex(i)
+                            break
+                
                 invert_value = config.get('invert_video', 1)
                 self.invert_group.button(invert_value).setChecked(True)
                 
@@ -186,11 +195,17 @@ class ConfigDialog(Qt.QDialog):
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
+        # Get the filename (not full path) of selected video
+        current_index = self.video_combo.currentIndex()
+        video_filename = None
+        if current_index >= 0 and current_index < len(self.video_files):
+            _, video_filename = self.video_files[current_index]
+        
         config = {
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
             'power': self.power_slider.value(),
-            'video_index': self.video_combo.currentIndex(),
+            'video_filename': video_filename,
             'invert_video': self.invert_group.checkedId()
         }
         
@@ -205,12 +220,15 @@ class ConfigDialog(Qt.QDialog):
         ipNum = self.usrp_combo.currentIndex() + 1
         ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
         
+        # Get full path from current media directory
+        current_video_path = self.video_combo.currentData()
+        
         values = {
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'centerFreq': self.cf_slider.value(),
             'power': self.power_slider.value(),
-            'videoFile': self.video_combo.currentData(),
+            'videoFile': current_video_path,
             'invertVideo': 2 if self.invert_radio.isChecked() else 1
         }
         return values

@@ -220,18 +220,42 @@ class ConfigDialog(Qt.QDialog):
                 for button in self.coherence_group.buttons():
                     if self.coherence_group.id(button) == coherence:
                         button.setChecked(True)
+                        
+                # Load source file if saved
+                saved_file = config.get('source_file')
+                if saved_file:
+                    # Get current media directory
+                    settings = read_settings()
+                    media_dir = settings.get('media_directory', '')
+                    if media_dir and os.path.exists(media_dir):
+                        # Look for the file in media directory
+                        full_path = os.path.join(media_dir, saved_file)
+                        if os.path.exists(full_path):
+                            # Find and select the matching item in combo box
+                            index = self.source_combo.findData(full_path)
+                            if index >= 0:
+                                self.source_combo.setCurrentIndex(index)
+                
             except:
                 pass
         else:
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
+        # Get selected source file name (if any)
+        current_data = self.source_combo.currentData()
+        source_file = None
+        if current_data and current_data != "none":
+            # Save just the filename without path
+            source_file = os.path.basename(current_data)
+            
         config = {
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
             'mod_level': self.mod_slider.value(),
             'pulse_width': self.pulse_group.checkedId(),
-            'coherence': self.coherence_group.checkedId()
+            'coherence': self.coherence_group.checkedId(),
+            'source_file': source_file  # Save the filename
         }
         
         with open(self.config_file, 'w') as f:
@@ -331,7 +355,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.pulseWidthDefault = pulseWidthDefault = 20
         self.modLevelDefault = modLevelDefault = 1
         self.coherenceDefault = coherenceDefault = 0
-        self.cf = cf = 300  # Changed from 295 to 300
+        self.cf = cf = 300  
         self.pulseWidth = pulseWidth = pulseWidthDefault
         self.pulsePeriod = pulsePeriod = sps/samp_rate*1e6
         self.modLevel = modLevel = modLevelDefault
