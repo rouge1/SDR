@@ -93,12 +93,19 @@ class GNURadioLauncher(QMainWindow):
         
         # Add application buttons
         self.create_app_button("AM Sine Generator", "amSineGenerator", "amSine.jpg", grid, 1, 0)
-        self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 1, 1)
-        self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 2)
-        self.create_app_button("FSK Signal Generator", "fskGenerator", "fsk.jpg", grid, 1, 3)
-        self.create_app_button("PSK Signal Generator", "pskGenerator", "psk.jpg", grid, 1, 4)
-        self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 2, 0)
+        self.create_app_button("ASK Generator", "askGenerator", "ask.jpg", grid, 1, 1)
+        self.create_app_button("FSK Signal Generator", "fskGenerator", "fsk.jpg", grid, 1, 2)
+        self.create_app_button("PSK Signal Generator", "pskGenerator", "psk.jpg", grid, 1, 3)
+        self.create_app_button("PPM-OOK Generator", "ppmookAudioXmitter", "ppm-ook.png", grid, 1, 4)
+        # Audio
+        self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 2, 0)
         self.create_app_button("FM Audio Generator", "fmAudioRecordedGenerator", "fmAudio.png", grid, 2, 1)
+        self.create_app_button("FM Subcarrier", "fmSubcarrierRecorded", "fmSubcarrier.jpg", grid, 2, 2)
+        
+        # Video
+        self.create_app_button("ATSC Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
+        self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 3, 1)
+        self.create_app_button("AM Video Transmitter", "amVideoRecordedXmitter", "amVideo.jpg", grid, 3, 2)
         
         # Apply stylesheet
         apply_launcher_theme(self)
