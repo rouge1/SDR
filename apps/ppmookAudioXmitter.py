@@ -490,7 +490,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(5, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.filter_fft_low_pass_filter_0 = filter.fft_filter_fff(1, firdes.low_pass(modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76), 1)
+        self.filter_fft_low_pass_filter_0 = filter.fft_filter_fff(1, firdes.low_pass(modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76), 1) # type: ignore
         self.fft_filter_xxx_0_0 = filter.fft_filter_fff(1, [1,]*pulseWidth, 1)
         self.fft_filter_xxx_0_0.declare_sample_delay(0)
         self.fft_filter_xxx_0 = filter.fft_filter_fff(1, (1,)*sps, 1)
@@ -514,7 +514,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
 
         self.blocks_vector_source_x_0_0 = blocks.vector_source_f((0,)*10+(1,)*(sps-10), True, 1, [])
-        self.blocks_vector_source_x_0 = blocks.vector_source_f(np.arange(1,-1,-2/sps), True, 1, [])
+        self.blocks_vector_source_x_0 = blocks.vector_source_f(np.arange(1,-1,-2/sps), True, 1, []) # type: ignore
         self.blocks_stream_mux_0 = blocks.stream_mux(gr.sizeof_float*1, (int(sps-1),1))
         self.blocks_selector_0 = blocks.selector(gr.sizeof_float*1,coherence,0)
         self.blocks_selector_0.set_enabled(True)
@@ -587,7 +587,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.sps = sps
         self.set_pulsePeriod((self.sps/self.samp_rate*1e6))
         self.blocks_repeat_0.set_interpolation(int(self.sps))
-        self.blocks_vector_source_x_0.set_data(np.arange(1,-1,-2/self.sps), [])
+        self.blocks_vector_source_x_0.set_data(np.arange(1,-1,-2/self.sps), []) # type: ignore
         self.blocks_vector_source_x_0_0.set_data((0,)*10+(1,)*(self.sps-10), [])
         self.fft_filter_xxx_0.set_taps((1,)*self.sps)
 
@@ -651,7 +651,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
     def set_modLevel(self, modLevel):
         self.modLevel = modLevel
-        self.filter_fft_low_pass_filter_0.set_taps(firdes.low_pass(self.modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76))
+        self.filter_fft_low_pass_filter_0.set_taps(firdes.low_pass(self.modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76)) # type: ignore
 
     def get_coherence(self):
         return self.coherence

@@ -5,6 +5,7 @@ import os
 import json
 import re
 from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton # type: ignore
+from PyQt5.QtCore import Qt # Add this to imports
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_file, parent=None):
@@ -28,7 +29,12 @@ class SettingsDialog(QDialog):
         media_layout = QHBoxLayout()
         self.media_path = QLineEdit(self.settings.get('media_directory', ''))
         browse_btn = QPushButton("Browse")
+        
+        # Make Browse button ignore Enter key
+        browse_btn.setAutoDefault(False)
+        browse_btn.setDefault(False)
         browse_btn.clicked.connect(self.browse_media_dir)
+        
         media_layout.addWidget(self.media_path)
         media_layout.addWidget(browse_btn)
         media_group.setLayout(media_layout)
@@ -60,9 +66,18 @@ class SettingsDialog(QDialog):
         ip_input_layout = QHBoxLayout()
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("Enter IP address")
-        self.ip_input.returnPressed.connect(self.add_ip)
         add_ip_btn = QPushButton("Add")
+        
+        # Handle IP input enter key specifically
+        def handle_ip_return():
+            if self.ip_input.hasFocus():
+                self.add_ip()
+                return True
+            return False
+            
+        self.ip_input.returnPressed.connect(handle_ip_return)
         add_ip_btn.clicked.connect(self.add_ip)
+        
         ip_input_layout.addWidget(self.ip_input)
         ip_input_layout.addWidget(add_ip_btn)
         
@@ -184,3 +199,12 @@ class SettingsDialog(QDialog):
             print(f"Error saving settings: {e}")
         
         super().accept()
+    
+    def keyPressEvent(self, event):
+        # Override default dialog key handling
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            # Only handle the event if IP input doesn't have focus
+            if not self.ip_input.hasFocus():
+                event.accept()
+            return
+        super().keyPressEvent(event)
