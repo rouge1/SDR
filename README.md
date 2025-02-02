@@ -72,3 +72,10 @@ To add a new GNU Radio application:
 	Implement the main() function that returns your GNU Radio flowgraph
 	Add an icon to the icons directory
 	Register the application in gnuradio_launcher.py
+
+# Acknowledgments
+
+	GNU Radio community
+	PyQt5 developers
+	Gary Schafer
+ 	Rick Astley
