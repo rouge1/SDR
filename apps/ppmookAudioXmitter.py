@@ -7,9 +7,34 @@
 # GNU Radio Python Flow Graph
 # Title: PPM-OOK Live Audio Xmitter
 # Author: Gary Schafer
-# GNU Radio version: 3.10.1.1
+# GNU Radio version: 3.10.10.0
 
+from PyQt5 import Qt
+from gnuradio import qtgui
+from PyQt5 import QtCore
+from PyQt5.QtCore import QObject, pyqtSlot
+from gnuradio import blocks
+from gnuradio import digital
+from gnuradio import eng_notation
+from gnuradio import filter
+from gnuradio.filter import firdes
+from gnuradio import gr
+from gnuradio.fft import window
+import sys
+import signal
+from PyQt5 import Qt
+from argparse import ArgumentParser
+from gnuradio.eng_arg import eng_float, intx
+from gnuradio import uhd
+import time
+from math import pi
+import numpy as np
+import sip
+import json
+import os
+from apps.utils import apply_dark_theme, read_settings
 from packaging.version import Version as StrictVersion # type: ignore
+import glob
 
 if __name__ == '__main__':
     import ctypes
@@ -21,49 +46,15 @@ if __name__ == '__main__':
         except:
             print("Warning: failed to XInitThreads()")
 
-# Standard library imports
-import json
-import os
-import signal
-import sys
-import time
-import glob
-
-# Third party imports
-import numpy as np # type: ignore
-import sip # type: ignore
-from PyQt5 import Qt, QtCore  # type: ignore
-from PyQt5.QtCore import pyqtSlot # type: ignore
-
-from gnuradio import blocks, digital, eng_notation, filter, gr, network, qtgui, uhd # type: ignore
-from gnuradio.filter import firdes # type: ignore
-from gnuradio.fft import window   # type: ignore
-from gnuradio.qtgui import Range, RangeWidget # type: ignore
-
-# Local imports
-from apps.utils import apply_dark_theme, read_settings
-
-def get_wav_files(settings):
-    """Get list of wav files from media directory"""
-    try:
-        media_dir = settings.get('media_directory', '')
-        if not media_dir or not os.path.exists(media_dir):
-            return None
-            
-        wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
-        return wav_files if wav_files else []
-    except:
-        return None
-
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("PPM-OOK Audio Transmitter Configuration")
+        self.setWindowTitle("PPM-OOK Audio Xmitter Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "ppmook_config.json")
+        self.config_file = os.path.join(self.config_dir, "ppmookAudioXmitter_config.json")
         
-        # Read settings
+        # Read settings from window_settings.json
         settings = read_settings()
         self.ipList = settings['ip_addresses']
         self.N = len(self.ipList)
@@ -74,13 +65,13 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         
-        # Create widgets
+        # Create controls
         self.create_usrp_selector()
         self.create_frequency_control()
+        self.create_audio_source_control()  # Add this line
         self.create_pulse_width_control()
-        self.create_mod_level_control()
         self.create_coherence_control()
-        self.create_source_control()
+        self.create_mod_level_control()
         
         self.layout.addWidget(self.button_box)
         
@@ -105,7 +96,7 @@ class ConfigDialog(Qt.QDialog):
                 self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
             ok_button.setEnabled(True)
             ok_button.setGraphicsEffect(None)
-        
+                    
         self.layout.addWidget(Qt.QLabel("Select USRP:"))
         self.layout.addWidget(self.usrp_combo)
 
@@ -114,29 +105,51 @@ class ConfigDialog(Qt.QDialog):
         self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.cf_slider.setMinimum(30)
         self.cf_slider.setMaximum(2200)
-        self.cf_slider.setValue(300)  # Changed from 295 to 300
-        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")  # Changed from 295 to 300
+        self.cf_slider.setValue(300)
+        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
         self.cf_slider.valueChanged.connect(
             lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
         self.cf_layout.addWidget(self.cf_label)
         self.cf_layout.addWidget(self.cf_slider)
         self.layout.addLayout(self.cf_layout)
 
-    def create_pulse_width_control(self):
-        self.pulse_group = Qt.QButtonGroup()
-        pulse_layout = Qt.QHBoxLayout()
-        pulse_label = Qt.QLabel("Pulse Duration:")
-        pulse_layout.addWidget(pulse_label)
+    def create_audio_source_control(self):
+        self.audio_layout = Qt.QHBoxLayout()
+        self.audio_combo = Qt.QComboBox()
         
-        for width, label in [(10, "10 μs"), (20, "20 μs"), (40, "40 μs")]:
-            radio = Qt.QRadioButton(label)
-            if width == 20:  # Default
-                radio.setChecked(True)
-            self.pulse_group.addButton(radio)
-            self.pulse_group.setId(radio, width)
-            pulse_layout.addWidget(radio)
-            
-        self.layout.addLayout(pulse_layout)
+        # Read settings and get wav files
+        settings = read_settings()
+        media_dir = settings.get('media_directory', '')
+        
+        if not media_dir or not os.path.exists(media_dir):
+            self.audio_combo.addItem("Error - Setup Media directory in Settings")
+            self.audio_combo.setEnabled(False)
+        else:
+            # Get all wav files
+            wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+            if wav_files:
+                for wav_file in wav_files:
+                    display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+                    self.audio_combo.addItem(display_name, wav_file)
+            else:
+                self.audio_combo.addItem("No WAV files found in media directory")
+                self.audio_combo.setEnabled(False)
+                
+        self.layout.addWidget(Qt.QLabel("Audio Source:"))
+        self.layout.addWidget(self.audio_combo)
+
+    def create_pulse_width_control(self):
+        self.pulse_combo = Qt.QComboBox()
+        self.pulse_combo.addItems(['10 usec', '20 usec', '40 usec'])
+        self.pulse_combo.setCurrentIndex(1)  # Default 20 usec
+        self.layout.addWidget(Qt.QLabel("Pulse Width:"))
+        self.layout.addWidget(self.pulse_combo)
+
+    def create_coherence_control(self):
+        self.coherence_combo = Qt.QComboBox()
+        self.coherence_combo.addItems(['Non-Coherent', 'Coherent'])
+        self.layout.addWidget(Qt.QLabel("Coherence:"))
+        self.layout.addWidget(self.coherence_combo)
 
     def create_mod_level_control(self):
         self.mod_layout = Qt.QHBoxLayout()
@@ -151,56 +164,6 @@ class ConfigDialog(Qt.QDialog):
         self.mod_layout.addWidget(self.mod_slider)
         self.layout.addLayout(self.mod_layout)
 
-    def create_coherence_control(self):
-        self.coherence_group = Qt.QButtonGroup()
-        coherence_layout = Qt.QHBoxLayout()
-        coherence_label = Qt.QLabel("Coherence:")
-        coherence_layout.addWidget(coherence_label)
-        
-        for val, label in [(0, "Non-Coherent"), (1, "Coherent")]:
-            radio = Qt.QRadioButton(label)
-            if val == 0:  # Default
-                radio.setChecked(True)
-            self.coherence_group.addButton(radio)
-            self.coherence_group.setId(radio, val)
-            coherence_layout.addWidget(radio)
-            
-        self.layout.addLayout(coherence_layout)
-
-    def create_source_control(self):
-        """Replace the live audio source with recorded audio file selector"""
-        self.source_combo = Qt.QComboBox()
-        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
-        # Read media directory setting and get wav files
-        settings = read_settings() 
-        wav_files = get_wav_files(settings)
-        
-        if wav_files is None:
-            # No media directory configured
-            self.source_combo.addItem("Media directory missing - Go to Settings") 
-            ok_button.setEnabled(False)
-            
-            # Add opacity effect to dim the button
-            opacity_effect = Qt.QGraphicsOpacityEffect()
-            opacity_effect.setOpacity(0.30)
-            ok_button.setGraphicsEffect(opacity_effect)
-        else:
-            # Media directory exists
-            if wav_files:
-                # Add all wav files found
-                for wav_file in wav_files:
-                    display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
-                    self.source_combo.addItem(display_name, wav_file)
-                    
-            # Add No Modulation option
-            self.source_combo.addItem("No Modulation", "none")
-            ok_button.setEnabled(True)
-            ok_button.setGraphicsEffect(None)
-            
-        self.layout.addWidget(Qt.QLabel("Input Source:"))
-        self.layout.addWidget(self.source_combo)
-
     def load_config(self):
         if os.path.exists(self.config_file):
             try:
@@ -209,53 +172,31 @@ class ConfigDialog(Qt.QDialog):
                     
                 self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
-                self.mod_slider.setValue(config.get('mod_level', 10))
+                self.pulse_combo.setCurrentIndex(config.get('pulse_width_index', 1))
+                self.coherence_combo.setCurrentIndex(config.get('coherence', 0))
+                self.mod_slider.setValue(int(config.get('mod_level', 1.0) * 10))
                 
-                pulse_width = config.get('pulse_width', 20)
-                for button in self.pulse_group.buttons():
-                    if self.pulse_group.id(button) == pulse_width:
-                        button.setChecked(True)
-                        
-                coherence = config.get('coherence', 0)
-                for button in self.coherence_group.buttons():
-                    if self.coherence_group.id(button) == coherence:
-                        button.setChecked(True)
-                        
-                # Load source file if saved
-                saved_file = config.get('source_file')
-                if saved_file:
-                    # Get current media directory
-                    settings = read_settings()
-                    media_dir = settings.get('media_directory', '')
-                    if media_dir and os.path.exists(media_dir):
-                        # Look for the file in media directory
-                        full_path = os.path.join(media_dir, saved_file)
-                        if os.path.exists(full_path):
-                            # Find and select the matching item in combo box
-                            index = self.source_combo.findData(full_path)
-                            if index >= 0:
-                                self.source_combo.setCurrentIndex(index)
-                
+                # Load saved audio file selection
+                saved_audio = config.get('audio_file', '')
+                if saved_audio:
+                    # Find and select the saved audio file
+                    for i in range(self.audio_combo.count()):
+                        if self.audio_combo.itemData(i) == saved_audio:
+                            self.audio_combo.setCurrentIndex(i)
+                            break
             except:
                 pass
         else:
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
-        # Get selected source file name (if any)
-        current_data = self.source_combo.currentData()
-        source_file = None
-        if current_data and current_data != "none":
-            # Save just the filename without path
-            source_file = os.path.basename(current_data)
-            
         config = {
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
-            'mod_level': self.mod_slider.value(),
-            'pulse_width': self.pulse_group.checkedId(),
-            'coherence': self.coherence_group.checkedId(),
-            'source_file': source_file  # Save the filename
+            'pulse_width_index': self.pulse_combo.currentIndex(),
+            'coherence': self.coherence_combo.currentIndex(),
+            'mod_level': self.mod_slider.value() / 10.0,
+            'audio_file': self.audio_combo.currentData()  # Save selected audio file path
         }
         
         with open(self.config_file, 'w') as f:
@@ -266,28 +207,20 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
+        pulse_widths = [10, 20, 40]
         ipNum = self.usrp_combo.currentIndex() + 1
         ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
         
-        # Get selected source
-        current_data = self.source_combo.currentData()
-        if current_data == "none":
-            sourceIndex = 1
-            wavFile = None
-        else:
-            sourceIndex = 0
-            wavFile = current_data
-            
-        return {
+        values = {
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_slider.value(),
-            'pulseWidth': self.pulse_group.checkedId(),
-            'modLevel': self.mod_slider.value() / 10,
-            'coherence': self.coherence_group.checkedId(),
-            'sourceIndex': sourceIndex,
-            'wavFile': wavFile
+            'pulse_width': pulse_widths[self.pulse_combo.currentIndex()],
+            'coherence': self.coherence_combo.currentIndex(),
+            'mod_level': self.mod_slider.value() / 10.0,
+            'audio_file': self.audio_combo.currentData()  # Add audio file to values
         }
+        return values
 
 class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
@@ -298,8 +231,8 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
-        except:
-            pass
+        except BaseException as exc:
+            print(f"Qt GUI: Could not set Icon: {str(exc)}", file=sys.stderr)
         self.top_scroll_layout = Qt.QVBoxLayout()
         self.setLayout(self.top_scroll_layout)
         self.top_scroll = Qt.QScrollArea()
@@ -315,12 +248,11 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.settings = Qt.QSettings("GNU Radio", "ppmookLiveAudioXmitter")
 
         try:
-            if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-                self.restoreGeometry(self.settings.value("geometry").toByteArray())
-            else:
-                self.restoreGeometry(self.settings.value("geometry"))
-        except:
-            pass
+            geometry = self.settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        except BaseException as exc:
+            print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
 
         # Use provided config values or get them from dialog
         if config_values is None:
@@ -330,41 +262,35 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             values = config_dialog.get_values()
         else:
             values = config_values
-            
-        # Assign all values
+
+        # Get configuration values
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
-        pulseWidth = values['pulseWidth']
-        modLevel = values['modLevel']
+        pulseWidth = values['pulse_width']
         coherence = values['coherence']
-        sourceIndex = values['sourceIndex']
-        wavFile = values['wavFile']
-        
-        # Update variables
-        self.pulseWidthDefault = pulseWidth
-        self.modLevelDefault = modLevel
-        self.coherenceDefault = coherence
-        self.cfDefault = cf
+        modLevel = values['mod_level']
+        audio_file = values.get('audio_file')
 
         ##################################################
         # Variables
         ##################################################
         self.sps = sps = 500
         self.samp_rate = samp_rate = 20e6
-        self.pulseWidthDefault = pulseWidthDefault = 20
-        self.modLevelDefault = modLevelDefault = 1
-        self.coherenceDefault = coherenceDefault = 0
-        self.cf = cf = 300  
-        self.pulseWidth = pulseWidth = pulseWidthDefault
-        self.pulsePeriod = pulsePeriod = sps/samp_rate*1e6
-        self.modLevel = modLevel = modLevelDefault
-        self.coherence = coherence = coherenceDefault
-        self.centerFrequency = centerFrequency = cf
+        self.pulseWidthDefault = pulseWidthDefault = pulseWidth  
+        self.modLevelDefault = modLevelDefault = modLevel
+        self.coherenceDefault = coherenceDefault = coherence  
+        self.cf = cf = cf  
+        self.pulseWidth = pulseWidth = pulseWidth  
+        self.pulsePeriod = pulsePeriod = (sps/samp_rate*1e6)
+        self.modLevel = modLevel = modLevel  
+        self.coherence = coherence = coherence  
+        self.centerFrequency = centerFrequency = cf  
 
         ##################################################
         # Blocks
         ##################################################
+
         # Create the options list
         self._pulseWidth_options = [10, 20, 40]
         # Create the labels list
@@ -394,8 +320,8 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._modLevel_range = Range(0.1, 5, 0.1, modLevelDefault, 200)
-        self._modLevel_win = RangeWidget(self._modLevel_range, self.set_modLevel, "Modulation Level", "counter_slider", float, QtCore.Qt.Horizontal)
+        self._modLevel_range = qtgui.Range(0.1, 5, 0.1, modLevel, 200)  # Use modLevel directly here
+        self._modLevel_win = qtgui.RangeWidget(self._modLevel_range, self.set_modLevel, "Modulation Level", "counter_slider", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._modLevel_win, 0, 5, 1, 5)
         for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
@@ -431,7 +357,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.uhd_usrp_sink_0 = uhd.usrp_sink(
-            ",".join((f'addr={ipXmitAddr}', '')),  # Use IP from config
+            ",".join((f'addr={ipXmitAddr}', '')),
             uhd.stream_args(
                 cpu_format="fc32",
                 args='',
@@ -444,10 +370,10 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
         self.uhd_usrp_sink_0.set_center_freq(cf*1e6, 0)
         self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink_0.set_gain(10, 0)
+        self.uhd_usrp_sink_0.set_gain(20, 0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_fff(
-                interpolation=int(samp_rate/sps/1000),
-                decimation=24,
+                interpolation=(int(samp_rate/sps/1000)),
+                decimation=48,
                 taps=[],
                 fractional_bw=0)
         self.qtgui_time_sink_x_0 = qtgui.time_sink_f(
@@ -506,14 +432,14 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.qtgui_freq_sink_x_1 = qtgui.freq_sink_c(
             8192, #size
             window.WIN_BLACKMAN_hARRIS, #wintype
-            cf*1e6, #fc
+            (cf*1e6), #fc
             samp_rate, #bw
             'RF Spectrum', #name
             1,
             None # parent
         )
         self.qtgui_freq_sink_x_1.set_update_time(0.10)
-        self.qtgui_freq_sink_x_1.set_y_axis(-120, -20)
+        self.qtgui_freq_sink_x_1.set_y_axis((-120), (-20))
         self.qtgui_freq_sink_x_1.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_1.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.qtgui_freq_sink_x_1.enable_autoscale(False)
@@ -565,7 +491,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(5, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.filter_fft_low_pass_filter_0 = filter.fft_filter_fff(1, firdes.low_pass(modLevel, 24000, 4000, 1000, window.WIN_HAMMING, 6.76), 1)
+        self.filter_fft_low_pass_filter_0 = filter.fft_filter_fff(1, firdes.low_pass(modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76), 1)
         self.fft_filter_xxx_0_0 = filter.fft_filter_fff(1, [1,]*pulseWidth, 1)
         self.fft_filter_xxx_0_0.declare_sample_delay(0)
         self.fft_filter_xxx_0 = filter.fft_filter_fff(1, (1,)*sps, 1)
@@ -573,13 +499,21 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.digital_glfsr_source_x_0 = digital.glfsr_source_f(31, True, 0b1001000000000000000000000000000, 1)
         self.digital_binary_slicer_fb_1 = digital.binary_slicer_fb()
         self.digital_binary_slicer_fb_0 = digital.binary_slicer_fb()
-        self._centerFrequency_range = Range(30, 2200, 0.01, cf, 200)
-        self._centerFrequency_win = RangeWidget(self._centerFrequency_range, self.set_centerFrequency, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
+        self._centerFrequency_range = qtgui.Range(30, 2200, 0.01, cf, 200)  # Use cf directly here
+        self._centerFrequency_win = qtgui.RangeWidget(self._centerFrequency_range, self.set_centerFrequency, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._centerFrequency_win, 0, 0, 1, 5)
         for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
+        
+        # Modify wavfile source to use selected file
+        if audio_file and os.path.exists(audio_file):
+            self.blocks_wavfile_source_0 = blocks.wavfile_source(audio_file, True)
+        else:
+            # Create dummy source if no valid wav file
+            self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
+
         self.blocks_vector_source_x_0_0 = blocks.vector_source_f((0,)*10+(1,)*(sps-10), True, 1, [])
         self.blocks_vector_source_x_0 = blocks.vector_source_f(np.arange(1,-1,-2/sps), True, 1, [])
         self.blocks_stream_mux_0 = blocks.stream_mux(gr.sizeof_float*1, (int(sps-1),1))
@@ -592,23 +526,17 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.blocks_multiply_xx_1 = blocks.multiply_vff(1)
         self.blocks_multiply_xx_0 = blocks.multiply_vff(1)
         self.blocks_multiply_const_vxx_1 = blocks.multiply_const_cc(0.1)
-        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff(-1)
+        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff((-1))
         self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
         self.blocks_delay_1 = blocks.delay(gr.sizeof_float*1, 1)
         self.blocks_char_to_float_1 = blocks.char_to_float(1, 1)
         self.blocks_char_to_float_0 = blocks.char_to_float(1, 1)
         self.blocks_add_xx_0 = blocks.add_vff(1)
-        self.blocks_add_const_vxx_0 = blocks.add_const_ff(-0.5)
+        self.blocks_add_const_vxx_0 = blocks.add_const_ff((-0.5))
 
-        # Modify blocks to use recorded audio instead of TCP source
-        if wavFile and os.path.exists(wavFile):
-            self.source_0 = blocks.wavfile_source(wavFile, True)
-        else:
-            self.source_0 = blocks.null_source(gr.sizeof_float*1)
-
-        # Replace network TCP source with wav file source
-        self.blocks_selector_0 = blocks.selector(gr.sizeof_float*1, sourceIndex, 0)
-        self.blocks_selector_0.set_enabled(True)
+        # Keep only these callback updates
+        self._pulseWidth_callback(pulseWidth)  
+        self._coherence_callback(coherence)  
 
         ##################################################
         # Connections
@@ -634,6 +562,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.connect((self.blocks_stream_mux_0, 0), (self.fft_filter_xxx_0, 0))
         self.connect((self.blocks_vector_source_x_0, 0), (self.blocks_add_xx_0, 0))
         self.connect((self.blocks_vector_source_x_0_0, 0), (self.blocks_multiply_xx_2, 1))
+        self.connect((self.blocks_wavfile_source_0, 0), (self.filter_fft_low_pass_filter_0, 0))
         self.connect((self.digital_binary_slicer_fb_0, 0), (self.blocks_char_to_float_1, 0))
         self.connect((self.digital_binary_slicer_fb_1, 0), (self.blocks_char_to_float_0, 0))
         self.connect((self.digital_glfsr_source_x_0, 0), (self.blocks_repeat_0, 0))
@@ -641,7 +570,6 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.connect((self.fft_filter_xxx_0_0, 0), (self.blocks_float_to_complex_0, 0))
         self.connect((self.fft_filter_xxx_0_0, 0), (self.qtgui_time_sink_x_0, 0))
         self.connect((self.filter_fft_low_pass_filter_0, 0), (self.rational_resampler_xxx_0, 0))
-        self.connect((self.source_0, 0), (self.filter_fft_low_pass_filter_0, 0))
         self.connect((self.rational_resampler_xxx_0, 0), (self.blocks_stream_mux_0, 1))
 
 
@@ -658,7 +586,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
     def set_sps(self, sps):
         self.sps = sps
-        self.set_pulsePeriod(self.sps/self.samp_rate*1e6)
+        self.set_pulsePeriod((self.sps/self.samp_rate*1e6))
         self.blocks_repeat_0.set_interpolation(int(self.sps))
         self.blocks_vector_source_x_0.set_data(np.arange(1,-1,-2/self.sps), [])
         self.blocks_vector_source_x_0_0.set_data((0,)*10+(1,)*(self.sps-10), [])
@@ -669,8 +597,8 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
     def set_samp_rate(self, samp_rate):
         self.samp_rate = samp_rate
-        self.set_pulsePeriod(self.sps/self.samp_rate*1e6)
-        self.qtgui_freq_sink_x_1.set_frequency_range(self.cf*1e6, self.samp_rate)
+        self.set_pulsePeriod((self.sps/self.samp_rate*1e6))
+        self.qtgui_freq_sink_x_1.set_frequency_range((self.cf*1e6), self.samp_rate)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
         self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
 
@@ -701,7 +629,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
     def set_cf(self, cf):
         self.cf = cf
         self.set_centerFrequency(self.cf)
-        self.qtgui_freq_sink_x_1.set_frequency_range(self.cf*1e6, self.samp_rate)
+        self.qtgui_freq_sink_x_1.set_frequency_range((self.cf*1e6), self.samp_rate)
         self.uhd_usrp_sink_0.set_center_freq(self.cf*1e6, 0)
 
     def get_pulseWidth(self):
@@ -724,7 +652,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
     def set_modLevel(self, modLevel):
         self.modLevel = modLevel
-        self.filter_fft_low_pass_filter_0.set_taps(firdes.low_pass(self.modLevel, 24000, 4000, 1000, window.WIN_HAMMING, 6.76))
+        self.filter_fft_low_pass_filter_0.set_taps(firdes.low_pass(self.modLevel, 48000, 4000, 1000, window.WIN_HAMMING, 6.76))
 
     def get_coherence(self):
         return self.coherence
@@ -744,13 +672,12 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
 
 
 def main(top_block_cls=ppmookLiveAudioXmitter, options=None, app=None, config_values=None):
-
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')
-            #Qt.QApplication.setGraphicsSystem(style)
+            Qt.QApplication.setGraphicsSystem(style)
         app = Qt.QApplication(sys.argv)
-        
+
     tb = top_block_cls(config_values)
     tb.start()
     tb.show()
