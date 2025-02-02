@@ -9,31 +9,30 @@
 # Author: Gary Schafer
 # GNU Radio version: 3.10.10.0
 
-from PyQt5 import Qt
-from gnuradio import qtgui
-from PyQt5 import QtCore
-from PyQt5.QtCore import QObject, pyqtSlot
-from gnuradio import blocks
-from gnuradio import digital
-from gnuradio import eng_notation
-from gnuradio import filter
-from gnuradio.filter import firdes
-from gnuradio import gr
-from gnuradio.fft import window
-import sys
-import signal
-from PyQt5 import Qt
-from argparse import ArgumentParser
-from gnuradio.eng_arg import eng_float, intx
-from gnuradio import uhd
-import time
-from math import pi
-import numpy as np
-import sip
+# Standard library imports
 import json
 import os
-from apps.utils import apply_dark_theme, read_settings
+import signal
+import sip  # type: ignore
+import sys
+import time
+
+# Third party imports
+from gnuradio import blocks # type: ignore
+from gnuradio import digital # type: ignore
+from gnuradio import eng_notation # type: ignore
+from gnuradio import filter # type: ignore
+from gnuradio import gr # type: ignore
+from gnuradio import qtgui # type: ignore
+from gnuradio import uhd # type: ignore
+from gnuradio.fft import window  # type: ignore
 from packaging.version import Version as StrictVersion # type: ignore
+from PyQt5 import Qt # type: ignore
+from PyQt5 import QtCore # type: ignore
+from PyQt5.QtCore import QObject, pyqtSlot # type: ignore
+
+# Local imports
+from apps.utils import apply_dark_theme, read_settings
 import glob
 
 if __name__ == '__main__':
