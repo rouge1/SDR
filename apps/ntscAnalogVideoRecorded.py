@@ -72,6 +72,7 @@ class ConfigDialog(Qt.QDialog):
         self.create_frequency_control()
         self.create_power_control()
         self.create_video_selector()
+        self.create_video_invert_control() 
         self.create_audio_controls()
         
         self.layout.addWidget(self.button_box)
@@ -176,6 +177,12 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(Qt.QLabel("Video Source:"))
         self.layout.addWidget(self.video_combo)
 
+    def create_video_invert_control(self):
+        # Video Inversion control
+        self.video_invert = Qt.QCheckBox("Invert Video")
+        self.video_invert.setChecked(False)  # Default to normal
+        self.layout.addWidget(self.video_invert)
+
     def create_audio_controls(self):
         self.audio_combo = Qt.QComboBox()
         self.layout.addWidget(Qt.QLabel("Audio File:"))
@@ -261,7 +268,7 @@ class ConfigDialog(Qt.QDialog):
             'pwr': self.pwr_slider.value(),
             'videoFileName': current_video_path,
             'audioFileName': self.audio_paths[self.audio_combo.currentIndex()],
-            'videoInvert': 1 if self.video_invert.isChecked() else -1
+            'videoInvert': -1 if self.video_invert.isChecked() else 1  # Modified to match expected values
         }
 
 class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
