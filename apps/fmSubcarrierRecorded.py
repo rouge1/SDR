@@ -21,6 +21,7 @@ import time
 from gnuradio import analog  # type: ignore
 from gnuradio import blocks  # type: ignore
 from gnuradio import filter  # type: ignore
+from gnuradio.filter import firdes # type: ignore  
 from gnuradio import gr  # type: ignore
 from gnuradio import qtgui  # type: ignore
 from gnuradio import uhd  # type: ignore
