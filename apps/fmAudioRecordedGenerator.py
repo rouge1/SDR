@@ -143,27 +143,41 @@ class ConfigDialog(Qt.QDialog):
 
     def create_source_control(self):
         self.source_combo = Qt.QComboBox()
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
         # Read media directory setting and get wav files
         settings = read_settings()
         wav_files = get_wav_files(settings)
         
-        if wav_files is None:
-            # No media directory configured
-            self.source_combo.addItem("Error - Setup Media directory in Settings")
-            self.source_combo.setEnabled(False)
-        else:
-            # Media directory exists
-            if wav_files:
-                # Add all wav files found
-                for wav_file in wav_files:
-                    display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
-                    self.source_combo.addItem(display_name, wav_file)
-                    
+        try:
+            if wav_files is None:
+                raise FileNotFoundError("Error - Setup Media directory in Settings")
+                
+            if not wav_files:
+                raise FileNotFoundError("No WAV files found in media directory")
+                
+            # Add wav files found
+            for wav_file in wav_files:
+                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+                self.source_combo.addItem(display_name, wav_file)
+                
             # Always add these options
             self.source_combo.addItem("Sinewave", "sinewave")
             self.source_combo.addItem("No Modulation", "none")
             
+            # Only enable OK button if we have both IP addresses and media files
+            ok_button.setEnabled(bool(self.ipList))
+            ok_button.setGraphicsEffect(None)
+                
+        except Exception as e:
+            self.source_combo.addItem(str(e))
+            self.source_combo.setEnabled(False)
+            # Disable OK button and add opacity effect
+            ok_button.setEnabled(False)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
+                
         self.layout.addWidget(Qt.QLabel("Input Source:"))
         self.layout.addWidget(self.source_combo)
 

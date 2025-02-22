@@ -100,22 +100,38 @@ class ConfigDialog(Qt.QDialog):
 
     def create_audio_source_control(self):
         self.audio_combo = Qt.QComboBox()
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        
+        # Read settings and get wav files
         settings = read_settings()
         media_dir = settings.get('media_directory', '')
         
-        if not media_dir or not os.path.exists(media_dir):
-            self.audio_combo.addItem("Error - Setup Media directory in Settings")
-            self.audio_combo.setEnabled(False)
-        else:
+        try:
+            if not media_dir or not os.path.exists(media_dir):
+                raise FileNotFoundError("Error - Setup Media directory in Settings")
+                
+            # Get all wav files
             wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
-            if wav_files:
-                for wav_file in wav_files:
-                    display_name = os.path.splitext(os.path.basename(wav_file))[0]
-                    self.audio_combo.addItem(display_name, wav_file)
-            else:
-                self.audio_combo.addItem("No WAV files found in media directory")
-                self.audio_combo.setEnabled(False)
-        
+            if not wav_files:
+                raise FileNotFoundError("No WAV files found in media directory")
+                
+            for wav_file in wav_files:
+                display_name = os.path.splitext(os.path.basename(wav_file))[0]
+                self.audio_combo.addItem(display_name, wav_file)
+                
+            # Only enable OK button if we have both IP addresses and media files
+            ok_button.setEnabled(bool(self.ipList))
+            ok_button.setGraphicsEffect(None)
+                
+        except Exception as e:
+            self.audio_combo.addItem(str(e))
+            self.audio_combo.setEnabled(False)
+            # Disable OK button and add opacity effect
+            ok_button.setEnabled(False)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
+                
         self.layout.addWidget(Qt.QLabel("Audio Source:"))
         self.layout.addWidget(self.audio_combo)
 

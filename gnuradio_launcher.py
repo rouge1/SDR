@@ -101,9 +101,9 @@ class GNURadioLauncher(QMainWindow):
         self.create_app_button("AM Audio Generator", "amAudioInternalGeneratorLive", "amAudio.jpg", grid, 2, 0)
         self.create_app_button("FM Audio Generator", "fmAudioRecordedGenerator", "fmAudio.png", grid, 2, 1)
         self.create_app_button("FM Subcarrier", "subcarrierRecordedAudio", "fmSubcarrier.jpg", grid, 2, 2)
-        
         # Video
-        self.create_app_button("ATSC Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
+        self.create_app_button("ATSC Video Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
+        #self.create_app_button("ATSC Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
         self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 3, 1)
         self.create_app_button("AM Video Transmitter", "amVideoRecordedXmitter", "amVideo.jpg", grid, 3, 2)
         

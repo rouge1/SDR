@@ -121,16 +121,27 @@ class ConfigDialog(Qt.QDialog):
 
     def create_file_selector(self):
         self.file_combo = Qt.QComboBox()
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
         try:
             with open("tsFileList.txt", "r") as f:
                 self.ts_files = f.readlines()
+                if not self.ts_files:  # Check if file is empty
+                    raise FileNotFoundError("No files listed in tsFileList.txt")
                 for ts_file in self.ts_files:
                     display_name = ts_file.strip()
                     self.file_combo.addItem(display_name, display_name)
+            # Only enable OK button if we have both IP addresses and media files
+            ok_button.setEnabled(bool(self.ipList))
+            ok_button.setGraphicsEffect(None)
         except:
-            self.file_combo.addItem("No TS files found")
+            self.file_combo.addItem("No TS files found in directory")
             self.file_combo.setEnabled(False)
+            # Disable OK button and add opacity effect
+            ok_button.setEnabled(False)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
             
         self.layout.addWidget(Qt.QLabel("Select Transport Stream File:"))
         self.layout.addWidget(self.file_combo)
@@ -511,7 +522,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
         self.uhd_usrp_sink_0.set_center_freq(self.cf*1e6, 0)
 
-def main(top_block_cls=ppmookLiveAudioXmitter, options=None, app=None, config_values=None):
+def main(top_block_cls=atscXmitter2, options=None, app=None, config_values=None):
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')

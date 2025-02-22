@@ -71,7 +71,7 @@ class ConfigDialog(Qt.QDialog):
         self.create_usrp_selector()
         self.create_frequency_control()
         self.create_power_control()
-        self.create_video_controls()
+        self.create_video_selector()
         self.create_audio_controls()
         
         self.layout.addWidget(self.button_box)
@@ -130,31 +130,51 @@ class ConfigDialog(Qt.QDialog):
         self.pwr_layout.addWidget(self.pwr_slider)
         self.layout.addLayout(self.pwr_layout)
 
-    def create_video_controls(self):
+    def create_video_selector(self):
         self.video_combo = Qt.QComboBox()
-        self.layout.addWidget(Qt.QLabel("Video File:"))
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
-        # Check if media directory exists
-        if not os.path.exists(self.media_dir):
-            self.video_combo.addItem("Error - Setup Media directory in Settings")
-            self.video_paths = [os.path.join(self.media_dir, "default.flt")]
-            self.video_combo.setEnabled(False)
-        else:
-            # Scan media directory for .flt files
-            video_files = sorted([f for f in os.listdir(self.media_dir) if f.endswith('.flt')])
-            if video_files:
-                # Create display names by cleaning up filenames
-                video_names = [os.path.splitext(f)[0].replace('-', ' ') for f in video_files]
-                self.video_paths = [os.path.join(self.media_dir, f) for f in video_files]
-                self.video_combo.addItems(video_names)
-            else:
-                self.video_combo.addItem("No video files found")
-                self.video_paths = [os.path.join(self.media_dir, "default.flt")]
-                self.video_combo.setEnabled(False)
+        # Read settings from window_settings.json
+        settings = read_settings()
+        self.media_dir = settings.get('media_directory', '')
+        
+        try:
+            if not self.media_dir or not os.path.exists(self.media_dir):
+                raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
+            # Search for .dat files in media directory
+            self.video_files = []
+            for file in os.listdir(self.media_dir):
+                if file.endswith('.dat'):
+                    full_path = os.path.join(self.media_dir, file)
+                    display_name = os.path.splitext(file)[0].replace('-', ' ')
+                    self.video_files.append((display_name, file))
+                    
+            if not self.video_files:
+                raise FileNotFoundError("No video files found in media directory")
+                
+            # Sort video files alphabetically by display name
+            self.video_files.sort()
+            
+            for display_name, filename in self.video_files:
+                full_path = os.path.join(self.media_dir, filename)
+                self.video_combo.addItem(display_name, full_path)
+                
+            # Only enable OK button if we have both IP addresses and video files
+            ok_button.setEnabled(bool(self.ipList))
+            ok_button.setGraphicsEffect(None)
+                
+        except Exception as e:
+            self.video_combo.addItem(str(e))
+            self.video_combo.setEnabled(False)
+            # Disable OK button and add opacity effect
+            ok_button.setEnabled(False)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
+                
+        self.layout.addWidget(Qt.QLabel("Video Source:"))
         self.layout.addWidget(self.video_combo)
-        self.video_invert = Qt.QCheckBox("Invert Video")
-        self.layout.addWidget(self.video_invert)
 
     def create_audio_controls(self):
         self.audio_combo = Qt.QComboBox()
@@ -204,6 +224,12 @@ class ConfigDialog(Qt.QDialog):
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
+        # Get the filename (not full path) of selected video
+        current_index = self.video_combo.currentIndex()
+        video_filename = None
+        if current_index >= 0 and current_index < len(self.video_files):
+            _, video_filename = self.video_files[current_index]
+        
         config = {
             'usrp_index': self.usrp_combo.currentIndex(),
             'center_freq': self.cf_slider.value(),
@@ -223,14 +249,17 @@ class ConfigDialog(Qt.QDialog):
     def get_values(self):
         ipNum = self.usrp_combo.currentIndex() + 1
         ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-
+        
+        # Get full path from current media directory
+        current_video_path = self.video_combo.currentData()
+        
         return {
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
             'cf': self.cf_slider.value(),
             'pwr': self.pwr_slider.value(),
-            'videoFileName': self.video_paths[self.video_combo.currentIndex()],
+            'videoFileName': current_video_path,
             'audioFileName': self.audio_paths[self.audio_combo.currentIndex()],
             'videoInvert': 1 if self.video_invert.isChecked() else -1
         }
