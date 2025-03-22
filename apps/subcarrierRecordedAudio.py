@@ -119,7 +119,8 @@ class ConfigDialog(Qt.QDialog):
                 raise FileNotFoundError("No WAV files found in media directory")
                 
             for wav_file in wav_files:
-                display_name = os.path.splitext(os.path.basename(wav_file))[0]
+                # Get just the filename without extension and replace hyphens with spaces
+                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
                 self.audio_combo.addItem(display_name, wav_file)
                 
             # Only enable OK button if we have both IP addresses and media files
