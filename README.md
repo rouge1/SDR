@@ -1,81 +1,106 @@
 # GNU Radio Applications Launcher
-A PyQt5-based graphical launcher for GNU Radio applications, providing easy access to various 
-signal generation and processing tools.
 
-Features:
+A PyQt5-based graphical launcher for GNU Radio applications, providing easy access to a suite of signal generation and processing tools.
 
-	Clean, intuitive graphical interface for launching GNU Radio applications
-	Support for multiple signal generation applications.
-	Persistent window positioning
-	Dark theme support
-	Configurable settings for each application
-	Flexible radio mode operation (single/multiple window mode)
+---
 
-# Prerequisites
+## Features
 
-	Python 3.x
-	PyQt5
-	GNU Radio
-	Pillow (PIL)
+- Clean, intuitive graphical interface for launching GNU Radio applications
+- Support for multiple signal generation and processing modules
+- Persistent window positioning
+- Dark theme support
+- Configurable settings for each application
+- Flexible operation modes (single/multiple window)
 
-# Installation
+---
 
-Clone the repository:
+## Prerequisites
 
-	git clone https://github.com/rouge1/gnuradio-launcher.git
+- [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/)
+- GNU Radio (installed via conda)
+- Python 3.x (managed by conda)
+- Linux (recommended)
 
-cd SDR/
+---
 
-Install required dependencies:
+## Installation
 
-	pip install PyQt5 Pillow
+1. **Clone the repository:**
+    ```sh
+    git clone https://github.com/rouge1/gnuradio-launcher.git
+    cd gnuradio-launcher/SDR
+    ```
 
-Ensure GNU Radio is installed on your system
+2. **Create and activate the Conda environment:**
+    ```sh
+    conda env create -f environment.yml
+    conda activate gnu
+    ```
 
-	Project Structure
-	SDR/
-	├── apps/
-	│   ├── utils.py
-	│   ├── settings_dialog.py
-	│   └── [application modules]
-	├── config/
-	│   └── window_settings.json
-	├── icons/
-	│   └── [application icons]
-	└── gnuradio_launcher.py
+---
 
-# Usage
+## Project Structure
 
-Run the launcher:
+```
+SDR/
+├── apps/
+│   ├── utils.py
+│   ├── settings_dialog.py
+│   └── [application modules]
+├── config/
+│   └── window_settings.json
+├── icons/
+│   └── [application icons]
+├── gnuradio_launcher.py
+├── start_app.sh
+├── environment.yml
+```
 
-	python3 gnuradio_launcher.py
+---
 
-Click on any application button to launch it
+## Usage
 
-Configure the application parameters in the dialog that appears
+1. **Start the launcher using the provided script:**
+    ```sh
+    ./start_app.sh
+    ```
+    Or, run directly:
+    ```sh
+    python gnuradio_launcher.py
+    ```
 
-Click "OK" to start the GNU Radio application
+2. **Interact with the GUI:**
+    - Click any application button to configure and launch a GNU Radio module.
+    - Use the settings icon (top-right) for global configuration.
 
-# Configuration
+---
 
-Application settings are managed through individual configuration dialogs
+## Configuration
 
-Window positions are automatically saved and restored
+- Application settings are managed through individual dialogs.
+- Window positions are automatically saved and restored.
+- Global settings are accessible via the settings icon.
 
-Global settings can be accessed through the settings icon in the top-right corner
+---
 
-# Development
+## Development
+
 To add a new GNU Radio application:
 
-	Create a new Python module in the apps directory
-	Implement the required ConfigDialog class
-	Implement the main() function that returns your GNU Radio flowgraph
-	Add an icon to the icons directory
-	Register the application in gnuradio_launcher.py
+1. Create a new Python module in the `apps/` directory.
+2. Implement a `ConfigDialog` class for your module.
+3. Implement a `main()` function that returns your GNU Radio flowgraph.
+4. Add an icon to the `icons/` directory.
+5. Register the application in `gnuradio_launcher.py`.
 
-# Acknowledgments
+---
 
-	GNU Radio community
-	PyQt5 developers
-	Gary Schafer
- 	Rick Astley
+## Acknowledgments
+
+- GNU Radio community
+- PyQt5 developers
+- Gary Schafer
+- Rick Astley
+
+---
