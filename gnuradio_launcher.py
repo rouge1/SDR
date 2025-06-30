@@ -127,7 +127,7 @@ class GNURadioLauncher(QMainWindow):
         self.save_window_position()
         
     def save_window_position(self):
-        """Save the current window position to settings file"""
+        """Save the current window position and size to settings file"""
         try:
             # Load existing settings
             settings = {}
@@ -135,10 +135,12 @@ class GNURadioLauncher(QMainWindow):
                 with open(self.settings_file, 'r') as f:
                     settings = json.load(f)
             
-            # Update window position
+            # Update window position and size
             settings['window_position'] = {
                 'x': self.pos().x(),
-                'y': self.pos().y()
+                'y': self.pos().y(),
+                'width': self.width(),
+                'height': self.height()
             }
             
             # Save updated settings
@@ -148,20 +150,28 @@ class GNURadioLauncher(QMainWindow):
             print(f"Error saving window position: {e}")
             
     def load_window_position(self):
-        """Load the saved window position from settings file or center if none exists"""
+        """Load the saved window position and size from settings file or center if none exists"""
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
                     settings = json.load(f)
                     if 'window_position' in settings:
                         position = settings['window_position']
-                        # Validate position is on screen
                         screen = self.app.primaryScreen().geometry()
+                        
+                        # Restore position if valid
                         if (0 <= position['x'] <= screen.width() - self.width() and 
                             0 <= position['y'] <= screen.height() - self.height()):
                             self.move(QPoint(position['x'], position['y']))
                         else:
                             self.center_window()
+                            
+                        # Restore size if saved and valid
+                        if 'width' in position and 'height' in position:
+                            # Ensure size is within reasonable bounds
+                            width = min(max(position['width'], 800), screen.width())
+                            height = min(max(position['height'], 600), screen.height())
+                            self.resize(width, height)
                     else:
                         self.center_window()
             else:
