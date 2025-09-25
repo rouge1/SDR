@@ -330,6 +330,10 @@ class GNURadioLauncher(QMainWindow):
         super().closeEvent(event)
 
 if __name__ == '__main__':
+    # Enable high DPI scaling for 4K displays
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     app = QApplication.instance()
     if not app:
         app = QApplication(sys.argv)
