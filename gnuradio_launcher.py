@@ -142,10 +142,11 @@ class GNURadioLauncher(QMainWindow):
                 'width': self.width(),
                 'height': self.height()
             }
+
             
             # Save updated settings
             with open(self.settings_file, 'w') as f:
-                json.dump(settings, f)
+                json.dump(settings, f, indent=4)
         except Exception as e:
             print(f"Error saving window position: {e}")
             
@@ -230,29 +231,29 @@ class GNURadioLauncher(QMainWindow):
             # Create configuration dialog (no need to pass parameters)
             config_dialog = module.ConfigDialog()
             
-            # Load saved dialog position from settings file
+            # Load saved dialog position/size from per-app config file
+            app_config_file = os.path.join(self.config_dir, f"{module_name}_config.json")
             screen = self.app.primaryScreen().geometry()
             default_pos = self.pos() + QPoint(50, 50)
 
             try:
-                if os.path.exists(self.settings_file):
-                    with open(self.settings_file, 'r') as f:
-                        settings = json.load(f)
-                        if 'dialog_position' in settings:
-                            position = settings['dialog_position']
-                            
-                            # Check if position is within screen bounds
-                            valid_position = (
-                                0 <= position['x'] <= screen.width() - config_dialog.width() and 
-                                0 <= position['y'] <= screen.height() - config_dialog.height()
-                            )
-                            
-                            if valid_position:
-                                config_dialog.move(QPoint(position['x'], position['y']))
-                            else:
-                                config_dialog.move(default_pos)
+                if os.path.exists(app_config_file):
+                    with open(app_config_file, 'r') as f:
+                        app_config = json.load(f)
+                    position = app_config.get('dialog_position')
+                    if position:
+                        valid_position = (
+                            0 <= position['x'] <= screen.width() - config_dialog.width() and
+                            0 <= position['y'] <= screen.height() - config_dialog.height()
+                        )
+                        if valid_position:
+                            config_dialog.move(QPoint(position['x'], position['y']))
+                            if 'width' in position and 'height' in position:
+                                config_dialog.resize(position['width'], position['height'])
                         else:
                             config_dialog.move(default_pos)
+                    else:
+                        config_dialog.move(default_pos)
                 else:
                     config_dialog.move(default_pos)
             except Exception as e:
@@ -261,23 +262,21 @@ class GNURadioLauncher(QMainWindow):
 
             # Show dialog and wait for user response
             result = config_dialog.exec_()
-            
-            # Save dialog position to settings file
+
+            # Save dialog position/size to per-app config file
             try:
-                settings = {}
-                if os.path.exists(self.settings_file):
-                    with open(self.settings_file, 'r') as f:
-                        settings = json.load(f)
-                
-                # Save the actual geometry position
-                geo = config_dialog.geometry()
-                settings['dialog_position'] = {
-                    'x': geo.x(),
-                    'y': geo.y()
+                app_config = {}
+                if os.path.exists(app_config_file):
+                    with open(app_config_file, 'r') as f:
+                        app_config = json.load(f)
+                app_config['dialog_position'] = {
+                    'x': config_dialog.pos().x(),
+                    'y': config_dialog.pos().y(),
+                    'width': config_dialog.width(),
+                    'height': config_dialog.height()
                 }
-                
-                with open(self.settings_file, 'w') as f:
-                    json.dump(settings, f)
+                with open(app_config_file, 'w') as f:
+                    json.dump(app_config, f, indent=4)
             except Exception as e:
                 print(f"Error saving dialog position: {e}")
 

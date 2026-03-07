@@ -26,7 +26,7 @@ from gnuradio import filter # type: ignore
 from gnuradio.filter import firdes # type: ignore  
 from gnuradio import gr # type: ignore
 from gnuradio import qtgui # type: ignore
-from gnuradio import uhd # type: ignore
+from gnuradio import soapy, uhd  # type: ignore
 from gnuradio.fft import window  # type: ignore
 from packaging.version import Version as StrictVersion # type: ignore
 from PyQt5 import Qt # type: ignore
@@ -58,6 +58,7 @@ class ConfigDialog(Qt.QDialog):
         # Read settings from window_settings.json
         settings = read_settings()
         self.ipList = settings['ip_addresses']
+        self.radio_type = settings.get('radio_type', 'hackrf')
         self.N = len(self.ipList)
         
         # Add OK/Cancel buttons
@@ -73,7 +74,8 @@ class ConfigDialog(Qt.QDialog):
         self.create_pulse_width_control()
         self.create_coherence_control()
         self.create_mod_level_control()
-        
+        self.create_power_control()
+
         self.layout.addWidget(self.button_box)
         
         # Load saved configuration
@@ -83,6 +85,10 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
+        if self.radio_type == 'hackrf':
+            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
+            return
         self.usrp_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
@@ -137,7 +143,7 @@ class ConfigDialog(Qt.QDialog):
                 self.audio_combo.addItem(display_name, wav_file)
                 
             # Only enable OK button if we have both IP addresses and media files
-            ok_button.setEnabled(bool(self.ipList))
+            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
                 
         except Exception as e:
@@ -170,13 +176,26 @@ class ConfigDialog(Qt.QDialog):
         self.mod_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.mod_slider.setMinimum(1)
         self.mod_slider.setMaximum(50)
-        self.mod_slider.setValue(10)
-        self.mod_label = Qt.QLabel("Modulation Level: 1.0")
+        self.mod_slider.setValue(3)
+        self.mod_label = Qt.QLabel("Modulation Level: 0.3")
         self.mod_slider.valueChanged.connect(
             lambda v: self.mod_label.setText(f"Modulation Level: {v/10:.1f}"))
         self.mod_layout.addWidget(self.mod_label)
         self.mod_layout.addWidget(self.mod_slider)
         self.layout.addLayout(self.mod_layout)
+
+    def create_power_control(self):
+        self.pwr_layout = Qt.QHBoxLayout()
+        self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.pwr_slider.setMinimum(-80)
+        self.pwr_slider.setMaximum(-30)
+        self.pwr_slider.setValue(-30)
+        self.pwr_label = Qt.QLabel("Power Level: -30 dBm")
+        self.pwr_slider.valueChanged.connect(
+            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+        self.pwr_layout.addWidget(self.pwr_label)
+        self.pwr_layout.addWidget(self.pwr_slider)
+        self.layout.addLayout(self.pwr_layout)
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -184,12 +203,13 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                     
-                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pulse_combo.setCurrentIndex(config.get('pulse_width_index', 1))
                 self.coherence_combo.setCurrentIndex(config.get('coherence', 0))
-                self.mod_slider.setValue(int(config.get('mod_level', 1.0) * 10))
-                
+                self.mod_slider.setValue(int(config.get('mod_level', 0.3) * 10))
+                self.pwr_slider.setValue(config.get('power_level', -30))
+
                 # Load saved audio file selection
                 saved_audio = config.get('audio_file', '')
                 if saved_audio:
@@ -205,11 +225,12 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex(),
+            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'pulse_width_index': self.pulse_combo.currentIndex(),
             'coherence': self.coherence_combo.currentIndex(),
             'mod_level': self.mod_slider.value() / 10.0,
+            'power_level': self.pwr_slider.value(),
             'audio_file': self.audio_combo.currentData()  # Save selected audio file path
         }
         
@@ -222,16 +243,22 @@ class ConfigDialog(Qt.QDialog):
 
     def get_values(self):
         pulse_widths = [10, 20, 40]
-        ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        if hasattr(self, 'usrp_combo') and self.ipList:
+            ipNum = self.usrp_combo.currentIndex() + 1
+            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        else:
+            ipNum = 0
+            ipXmitAddr = ''
         
         values = {
+            'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_slider.value(),
             'pulse_width': pulse_widths[self.pulse_combo.currentIndex()],
             'coherence': self.coherence_combo.currentIndex(),
             'mod_level': self.mod_slider.value() / 10.0,
+            'rfPwr': self.pwr_slider.value(),
             'audio_file': self.audio_combo.currentData()  # Add audio file to values
         }
         return values
@@ -278,6 +305,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             values = config_values
 
         # Get configuration values
+        radio_type = values.get('radio_type', 'hackrf')
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
@@ -285,21 +313,25 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         coherence = values['coherence']
         modLevel = values['mod_level']
         audio_file = values.get('audio_file')
+        rfPwr = values.get('rfPwr', -30)
 
         ##################################################
         # Variables
         ##################################################
         self.sps = sps = 500
         self.samp_rate = samp_rate = 20e6
-        self.pulseWidthDefault = pulseWidthDefault = pulseWidth  
+        self.rfPwrDefault = rfPwrDefault = rfPwr
+        self.pulseWidthDefault = pulseWidthDefault = pulseWidth
         self.modLevelDefault = modLevelDefault = modLevel
-        self.coherenceDefault = coherenceDefault = coherence  
-        self.cf = cf = cf  
-        self.pulseWidth = pulseWidth = pulseWidth  
+        self.coherenceDefault = coherenceDefault = coherence
+        self.cf = cf = cf
+        self.rfPwr = rfPwr = rfPwrDefault
+        self.pulseWidth = pulseWidth = pulseWidth
         self.pulsePeriod = pulsePeriod = (sps/samp_rate*1e6)
-        self.modLevel = modLevel = modLevel  
-        self.coherence = coherence = coherence  
-        self.centerFrequency = centerFrequency = cf  
+        self.modLevel = modLevel = modLevel
+        self.coherence = coherence = coherence
+        self.centerFrequency = centerFrequency = cf
+        self.radio_type = radio_type
 
         ##################################################
         # Blocks
@@ -370,21 +402,30 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.uhd_usrp_sink_0 = uhd.usrp_sink(
-            ",".join((f'addr={ipXmitAddr}', '')),
-            uhd.stream_args(
-                cpu_format="fc32",
-                args='',
-                channels=list(range(0,1)),
-            ),
-            "",
-        )
-        self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
-        self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
-
-        self.uhd_usrp_sink_0.set_center_freq(cf*1e6, 0)
-        self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink_0.set_gain(20, 0)
+        self._rfPwr_range = qtgui.Range(-80, -30, 1, rfPwrDefault, 200)
+        self._rfPwr_win = qtgui.RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power", "counter_slider", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._rfPwr_win, 2, 5, 1, 5)
+        for r in range(2, 3):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(5, 10):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        if radio_type == 'usrp':
+            self.radio_sink = uhd.usrp_sink(
+                ",".join((f'addr={ipXmitAddr}', '')),
+                uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
+                "",
+            )
+            self.radio_sink.set_samp_rate(samp_rate)
+            self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
+            self.radio_sink.set_center_freq(cf*1e6, 0)
+            self.radio_sink.set_antenna("TX/RX", 0)
+            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        else:
+            self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
+            self.radio_sink.set_sample_rate(0, samp_rate)
+            self.radio_sink.set_frequency(0, cf*1e6)
+            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
+            self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_fff(
                 interpolation=(int(samp_rate/sps/1000)),
                 decimation=48,
@@ -514,7 +555,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.digital_binary_slicer_fb_1 = digital.binary_slicer_fb()
         self.digital_binary_slicer_fb_0 = digital.binary_slicer_fb()
         self._centerFrequency_range = qtgui.Range(30, 2200, 0.01, cf, 200)  # Use cf directly here
-        self._centerFrequency_win = qtgui.RangeWidget(self._centerFrequency_range, self.set_centerFrequency, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
+        self._centerFrequency_win = qtgui.RangeWidget(self._centerFrequency_range, self.set_cf, "Center Frequency (MHz)", "counter", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._centerFrequency_win, 0, 0, 1, 5)
         for r in range(0, 1):
             self.top_grid_layout.setRowStretch(r, 1)
@@ -539,7 +580,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.blocks_multiply_xx_2 = blocks.multiply_vff(1)
         self.blocks_multiply_xx_1 = blocks.multiply_vff(1)
         self.blocks_multiply_xx_0 = blocks.multiply_vff(1)
-        self.blocks_multiply_const_vxx_1 = blocks.multiply_const_cc(0.1)
+        self.blocks_multiply_const_vxx_1 = blocks.multiply_const_cc(10**((rfPwr<=-50)*(rfPwr+50)/20)*0.9)
         self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff((-1))
         self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
         self.blocks_delay_1 = blocks.delay(gr.sizeof_float*1, 1)
@@ -547,6 +588,8 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.blocks_char_to_float_0 = blocks.char_to_float(1, 1)
         self.blocks_add_xx_0 = blocks.add_vff(1)
         self.blocks_add_const_vxx_0 = blocks.add_const_ff((-0.5))
+        self.blocks_add_const_glfsr = blocks.add_const_ff(1.0)
+        self.blocks_multiply_const_glfsr = blocks.multiply_const_ff(0.5)
 
         # Keep only these callback updates
         self._pulseWidth_callback(pulseWidth)  
@@ -564,7 +607,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.connect((self.blocks_float_to_complex_0, 0), (self.blocks_multiply_const_vxx_1, 0))
         self.connect((self.blocks_float_to_complex_0, 0), (self.qtgui_freq_sink_x_1, 0))
         self.connect((self.blocks_multiply_const_vxx_0, 0), (self.digital_binary_slicer_fb_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.uhd_usrp_sink_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.radio_sink, 0))
         self.connect((self.blocks_multiply_xx_0, 0), (self.blocks_multiply_const_vxx_0, 0))
         self.connect((self.blocks_multiply_xx_1, 0), (self.blocks_selector_0, 0))
         self.connect((self.blocks_multiply_xx_2, 0), (self.blocks_multiply_xx_1, 1))
@@ -579,7 +622,9 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.connect((self.blocks_wavfile_source_0, 0), (self.filter_fft_low_pass_filter_0, 0))
         self.connect((self.digital_binary_slicer_fb_0, 0), (self.blocks_char_to_float_1, 0))
         self.connect((self.digital_binary_slicer_fb_1, 0), (self.blocks_char_to_float_0, 0))
-        self.connect((self.digital_glfsr_source_x_0, 0), (self.blocks_repeat_0, 0))
+        self.connect((self.digital_glfsr_source_x_0, 0), (self.blocks_add_const_glfsr, 0))
+        self.connect((self.blocks_add_const_glfsr, 0), (self.blocks_multiply_const_glfsr, 0))
+        self.connect((self.blocks_multiply_const_glfsr, 0), (self.blocks_repeat_0, 0))
         self.connect((self.fft_filter_xxx_0, 0), (self.blocks_add_xx_0, 1))
         self.connect((self.fft_filter_xxx_0_0, 0), (self.blocks_float_to_complex_0, 0))
         self.connect((self.fft_filter_xxx_0_0, 0), (self.qtgui_time_sink_x_0, 0))
@@ -614,7 +659,10 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.set_pulsePeriod((self.sps/self.samp_rate*1e6))
         self.qtgui_freq_sink_x_1.set_frequency_range((self.cf*1e6), self.samp_rate)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
-        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_samp_rate(self.samp_rate)
+        else:
+            self.radio_sink.set_sample_rate(0, self.samp_rate)
 
     def get_pulseWidthDefault(self):
         return self.pulseWidthDefault
@@ -644,7 +692,10 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.cf = cf
         self.set_centerFrequency(self.cf)
         self.qtgui_freq_sink_x_1.set_frequency_range((self.cf*1e6), self.samp_rate)
-        self.uhd_usrp_sink_0.set_center_freq(self.cf*1e6, 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_center_freq(self.cf*1e6, 0)
+        else:
+            self.radio_sink.set_frequency(0, self.cf*1e6)
 
     def get_pulseWidth(self):
         return self.pulseWidth
@@ -675,6 +726,24 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.coherence = coherence
         self._coherence_callback(self.coherence)
         self.blocks_selector_0.set_input_index(self.coherence)
+
+    def get_rfPwrDefault(self):
+        return self.rfPwrDefault
+
+    def set_rfPwrDefault(self, rfPwrDefault):
+        self.rfPwrDefault = rfPwrDefault
+        self.set_rfPwr(self.rfPwrDefault)
+
+    def get_rfPwr(self):
+        return self.rfPwr
+
+    def set_rfPwr(self, rfPwr):
+        self.rfPwr = rfPwr
+        self.blocks_multiply_const_vxx_1.set_k(10**((self.rfPwr<=-50)*(self.rfPwr+50)/20)*0.9)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        else:
+            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
 
     def get_centerFrequency(self):
         return self.centerFrequency

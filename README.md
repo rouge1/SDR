@@ -7,20 +7,21 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 ## Features
 
 - Clean, intuitive graphical interface for launching GNU Radio applications
-- Support for multiple signal generation and processing modules
-- Persistent window positioning
-- Dark theme support
-- Configurable settings for each application
-- Flexible operation modes (single/multiple window)
+- Supports **HackRF One** (USB) and **Ettus USRP** (network) radio backends
+- 11 signal generation and transmission modules (audio, video, digital modulations)
+- Persistent window positioning and per-app configuration
+- Dark theme
+- Single and multi-radio operation modes
 
 ---
 
 ## Prerequisites
 
 - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/)
-- GNU Radio (installed via conda)
-- Python 3.x (managed by conda)
-- Linux (recommended)
+- GNU Radio 3.10+ with PyQt5 (installed via conda)
+- Python 3.12 (managed by conda)
+- Linux (X11 or Wayland display required)
+- **HackRF One** (USB, via SoapySDR) or **Ettus USRP** (network, via UHD 4.x)
 
 ---
 
@@ -76,11 +77,29 @@ SDR/
 
 ---
 
+## Available Applications
+
+| App | Description |
+|-----|-------------|
+| ASK Generator | Amplitude Shift Keying signal generator |
+| FSK Generator | Frequency Shift Keying signal generator |
+| AM Sine Generator | AM with sinewave carrier |
+| PSK Generator | Phase Shift Keying signal generator |
+| FM Audio (Recorded) | FM transmitter using recorded WAV audio |
+| AM Audio (Live) | AM transmitter with live or recorded audio |
+| PPM-OOK Audio | Pulse Position Modulation OOK audio transmitter |
+| Subcarrier Audio | Subcarrier transmitter with recorded audio |
+| AM Video | AM video transmitter (recorded) |
+| NTSC Analog Video | NTSC analog video transmitter |
+| ATSC Transmitter | ATSC digital TV transmitter |
+
+---
+
 ## Configuration
 
-- Application settings are managed through individual dialogs.
+- Global settings (radio type, IP addresses, media directory) are accessed via the gear icon.
+- Each app saves its own settings to `config/<module_name>_config.json`.
 - Window positions are automatically saved and restored.
-- Global settings are accessible via the settings icon.
 
 ---
 

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+apps/_pycache__/
+
+# Config / user state (position, size, saved values)
+config/
+
+# Conda / virtualenv
+.venv/
+*.conda
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

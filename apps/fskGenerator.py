@@ -37,7 +37,7 @@ from gnuradio import eng_notation # type: ignore
 from gnuradio import filter # type: ignore
 from gnuradio import gr # type: ignore
 from gnuradio import qtgui # type: ignore
-from gnuradio import uhd # type: ignore
+from gnuradio import soapy, uhd  # type: ignore
 from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 from packaging.version import Version as StrictVersion # type: ignore
@@ -61,6 +61,7 @@ class ConfigDialog(Qt.QDialog):
         # Read settings from window_settings.json
         settings = read_settings()
         self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.radio_type = settings.get('radio_type', 'hackrf')
         self.N = len(self.ipList)
             
         # Add OK/Cancel buttons
@@ -84,6 +85,10 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
+        if self.radio_type == 'hackrf':
+            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
+            return
         self.usrp_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
@@ -190,7 +195,7 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                     
-                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(config.get('power_level', -50))
                 self.bits_combo.setCurrentIndex(config.get('bits_index', 0))
@@ -207,7 +212,7 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex(),
+            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
             'bits_index': self.bits_combo.currentIndex(),
@@ -225,8 +230,12 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        if hasattr(self, 'usrp_combo') and self.ipList:
+            ipNum = self.usrp_combo.currentIndex() + 1
+            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        else:
+            ipNum = 0
+            ipXmitAddr = ''
         bitsPerSym = self.bits_combo.currentIndex() + 1
         
         # Set modulation name based on bits per symbol
@@ -238,6 +247,7 @@ class ConfigDialog(Qt.QDialog):
             modNameDefault = "8FSK"
         
         return {
+            'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
@@ -293,6 +303,7 @@ class fskGenerator(gr.top_block, Qt.QWidget):
             values = config_values
 
         # Assign configuration values
+        radio_type = values.get('radio_type', 'hackrf')
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         mikePort = values['mikePort']
@@ -330,6 +341,7 @@ class fskGenerator(gr.top_block, Qt.QWidget):
         self.attenDefault = attenDefault = 0
         self.actualBitRate = actualBitRate = actualSymRate*bitsPerSym
         self.BT = BT = btDefault
+        self.radio_type = radio_type
 
         ##################################################
         # Blocks
@@ -406,21 +418,23 @@ class fskGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(6, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.uhd_usrp_sink_0 = uhd.usrp_sink(
-            ",".join(('addr='+outputIpAddr, '')),
-            uhd.stream_args(
-                cpu_format="fc32",
-                args='',
-                channels=list(range(0,1)),
-            ),
-            "",
-        )
-        self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
-        self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
-
-        self.uhd_usrp_sink_0.set_center_freq(cf*1e6, 0)
-        self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink_0.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        if radio_type == 'usrp':
+            self.radio_sink = uhd.usrp_sink(
+                ",".join(('addr='+outputIpAddr, '')),
+                uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
+                "",
+            )
+            self.radio_sink.set_samp_rate(samp_rate)
+            self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
+            self.radio_sink.set_center_freq(cf*1e6, 0)
+            self.radio_sink.set_antenna("TX/RX", 0)
+            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        else:
+            self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
+            self.radio_sink.set_sample_rate(0, samp_rate)
+            self.radio_sink.set_frequency(0, cf*1e6)
+            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
+            self.radio_sink.set_gain(0, 'AMP', 0)
         self.qtgui_time_sink_x_0 = qtgui.time_sink_f(
             5000, #size
             samp_rate, #samp_rate
@@ -649,7 +663,7 @@ class fskGenerator(gr.top_block, Qt.QWidget):
         self.connect((self.analog_random_uniform_source_x_0, 0), (self.blocks_repeat_0_0, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.blocks_selector_0, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.fir_filter_xxx_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.uhd_usrp_sink_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.radio_sink, 0))
         self.connect((self.blocks_multiply_const_vxx_1, 0), (self.blocks_add_const_vxx_0, 0))
         self.connect((self.blocks_repeat_0_0, 0), (self.blocks_uchar_to_float_0, 0))
         self.connect((self.blocks_selector_0, 0), (self.analog_frequency_modulator_fc_0, 0))
@@ -686,7 +700,10 @@ class fskGenerator(gr.top_block, Qt.QWidget):
         self.blocks_repeat_0_0.set_interpolation(int(self.samp_rate/self.symRate/1000))
         self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
-        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_samp_rate(self.samp_rate)
+        else:
+            self.radio_sink.set_sample_rate(0, self.samp_rate)
 
     def get_rfPwrDefault(self):
         return self.rfPwrDefault
@@ -754,7 +771,10 @@ class fskGenerator(gr.top_block, Qt.QWidget):
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
         self.blocks_multiply_const_vxx_0.set_k(10**((self.rfPwr<=-50)*(self.rfPwr+50)/20)*0.95)
-        self.uhd_usrp_sink_0.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        else:
+            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
 
     def get_rfGainDefault(self):
         return self.rfGainDefault
@@ -811,7 +831,10 @@ class fskGenerator(gr.top_block, Qt.QWidget):
     def set_cf(self, cf):
         self.cf = cf
         self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
-        self.uhd_usrp_sink_0.set_center_freq(self.cf*1e6, 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_center_freq(self.cf*1e6, 0)
+        else:
+            self.radio_sink.set_frequency(0, self.cf*1e6)
 
     def get_attenDefault(self):
         return self.attenDefault

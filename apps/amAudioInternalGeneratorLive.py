@@ -22,6 +22,7 @@ if __name__ == '__main__':
             print("Warning: failed to XInitThreads()")
 
 # Standard library imports
+import glob
 import json
 import os
 import signal
@@ -30,12 +31,11 @@ import sys
 import time
 
 # Third party imports
-from gnuradio import audio # type: ignore
 from gnuradio import blocks  # type: ignore
 from gnuradio import filter # type: ignore
 from gnuradio import gr # type: ignore
 from gnuradio import qtgui # type: ignore
-from gnuradio import uhd # type: ignore
+from gnuradio import soapy, uhd  # type: ignore
 from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 from PyQt5 import Qt # type: ignore
@@ -44,6 +44,17 @@ from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
 from apps.utils import apply_dark_theme, read_settings
+
+def get_wav_files(settings):
+    """Get list of wav files from media directory"""
+    try:
+        media_dir = settings.get('media_directory', '')
+        if not media_dir or not os.path.exists(media_dir):
+            return None
+        wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+        return wav_files if wav_files else []
+    except:
+        return None
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -58,29 +69,47 @@ class ConfigDialog(Qt.QDialog):
         # Read settings from window_settings.json
         settings = read_settings()
         self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.radio_type = settings.get('radio_type', 'hackrf')
         self.N = len(self.ipList)
-        
+
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
             Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         
+        # Create container + opacity effect for sine frequency control
+        self.sine_container = Qt.QWidget()
+        self.sine_freq_opacity = Qt.QGraphicsOpacityEffect()
+        self.sine_container.setGraphicsEffect(self.sine_freq_opacity)
+
         # Create all controls
         self.create_usrp_selector()
         self.create_frequency_control()
         self.create_power_control()
         self.create_modulation_controls()
-        
+        self.create_source_control()
+        self.create_sine_frequency_control()
+
         self.layout.addWidget(self.button_box)
+
+        # Connect source selection to control state updates
+        self.source_combo.currentIndexChanged.connect(self.update_control_states)
 
         # Load saved configuration
         self.load_config()
+
+        # Apply initial control states
+        self.update_control_states()
 
         # Apply dark theme
         apply_dark_theme(self)
         
     def create_usrp_selector(self):
+        if self.radio_type == 'hackrf':
+            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
+            return
         self.usrp_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
@@ -165,22 +194,92 @@ class ConfigDialog(Qt.QDialog):
         update_sideband_state(0)
         self.sideband_combo.currentIndexChanged.connect(update_sideband_state)
 
+    def create_source_control(self):
+        self.source_combo = Qt.QComboBox()
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+
+        settings = read_settings()
+        wav_files = get_wav_files(settings)
+
+        try:
+            if wav_files is None:
+                raise FileNotFoundError("Error - Setup Media directory in Settings")
+            if not wav_files:
+                raise FileNotFoundError("No WAV files found in media directory")
+
+            for wav_file in wav_files:
+                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+                self.source_combo.addItem(display_name, wav_file)
+
+            self.source_combo.addItem("Sinewave", "sinewave")
+            self.source_combo.addItem("No Modulation", "none")
+
+            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
+            ok_button.setGraphicsEffect(None)
+
+        except Exception as e:
+            self.source_combo.addItem(str(e))
+            self.source_combo.setEnabled(False)
+            ok_button.setEnabled(False)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
+
+        self.layout.addWidget(Qt.QLabel("Input Source:"))
+        self.layout.addWidget(self.source_combo)
+
+    def create_sine_frequency_control(self):
+        self.sine_layout = Qt.QHBoxLayout()
+        self.sine_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.sine_slider.setMinimum(1)
+        self.sine_slider.setMaximum(50000)
+        self.sine_slider.setValue(1000)
+        self.sine_label = Qt.QLabel("Sine Frequency: 1000 Hz")
+        self.sine_slider.valueChanged.connect(
+            lambda v: self.sine_label.setText(f"Sine Frequency: {v} Hz"))
+        self.sine_layout.addWidget(self.sine_label)
+        self.sine_layout.addWidget(self.sine_slider)
+        self.sine_container.setLayout(self.sine_layout)
+        self.layout.addWidget(self.sine_container)
+
+    def update_control_states(self):
+        current_data = self.source_combo.currentData()
+        is_sine = current_data == "sinewave"
+        self.sine_slider.setEnabled(is_sine)
+        self.sine_label.setEnabled(is_sine)
+        self.sine_freq_opacity.setOpacity(1.0 if is_sine else 0.3)
+
     def load_config(self):
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
-                    
-                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+
+                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(config.get('power_level', -50))
                 self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
                 self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
-                # Update radio button state
                 if config.get('sideband_type', 'lower') == 'upper':
                     self.upper_sideband.setChecked(True)
                 else:
                     self.lower_sideband.setChecked(True)
+                self.sine_slider.setValue(config.get('sine_freq', 1000))
+
+                saved_source = config.get('source', 'sinewave')
+                found = False
+                for i in range(self.source_combo.count()):
+                    if (self.source_combo.itemData(i) == saved_source or
+                            (isinstance(saved_source, str) and os.path.basename(saved_source) ==
+                             os.path.basename(str(self.source_combo.itemData(i))))):
+                        self.source_combo.setCurrentIndex(i)
+                        found = True
+                        break
+                if not found and saved_source not in ['sinewave', 'none']:
+                    for i in range(self.source_combo.count()):
+                        if self.source_combo.itemData(i) == 'sinewave':
+                            self.source_combo.setCurrentIndex(i)
+                            break
             except:
                 pass
         else:
@@ -188,12 +287,14 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex(),
+            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
             'carrier_index': self.carrier_combo.currentIndex(),
             'sideband_index': self.sideband_combo.currentIndex(),
-            'sideband_type': 'upper' if self.upper_sideband.isChecked() else 'lower'
+            'sideband_type': 'upper' if self.upper_sideband.isChecked() else 'lower',
+            'source': self.source_combo.currentData(),
+            'sine_freq': self.sine_slider.value(),
         }
         
         with open(self.config_file, 'w') as f:
@@ -204,21 +305,29 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        # Get all existing values
-        values = super().get_values() if hasattr(super(), 'get_values') else {}
-        
-        ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-        mikePort = 2020 + ipNum
-        
-        # Calculate sideband values 
-        sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0
-        if sidebandDefault == 1:
-            sidebandTypeDefault = 1 if self.upper_sideband.isChecked() else -1
+        if hasattr(self, 'usrp_combo') and self.ipList:
+            ipNum = self.usrp_combo.currentIndex() + 1
+            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
         else:
-            sidebandTypeDefault = 1
-            
+            ipNum = 0
+            ipXmitAddr = ''
+
+        sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0
+        sidebandTypeDefault = (1 if self.upper_sideband.isChecked() else -1) if sidebandDefault == 1 else 1
+
+        current_data = self.source_combo.currentData()
+        if current_data == "sinewave":
+            sourceIndex = 1
+            wavFile = None
+        elif current_data == "none":
+            sourceIndex = 2
+            wavFile = None
+        else:
+            sourceIndex = 0
+            wavFile = current_data
+
         return {
+            'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
@@ -227,14 +336,17 @@ class ConfigDialog(Qt.QDialog):
             'carrierDefault': self.carrier_combo.currentIndex(),
             'sidebandDefault': sidebandDefault,
             'sidebandTypeDefault': sidebandTypeDefault,
+            'sourceIndex': sourceIndex,
+            'wavFile': wavFile,
+            'sineFreq': self.sine_slider.value(),
         }
 
 class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "AM Audio Signal Generator from Internal Audio Card", catch_exceptions=True)
+        gr.top_block.__init__(self, "AM Audio Signal Generator", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("AM Audio Signal Generator from Internal Audio Card")
+        self.setWindowTitle("AM Audio Signal Generator")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
@@ -252,7 +364,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioSignalGenerator")
 
         try:
             if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
@@ -276,6 +388,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
             values = config_values
         
         # Assign all values
+        radio_type = values.get('radio_type', 'hackrf')
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         mikePort = values['mikePort']
@@ -284,6 +397,9 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         carrierDefault = values['carrierDefault']
         sidebandDefault = values['sidebandDefault']
         sidebandTypeDefault = values['sidebandTypeDefault']
+        sourceIndex = values.get('sourceIndex', 1)
+        self.wavFile = values.get('wavFile', None)
+        sineFreq = values.get('sineFreq', 1000)
 
         ##################################################
         # Variables
@@ -302,9 +418,12 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.outputIpAddr = outputIpAddr = ipXmitAddr
         self.modName = modName = 'AM'
         self.modIndex = modIndex = modIndexDefault
-        self.inputSelectDefault = inputSelectDefault = 0
+        self.inputSelectDefault = inputSelectDefault = sourceIndex
+        self.inputSelect = inputSelect = sourceIndex
+        self.sineFreq = sineFreq
         self.centerFreq = centerFreq = cfDefault
         self.carrier = carrier = carrierDefault
+        self.radio_type = radio_type
 
         ##################################################
         # Blocks
@@ -417,6 +536,35 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 4):
             self.top_grid_layout.setColumnStretch(c, 1)
+
+        # Input source selector
+        self._inputSelect_options = [0, 1, 2]
+        self._inputSelect_labels = ['Audio File', 'Sinewave', 'No Modulation']
+        self._inputSelect_group_box = Qt.QGroupBox("Input Signal: ")
+        self._inputSelect_box = Qt.QHBoxLayout()
+        class variable_chooser_button_group(Qt.QButtonGroup):
+            def __init__(self, parent=None):
+                Qt.QButtonGroup.__init__(self, parent)
+            @pyqtSlot(int)
+            def updateButtonChecked(self, button_id):
+                self.button(button_id).setChecked(True)
+        self._inputSelect_button_group = variable_chooser_button_group()
+        self._inputSelect_group_box.setLayout(self._inputSelect_box)
+        for i, _label in enumerate(self._inputSelect_labels):
+            radio_button = Qt.QRadioButton(_label)
+            self._inputSelect_box.addWidget(radio_button)
+            self._inputSelect_button_group.addButton(radio_button, i)
+        self._inputSelect_callback = lambda i: Qt.QMetaObject.invokeMethod(self._inputSelect_button_group, "updateButtonChecked", Qt.Q_ARG("int", self._inputSelect_options.index(i)))
+        self._inputSelect_callback(self.inputSelect)
+        self._inputSelect_button_group.buttonClicked[int].connect(
+            lambda i: self.set_inputSelect(self._inputSelect_options[i]))
+        self.top_grid_layout.addWidget(self._inputSelect_group_box, 3, 0, 1, 6)
+
+        # Sine frequency range widget
+        self._sineFreq_range = Range(1, 50000, 1, sineFreq, 200)
+        self._sineFreq_win = RangeWidget(self._sineFreq_range, self.set_sineFreq, "Sinusoid Frequency (Hz)", "counter", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._sineFreq_win, 3, 6, 1, 4)
+
         self._usrpNum_tool_bar = Qt.QToolBar(self)
 
         if None:
@@ -432,21 +580,23 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 1):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.uhd_usrp_sink_0 = uhd.usrp_sink(
-            ",".join(('addr='+outputIpAddr, '')),
-            uhd.stream_args(
-                cpu_format="fc32",
-                args='',
-                channels=list(range(0,1)),
-            ),
-            "",
-        )
-        self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
-        self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
-
-        self.uhd_usrp_sink_0.set_center_freq(centerFreq*1e6, 0)
-        self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink_0.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        if radio_type == 'usrp':
+            self.radio_sink = uhd.usrp_sink(
+                ",".join(('addr='+outputIpAddr, '')),
+                uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
+                "",
+            )
+            self.radio_sink.set_samp_rate(samp_rate)
+            self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
+            self.radio_sink.set_center_freq(centerFreq*1e6, 0)
+            self.radio_sink.set_antenna("TX/RX", 0)
+            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+        else:
+            self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
+            self.radio_sink.set_sample_rate(0, samp_rate)
+            self.radio_sink.set_frequency(0, centerFreq*1e6)
+            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
+            self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_1 = filter.rational_resampler_ccc(
                 interpolation=1,
                 decimation=10,
@@ -630,13 +780,35 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
         self.blocks_complex_to_float_0 = blocks.complex_to_float(1)
         self.blocks_add_const_vxx_0 = blocks.add_const_ff(carrier)
-        self.audio_source_0 = audio.source(24000, '', True)
+
+        # WAV file source (48kHz → 24kHz via decimation by 2)
+        if self.wavFile and os.path.exists(self.wavFile):
+            self.blocks_wavfile_source_0 = blocks.wavfile_source(self.wavFile, True)
+        else:
+            self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
+        self.rational_resampler_wav = filter.rational_resampler_fff(
+            interpolation=1, decimation=2, taps=[], fractional_bw=0)
+
+        # Sine source at 24 kHz
+        from gnuradio import analog  # type: ignore
+        self.analog_sig_source_x_0 = analog.sig_source_f(24000, analog.GR_COS_WAVE, sineFreq, 1, 0, 0)
+
+        # Null source for no-modulation option
+        self.blocks_null_source_1 = blocks.null_source(gr.sizeof_float*1)
+
+        # Input selector: 0=wav, 1=sine, 2=none
+        self.blocks_selector_0 = blocks.selector(gr.sizeof_float*1, sourceIndex, 0)
+        self.blocks_selector_0.set_enabled(True)
 
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.audio_source_0, 0), (self.blocks_multiply_const_vxx_2, 0))
+        self.connect((self.blocks_wavfile_source_0, 0), (self.rational_resampler_wav, 0))
+        self.connect((self.rational_resampler_wav, 0), (self.blocks_selector_0, 0))
+        self.connect((self.analog_sig_source_x_0, 0), (self.blocks_selector_0, 1))
+        self.connect((self.blocks_null_source_1, 0), (self.blocks_selector_0, 2))
+        self.connect((self.blocks_selector_0, 0), (self.blocks_multiply_const_vxx_2, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.blocks_float_to_complex_0, 0))
         self.connect((self.blocks_add_const_vxx_0, 0), (self.hilbert_fc_0, 0))
         self.connect((self.blocks_complex_to_float_0, 0), (self.blocks_float_to_complex_0_0, 0))
@@ -645,7 +817,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_const_sink_x_0, 0))
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.qtgui_time_sink_x_0, 0))
         self.connect((self.blocks_float_to_complex_0_0, 0), (self.rational_resampler_xxx_1, 0))
-        self.connect((self.blocks_float_to_complex_0_0, 0), (self.uhd_usrp_sink_0, 0))
+        self.connect((self.blocks_float_to_complex_0_0, 0), (self.radio_sink, 0))
         self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_float_to_complex_0_0, 1))
         self.connect((self.blocks_multiply_const_vxx_2, 0), (self.blocks_add_const_vxx_0, 0))
         self.connect((self.blocks_multiply_const_vxx_3, 0), (self.blocks_complex_to_float_0, 0))
@@ -656,7 +828,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("GNU Radio", "amAudioInternalGeneratorLive")
+        self.settings = Qt.QSettings("GNU Radio", "amAudioSignalGenerator")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -735,14 +907,20 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.samp_rate = samp_rate
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
-        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_samp_rate(self.samp_rate)
+        else:
+            self.radio_sink.set_sample_rate(0, self.samp_rate)
 
     def get_rfPwr(self):
         return self.rfPwr
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        self.uhd_usrp_sink_0.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        else:
+            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
 
     def get_outputIpAddr(self):
         return self.outputIpAddr
@@ -769,6 +947,22 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
 
     def set_inputSelectDefault(self, inputSelectDefault):
         self.inputSelectDefault = inputSelectDefault
+        self.set_inputSelect(self.inputSelectDefault)
+
+    def get_inputSelect(self):
+        return self.inputSelect
+
+    def set_inputSelect(self, inputSelect):
+        self.inputSelect = inputSelect
+        self._inputSelect_callback(self.inputSelect)
+        self.blocks_selector_0.set_input_index(self.inputSelect)
+
+    def get_sineFreq(self):
+        return self.sineFreq
+
+    def set_sineFreq(self, sineFreq):
+        self.sineFreq = sineFreq
+        self.analog_sig_source_x_0.set_frequency(self.sineFreq)
 
     def get_centerFreq(self):
         return self.centerFreq
@@ -776,7 +970,10 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
     def set_centerFreq(self, centerFreq):
         self.centerFreq = centerFreq
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate/10)
-        self.uhd_usrp_sink_0.set_center_freq(self.centerFreq*1e6, 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_center_freq(self.centerFreq*1e6, 0)
+        else:
+            self.radio_sink.set_frequency(0, self.centerFreq*1e6)
 
     def get_carrier(self):
         return self.carrier

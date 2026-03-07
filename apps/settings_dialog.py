@@ -4,14 +4,15 @@
 import os
 import json
 import re
-from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton # type: ignore
-from PyQt5.QtCore import Qt # Add this to imports
+from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton, QComboBox, QLabel # type: ignore
+from PyQt5.QtCore import Qt # type: ignore
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_file, parent=None):
         super().__init__(parent)
         self.settings_file = settings_file
         self.setWindowTitle("Settings")
+        self.setWindowFlags(Qt.Window)
         self.setMinimumSize(500, 400)
         self.resize(500, 400)
         
@@ -58,6 +59,27 @@ class SettingsDialog(QDialog):
         mode_layout.addWidget(self.multi_mode)
         mode_group.setLayout(mode_layout)
         
+        # Radio Hardware Section
+        radio_hw_group = QGroupBox("Radio Hardware")
+        radio_hw_layout = QHBoxLayout()
+        radio_hw_layout.addWidget(QLabel("Select Radio:"))
+        self.radio_hw_combo = QComboBox()
+        self.radio_hw_combo.addItem("HackRF One (USB)", "hackrf")
+        self.radio_hw_combo.addItem("Ettus USRP (Network)", "usrp")
+        current_radio = self.settings.get('radio_type', 'hackrf')
+        self.radio_hw_combo.setCurrentIndex(0 if current_radio == 'hackrf' else 1)
+        self.radio_hw_combo.view().setStyleSheet("""
+            QAbstractItemView {
+                background-color: #4b4b4b;
+                color: #ffffff;
+                selection-background-color: #656565;
+                selection-color: #ffffff;
+                border: 1px solid #5c5c5c;
+            }
+        """)
+        radio_hw_layout.addWidget(self.radio_hw_combo)
+        radio_hw_group.setLayout(radio_hw_layout)
+
         # IP Addresses Section
         ip_group = QGroupBox("Software Defined Radio IP Addresses:")
         ip_layout = QVBoxLayout()
@@ -96,8 +118,21 @@ class SettingsDialog(QDialog):
         
         # Add groups to main layout
         layout.addWidget(media_group)
-        layout.addWidget(ip_group)
         layout.addWidget(mode_group)
+        layout.addWidget(radio_hw_group)
+        layout.addWidget(ip_group)
+
+        # Restore saved position and size
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    saved = json.load(f)
+                pos = saved.get('settings_dialog_position')
+                if pos:
+                    self.move(pos['x'], pos['y'])
+                    self.resize(pos['width'], pos['height'])
+        except Exception as e:
+            print(f"Error restoring settings dialog geometry: {e}")
         
         # Add Save/Cancel buttons
         button_layout = QHBoxLayout()
@@ -156,6 +191,23 @@ class SettingsDialog(QDialog):
             self.settings['ip_addresses'].remove(ip_address)  # Remove from settings
             self.ip_list.takeItem(self.ip_list.row(item))
     
+    def save_geometry(self):
+        try:
+            existing_settings = {}
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    existing_settings = json.load(f)
+            existing_settings['settings_dialog_position'] = {
+                'x': self.pos().x(),
+                'y': self.pos().y(),
+                'width': self.width(),
+                'height': self.height()
+            }
+            with open(self.settings_file, 'w') as f:
+                json.dump(existing_settings, f, indent=4)
+        except Exception as e:
+            print(f"Error saving settings dialog geometry: {e}")
+
     def load_settings(self):
         try:
             if os.path.exists(self.settings_file):
@@ -188,17 +240,27 @@ class SettingsDialog(QDialog):
         existing_settings.update({
             'media_directory': self.media_path.text(),
             'ip_addresses': self.settings['ip_addresses'],
-            'radio_mode': 'multi' if self.multi_mode.isChecked() else 'single'
+            'radio_mode': 'multi' if self.multi_mode.isChecked() else 'single',
+            'radio_type': self.radio_hw_combo.currentData()
         })
 
         # Save the combined settings
         try:
             with open(self.settings_file, 'w') as f:
-                json.dump(existing_settings, f)
+                json.dump(existing_settings, f, indent=4)
         except Exception as e:
             print(f"Error saving settings: {e}")
-        
+
+        self.save_geometry()
         super().accept()
+
+    def reject(self):
+        self.save_geometry()
+        super().reject()
+
+    def closeEvent(self, event):
+        self.save_geometry()
+        super().closeEvent(event)
     
     def keyPressEvent(self, event):
         # Override default dialog key handling

@@ -35,7 +35,7 @@ from PyQt5 import Qt, QtCore # type: ignore
 from PyQt5.QtCore import pyqtSlot # type: ignore
 import sip # type: ignore
 
-from gnuradio import analog, blocks, filter, gr, qtgui, uhd # type: ignore
+from gnuradio import analog, blocks, filter, gr, qtgui, soapy, uhd  # type: ignore
 from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
@@ -65,6 +65,7 @@ class ConfigDialog(Qt.QDialog):
         # Read settings from window_settings.json
         settings = read_settings()
         self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.radio_type = settings.get('radio_type', 'hackrf')
         self.N = len(self.ipList)
         
         # Add OK/Cancel buttons
@@ -107,6 +108,10 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
+        if self.radio_type == 'hackrf':
+            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
+            return
         self.usrp_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
@@ -165,8 +170,8 @@ class ConfigDialog(Qt.QDialog):
             self.source_combo.addItem("Sinewave", "sinewave")
             self.source_combo.addItem("No Modulation", "none")
             
-            # Only enable OK button if we have both IP addresses and media files
-            ok_button.setEnabled(bool(self.ipList))
+            # Only enable OK button if we have media files (and IP addresses when using USRP)
+            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
                 
         except Exception as e:
@@ -241,7 +246,7 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                     
-                self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
+                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.dev_slider.setValue(config.get('freq_dev', 100))
                 self.sine_slider.setValue(config.get('sine_freq', 1000))
@@ -276,7 +281,7 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex(),
+            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'freq_dev': self.dev_slider.value(),
             'sine_freq': self.sine_slider.value(),
@@ -291,8 +296,12 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        ipNum = self.usrp_combo.currentIndex() + 1
-        ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        if hasattr(self, 'usrp_combo') and self.ipList:
+            ipNum = self.usrp_combo.currentIndex() + 1
+            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
+        else:
+            ipNum = 0
+            ipXmitAddr = ''
         mikePort = 2020 + ipNum
         
         # Get selected source
@@ -308,6 +317,7 @@ class ConfigDialog(Qt.QDialog):
             wavFile = current_data
             
         values = {
+            'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': mikePort,
@@ -366,6 +376,7 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             values = config_values
             
         # Assign all values
+        radio_type = values.get('radio_type', 'hackrf')
         ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         mikePort = values['mikePort']
@@ -381,11 +392,12 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         self.freqDevDefault = freqDev
         self.cfDefault = cf
         self.sineFreq = sineFreq
-        self.samp_rate = samp_rate = 2.5e6
+        self.samp_rate = samp_rate = 2e6
         self.modName = modName = 'FM'
         self.inputSelect = inputSelect = sourceIndex
         self.freqDev = freqDev = freqDev
         self.centerFreq = centerFreq = cf
+        self.radio_type = radio_type
 
         ##################################################
         # Blocks
@@ -449,23 +461,25 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 3):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.uhd_usrp_sink_0 = uhd.usrp_sink(
-            ",".join((f'addr={ipXmitAddr}', '')),
-            uhd.stream_args(
-                cpu_format="fc32",
-                args='',
-                channels=list(range(0,1)),
-            ),
-            "",
-        )
-        self.uhd_usrp_sink_0.set_samp_rate(samp_rate)
-        self.uhd_usrp_sink_0.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
-
-        self.uhd_usrp_sink_0.set_center_freq(centerFreq*1e6, 0)
-        self.uhd_usrp_sink_0.set_antenna("TX/RX", 0)
-        self.uhd_usrp_sink_0.set_gain(0, 0)
+        if radio_type == 'usrp':
+            self.radio_sink = uhd.usrp_sink(
+                ",".join((f'addr={ipXmitAddr}', '')),
+                uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
+                "",
+            )
+            self.radio_sink.set_samp_rate(samp_rate)
+            self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
+            self.radio_sink.set_center_freq(centerFreq*1e6, 0)
+            self.radio_sink.set_antenna("TX/RX", 0)
+            self.radio_sink.set_gain(0, 0)
+        else:
+            self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
+            self.radio_sink.set_sample_rate(0, samp_rate)
+            self.radio_sink.set_frequency(0, centerFreq*1e6)
+            self.radio_sink.set_gain(0, 'VGA', 0)
+            self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_0_0 = filter.rational_resampler_fff(
-                interpolation=50,
+                interpolation=40,
                 decimation=1,
                 taps=[],
                 fractional_bw=0)
@@ -649,7 +663,7 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         ##################################################
         self.connect((self.analog_frequency_modulator_fc_0, 0), (self.qtgui_const_sink_x_0, 0))
         self.connect((self.analog_frequency_modulator_fc_0, 0), (self.qtgui_freq_sink_x_0, 0))
-        self.connect((self.analog_frequency_modulator_fc_0, 0), (self.uhd_usrp_sink_0, 0))
+        self.connect((self.analog_frequency_modulator_fc_0, 0), (self.radio_sink, 0))
         self.connect((self.analog_sig_source_x_0, 0), (self.blocks_selector_0, 1))
         self.connect((self.blocks_null_source_0, 0), (self.blocks_selector_0, 2))
         self.connect((self.blocks_selector_0, 0), (self.analog_frequency_modulator_fc_0, 0))
@@ -710,7 +724,10 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         self.analog_sig_source_x_0.set_sampling_freq(self.samp_rate)
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate)
         self.qtgui_time_sink_x_0.set_samp_rate(self.samp_rate)
-        self.uhd_usrp_sink_0.set_samp_rate(self.samp_rate)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_samp_rate(self.samp_rate)
+        else:
+            self.radio_sink.set_sample_rate(0, self.samp_rate)
 
     def get_modName(self):
         return self.modName
@@ -740,7 +757,10 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
     def set_centerFreq(self, centerFreq):
         self.centerFreq = centerFreq
         self.qtgui_freq_sink_x_0.set_frequency_range(self.centerFreq*1e6, self.samp_rate)
-        self.uhd_usrp_sink_0.set_center_freq(self.centerFreq*1e6, 0)
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_center_freq(self.centerFreq*1e6, 0)
+        else:
+            self.radio_sink.set_frequency(0, self.centerFreq*1e6)
 
 
 

@@ -82,6 +82,8 @@ def apply_dark_theme(widget):
         background-color: #4b4b4b;
         color: #ffffff;
         selection-background-color: #656565;
+        selection-color: #ffffff;
+        border: 1px solid #5c5c5c;
     }
     QSlider {
         background-color: transparent;
@@ -114,7 +116,7 @@ def apply_dark_theme(widget):
 def read_settings():
     """Read settings from window_settings.json and ensure required fields exist"""
     settings_file = os.path.join("config", "window_settings.json")
-    settings = {'media_directory': '', 'ip_addresses': []}
+    settings = {'media_directory': '', 'ip_addresses': [], 'radio_type': 'hackrf'}
     
     try:
         if os.path.exists(settings_file):
