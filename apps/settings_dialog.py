@@ -191,23 +191,6 @@ class SettingsDialog(QDialog):
             self.settings['ip_addresses'].remove(ip_address)  # Remove from settings
             self.ip_list.takeItem(self.ip_list.row(item))
     
-    def save_geometry(self):
-        try:
-            existing_settings = {}
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    existing_settings = json.load(f)
-            existing_settings['settings_dialog_position'] = {
-                'x': self.pos().x(),
-                'y': self.pos().y(),
-                'width': self.width(),
-                'height': self.height()
-            }
-            with open(self.settings_file, 'w') as f:
-                json.dump(existing_settings, f, indent=4)
-        except Exception as e:
-            print(f"Error saving settings dialog geometry: {e}")
-
     def load_settings(self):
         try:
             if os.path.exists(self.settings_file):
@@ -251,15 +234,12 @@ class SettingsDialog(QDialog):
         except Exception as e:
             print(f"Error saving settings: {e}")
 
-        self.save_geometry()
         super().accept()
 
     def reject(self):
-        self.save_geometry()
         super().reject()
 
     def closeEvent(self, event):
-        self.save_geometry()
         super().closeEvent(event)
     
     def keyPressEvent(self, event):

@@ -1,6 +1,30 @@
 import json
 import os
 from PyQt5 import Qt  #type: ignore
+from PyQt5.QtCore import QObject, QEvent  #type: ignore
+
+
+class DialogGeometryTracker(QObject):
+    """Event filter that captures dialog geometry the moment it is hidden.
+
+    Install before calling exec_() and read ``captured`` afterwards to get
+    the last valid position/size regardless of how the dialog was closed
+    (OK, Cancel, or window-close button).
+    """
+    def __init__(self, dialog):
+        super().__init__(dialog)
+        self.captured = None
+        dialog.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Hide and self.captured is None:
+            self.captured = {
+                'x': obj.pos().x(),
+                'y': obj.pos().y(),
+                'width': obj.width(),
+                'height': obj.height(),
+            }
+        return False
 
 
 #This function is called to apply the theme to the launcher

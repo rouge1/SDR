@@ -27,8 +27,9 @@ from PIL import Image, ImageEnhance # type: ignore
 import io
 
 # Local imports 
-from apps.utils import apply_launcher_theme, apply_dark_theme
+from apps.utils import apply_launcher_theme, apply_dark_theme, DialogGeometryTracker
 from apps.settings_dialog import SettingsDialog
+
 
 class GNURadioLauncher(QMainWindow):
     def __init__(self, app, parent=None):
@@ -260,6 +261,9 @@ class GNURadioLauncher(QMainWindow):
                 print(f"Error loading dialog position: {e}")
                 config_dialog.move(default_pos)
 
+            # Track geometry before the dialog is hidden (covers OK, Cancel, and window close)
+            tracker = DialogGeometryTracker(config_dialog)
+
             # Show dialog and wait for user response
             result = config_dialog.exec_()
 
@@ -269,12 +273,13 @@ class GNURadioLauncher(QMainWindow):
                 if os.path.exists(app_config_file):
                     with open(app_config_file, 'r') as f:
                         app_config = json.load(f)
-                app_config['dialog_position'] = {
+                pos = tracker.captured or {
                     'x': config_dialog.pos().x(),
                     'y': config_dialog.pos().y(),
                     'width': config_dialog.width(),
-                    'height': config_dialog.height()
+                    'height': config_dialog.height(),
                 }
+                app_config['dialog_position'] = pos
                 with open(app_config_file, 'w') as f:
                     json.dump(app_config, f, indent=4)
             except Exception as e:
@@ -321,7 +326,19 @@ class GNURadioLauncher(QMainWindow):
     def show_settings(self):
         settings_dialog = SettingsDialog(self.settings_file, parent=self)
         apply_dark_theme(settings_dialog)
+        tracker = DialogGeometryTracker(settings_dialog)
         settings_dialog.exec_()
+        if tracker.captured:
+            try:
+                existing = {}
+                if os.path.exists(self.settings_file):
+                    with open(self.settings_file, 'r') as f:
+                        existing = json.load(f)
+                existing['settings_dialog_position'] = tracker.captured
+                with open(self.settings_file, 'w') as f:
+                    json.dump(existing, f, indent=4)
+            except Exception as e:
+                print(f"Error saving settings dialog geometry: {e}")
 
     def closeEvent(self, event):
         """Save window position when closing the application"""
