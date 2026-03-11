@@ -307,12 +307,11 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.settings = Qt.QSettings("GNU Radio", "ntscAnalogVideoRecorded")
 
         try:
-            if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-                self.restoreGeometry(self.settings.value("geometry").toByteArray())
-            else:
-                self.restoreGeometry(self.settings.value("geometry"))
-        except:
-            pass
+            geometry = self.settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        except BaseException as exc:
+            print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
 
         # Use provided config values or get them from dialog
         if config_values is None:
