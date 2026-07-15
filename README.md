@@ -47,8 +47,8 @@ source ~/.bashrc
 ### 1. Clone the repository
 
 ```sh
-git clone https://github.com/rouge1/gnuradio-launcher.git
-cd gnuradio-launcher/SDR
+git clone https://github.com/rouge1/SDR.git
+cd SDR
 ```
 
 ### 2. Create the conda environment
