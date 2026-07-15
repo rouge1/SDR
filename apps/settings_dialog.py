@@ -13,8 +13,8 @@ class SettingsDialog(QDialog):
         self.settings_file = settings_file
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.Window)
-        self.setMinimumSize(500, 400)
-        self.resize(500, 400)
+        self.setMinimumSize(500, 600)
+        self.resize(500, 600)
         
         # Load existing settings
         self.settings = self.load_settings()

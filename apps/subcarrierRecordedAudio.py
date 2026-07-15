@@ -60,7 +60,8 @@ class ConfigDialog(Qt.QDialog):
         # Then create controls
         self.create_usrp_selector()
         self.create_frequency_control()
-        self.create_audio_source_control() 
+        self.create_power_control()
+        self.create_audio_source_control()
         self.create_subcarrier_controls()
         self.create_noise_controls()
         
@@ -105,6 +106,19 @@ class ConfigDialog(Qt.QDialog):
         self.cf_layout.addWidget(self.cf_label)
         self.cf_layout.addWidget(self.cf_slider)
         self.layout.addLayout(self.cf_layout)
+
+    def create_power_control(self):
+        self.pwr_layout = Qt.QHBoxLayout()
+        self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.pwr_slider.setMinimum(-80)
+        self.pwr_slider.setMaximum(-30)
+        self.pwr_slider.setValue(-50)
+        self.pwr_label = Qt.QLabel("Power Level: -50 dBm")
+        self.pwr_slider.valueChanged.connect(
+            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+        self.pwr_layout.addWidget(self.pwr_label)
+        self.pwr_layout.addWidget(self.pwr_slider)
+        self.layout.addLayout(self.pwr_layout)
 
     def create_audio_source_control(self):
         self.audio_combo = Qt.QComboBox()
@@ -204,6 +218,7 @@ class ConfigDialog(Qt.QDialog):
                     config = json.load(f)
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 315))
+                self.pwr_slider.setValue(config.get('power_level', -50))
                 self.submod_combo.setCurrentIndex(config.get('submod', 0))
                 self.scfreq_slider.setValue(config.get('scfreq', 20))
                 
@@ -231,6 +246,7 @@ class ConfigDialog(Qt.QDialog):
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
             'submod': self.submod_combo.currentIndex(),
             'scfreq': self.scfreq_slider.value(),
             'carrier': 1 if self.carrier_on_radio.isChecked() else 0,  # Modified this line
@@ -259,6 +275,7 @@ class ConfigDialog(Qt.QDialog):
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_slider.value(),
+            'rfPwr': self.pwr_slider.value(),
             'audio_file': self.audio_combo.currentData(),
             'submod': self.submod_combo.currentIndex(),
             'scfreq': self.scfreq_slider.value(),
@@ -317,6 +334,7 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.noiseFreqDefault = noiseFreqDefault = 1000
         self.radio_type = radio_type = values.get('radio_type', 'hackrf')
         self.cf = cf = values['cf']
+        self.rfPwr = rfPwr = values.get('rfPwr', -50)
         self.usrpXmitIp = usrpXmitIp = values['ipXmitAddr']
         self.subMod = subMod = values['submod']
         self.scFreq = scFreq = values['scfreq']
@@ -429,6 +447,9 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(5, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
+        self._rfPwr_range = qtgui.Range(-80, -30, 1, rfPwr, 200)
+        self._rfPwr_win = qtgui.RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power (dBm)", "counter_slider", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._rfPwr_win, 4, 0, 1, 10)
         if radio_type == 'usrp':
             self.radio_sink = uhd.usrp_sink(
                 ",".join(("addr="+usrpXmitIp, '')),
@@ -439,12 +460,12 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
             self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
             self.radio_sink.set_center_freq(cf*1e6, 0)
             self.radio_sink.set_antenna("TX/RX", 0)
-            self.radio_sink.set_gain(0, 0)
+            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
         else:
             self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
             self.radio_sink.set_sample_rate(0, samp_rate)
             self.radio_sink.set_frequency(0, cf*1e6)
-            self.radio_sink.set_gain(0, 'VGA', 0)
+            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
             self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_1 = filter.rational_resampler_fff(
                 interpolation=25,
@@ -502,8 +523,8 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
             self.qtgui_freq_sink_x_1.set_line_alpha(i, alphas[i])
 
         self._qtgui_freq_sink_x_1_win = sip.wrapinstance(self.qtgui_freq_sink_x_1.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_1_win, 4, 5, 10, 5)
-        for r in range(4, 14):
+        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_1_win, 5, 5, 10, 5)
+        for r in range(5, 15):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(5, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -550,8 +571,8 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
             self.qtgui_freq_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_freq_sink_x_0_win = sip.wrapinstance(self.qtgui_freq_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 4, 0, 10, 5)
-        for r in range(4, 14):
+        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 5, 0, 10, 5)
+        for r in range(5, 15):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -710,6 +731,16 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.noiseOnOff = noiseOnOff
         self._noiseOnOff_callback(self.noiseOnOff)
         self.blocks_multiply_const_vxx_0.set_k(self.noiseOnOff)
+
+    def get_rfPwr(self):
+        return self.rfPwr
+
+    def set_rfPwr(self, rfPwr):
+        self.rfPwr = rfPwr
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        else:
+            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
 
     def get_noiseFreq(self):
         return self.noiseFreq

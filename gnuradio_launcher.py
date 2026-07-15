@@ -317,10 +317,19 @@ class GNURadioLauncher(QMainWindow):
 
         except Exception as e:
             error_dialog = QMessageBox()
-            error_dialog.setIcon(QMessageBox.Critical)
-            error_dialog.setText(f"Error launching {module_name}")
-            error_dialog.setInformativeText(str(e))
-            error_dialog.setWindowTitle("Error")
+            if 'hackrf' in str(e).lower():
+                error_dialog.setIcon(QMessageBox.Warning)
+                error_dialog.setWindowTitle("HackRF Not Found")
+                error_dialog.setText("HackRF One not detected on USB.")
+                error_dialog.setInformativeText(
+                    "Please connect your HackRF One and try again, "
+                    "or change the radio type to USRP in Settings."
+                )
+            else:
+                error_dialog.setIcon(QMessageBox.Critical)
+                error_dialog.setWindowTitle("Error")
+                error_dialog.setText(f"Error launching {module_name}")
+                error_dialog.setInformativeText(str(e))
             error_dialog.exec_()
 
     def show_settings(self):

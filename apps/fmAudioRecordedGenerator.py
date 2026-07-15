@@ -89,6 +89,7 @@ class ConfigDialog(Qt.QDialog):
         # Create all the input widgets
         self.create_usrp_selector()
         self.create_frequency_control()
+        self.create_power_control()
         self.create_source_control()
         self.create_freq_dev_control()
         self.create_sine_frequency_control()
@@ -145,6 +146,19 @@ class ConfigDialog(Qt.QDialog):
         self.cf_layout.addWidget(self.cf_label)
         self.cf_layout.addWidget(self.cf_slider)
         self.layout.addLayout(self.cf_layout)
+
+    def create_power_control(self):
+        self.pwr_layout = Qt.QHBoxLayout()
+        self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.pwr_slider.setMinimum(-80)
+        self.pwr_slider.setMaximum(-30)
+        self.pwr_slider.setValue(-50)
+        self.pwr_label = Qt.QLabel("Power Level: -50 dBm")
+        self.pwr_slider.valueChanged.connect(
+            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+        self.pwr_layout.addWidget(self.pwr_label)
+        self.pwr_layout.addWidget(self.pwr_slider)
+        self.layout.addLayout(self.pwr_layout)
 
     def create_source_control(self):
         self.source_combo = Qt.QComboBox()
@@ -248,6 +262,7 @@ class ConfigDialog(Qt.QDialog):
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
+                self.pwr_slider.setValue(config.get('power_level', -50))
                 self.dev_slider.setValue(config.get('freq_dev', 100))
                 self.sine_slider.setValue(config.get('sine_freq', 1000))
                 
@@ -283,9 +298,10 @@ class ConfigDialog(Qt.QDialog):
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
+            'power_level': self.pwr_slider.value(),
             'freq_dev': self.dev_slider.value(),
             'sine_freq': self.sine_slider.value(),
-            'source': self.source_combo.currentData()  # Save the actual source identifier
+            'source': self.source_combo.currentData()
         }
         
         with open(self.config_file, 'w') as f:
@@ -322,6 +338,7 @@ class ConfigDialog(Qt.QDialog):
             'ipXmitAddr': ipXmitAddr,
             'mikePort': mikePort,
             'cf': self.cf_slider.value(),
+            'rfPwr': self.pwr_slider.value(),
             'sourceIndex': sourceIndex,
             'wavFile': wavFile,
             'freqDev': self.dev_slider.value(),
@@ -380,6 +397,7 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         ipXmitAddr = values['ipXmitAddr']
         mikePort = values['mikePort']
         cf = values['cf']
+        rfPwr = values.get('rfPwr', -50)
         sourceIndex = values['sourceIndex']
         freqDev = values['freqDev']
         sineFreq = values['sineFreq']
@@ -390,6 +408,7 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         self.inputSelectDefault = sourceIndex
         self.freqDevDefault = freqDev
         self.cfDefault = cf
+        self.rfPwr = rfPwr
         self.sineFreq = sineFreq
         self.samp_rate = samp_rate = 2e6
         self.modName = modName = 'FM'
@@ -460,6 +479,9 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 3):
             self.top_grid_layout.setColumnStretch(c, 1)
+        self._rfPwr_range = Range(-80, -30, 1, rfPwr, 200)
+        self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power (dBm)", "counter_slider", float, QtCore.Qt.Horizontal)
+        self.top_grid_layout.addWidget(self._rfPwr_win, 2, 0, 1, 10)
         if radio_type == 'usrp':
             self.radio_sink = uhd.usrp_sink(
                 ",".join((f'addr={ipXmitAddr}', '')),
@@ -470,12 +492,12 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
             self.radio_sink.set_center_freq(centerFreq*1e6, 0)
             self.radio_sink.set_antenna("TX/RX", 0)
-            self.radio_sink.set_gain(0, 0)
+            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
         else:
             self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
             self.radio_sink.set_sample_rate(0, samp_rate)
             self.radio_sink.set_frequency(0, centerFreq*1e6)
-            self.radio_sink.set_gain(0, 'VGA', 0)
+            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
             self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_0_0 = filter.rational_resampler_fff(
                 interpolation=40,
@@ -529,8 +551,8 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_time_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_time_sink_x_0_win = sip.wrapinstance(self.qtgui_time_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 2, 0, 5, 7)
-        for r in range(2, 7):
+        self.top_grid_layout.addWidget(self._qtgui_time_sink_x_0_win, 3, 0, 5, 7)
+        for r in range(3, 8):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 7):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -576,8 +598,8 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_freq_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_freq_sink_x_0_win = sip.wrapinstance(self.qtgui_freq_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 7, 0, 5, 10)
-        for r in range(7, 12):
+        self.top_grid_layout.addWidget(self._qtgui_freq_sink_x_0_win, 8, 0, 5, 10)
+        for r in range(8, 13):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -622,8 +644,8 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.qtgui_const_sink_x_0.set_line_alpha(i, alphas[i])
 
         self._qtgui_const_sink_x_0_win = sip.wrapinstance(self.qtgui_const_sink_x_0.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 2, 7, 5, 3)
-        for r in range(2, 7):
+        self.top_grid_layout.addWidget(self._qtgui_const_sink_x_0_win, 3, 7, 5, 3)
+        for r in range(3, 8):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(7, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
@@ -749,6 +771,16 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
     def set_freqDev(self, freqDev):
         self.freqDev = freqDev
         self.analog_frequency_modulator_fc_0.set_sensitivity(2*pi*(self.freqDev*1000)/self.samp_rate)
+
+    def get_rfPwr(self):
+        return self.rfPwr
+
+    def set_rfPwr(self, rfPwr):
+        self.rfPwr = rfPwr
+        if self.radio_type == 'usrp':
+            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        else:
+            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
 
     def get_centerFreq(self):
         return self.centerFreq
