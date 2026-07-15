@@ -31,6 +31,19 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 
 ## Installation
 
+### 0. Install Miniconda (skip if already installed)
+
+```sh
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+```
+
+Follow the prompts and accept the default install path (`~/miniconda3`). When asked to initialize conda, choose **yes**. Then reload your shell:
+
+```sh
+source ~/.bashrc
+```
+
 ### 1. Clone the repository
 
 ```sh
