@@ -287,7 +287,23 @@ class GNURadioLauncher(QMainWindow):
 
             if result == QDialog.Accepted:
                 config_values = config_dialog.get_values()
-                
+
+                # Validate HackRF is present before launching
+                if config_values.get('radio_type') == 'hackrf':
+                    try:
+                        import SoapySDR
+                        devices = SoapySDR.Device.enumerate({'driver': 'hackrf'})
+                        if not devices:
+                            raise RuntimeError("no hackrf device found")
+                    except Exception:
+                        QMessageBox.warning(
+                            self, "HackRF Not Found",
+                            "No HackRF One was detected on USB.\n\n"
+                            "Please connect your HackRF One and try again, "
+                            "or change the radio type to USRP in Settings."
+                        )
+                        return
+
                 # Load radio mode setting
                 radio_mode = 'single'
                 try:
