@@ -37,7 +37,8 @@ from gnuradio.fft import window # type: ignore
 import pmt # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme, read_settings
+from apps.utils import (apply_dark_theme, read_settings, power_percent,
+                        resolve_power_range, scale_power)
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -75,8 +76,10 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
-        if self.radio_type == 'hackrf':
-            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+        if self.radio_type in ('hackrf', 'vsg'):
+            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
+                     else "Radio: HackRF One (USB)")
+            self.layout.addWidget(Qt.QLabel(label))
             self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
             return
         self.usrp_combo = Qt.QComboBox()
@@ -114,11 +117,11 @@ class ConfigDialog(Qt.QDialog):
         self.power_layout = Qt.QHBoxLayout()
         self.power_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.power_slider.setMinimum(0)
-        self.power_slider.setMaximum(20)
-        self.power_slider.setValue(0)
-        self.power_label = Qt.QLabel("Output Power: 0 dBm")
+        self.power_slider.setMaximum(100)
+        self.power_slider.setValue(50)
+        self.power_label = Qt.QLabel("Output Power: 50%")
         self.power_slider.valueChanged.connect(
-            lambda v: self.power_label.setText(f"Output Power: {v} dBm"))
+            lambda v: self.power_label.setText(f"Output Power: {v}%"))
         self.power_layout.addWidget(self.power_label)
         self.power_layout.addWidget(self.power_slider)
         self.layout.addLayout(self.power_layout)
@@ -191,7 +194,7 @@ class ConfigDialog(Qt.QDialog):
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
-                self.power_slider.setValue(config.get('power', 0))
+                self.power_slider.setValue(power_percent(config.get('power'), 50))
                 
                 # Load video file by name from current media directory
                 saved_video_name = config.get('video_filename')
@@ -311,7 +314,14 @@ class amVideoRecordedXmitter(gr.top_block, Qt.QWidget):
         ##################################################
         # Blocks
         ##################################################
-        if radio_type == 'usrp':
+        self._power_range = resolve_power_range(radio_type)
+        if radio_type == 'vsg':
+            from apps.vsg_sink import vsg_sink
+            self.radio_sink = vsg_sink(
+                center_freq=cf,
+                sample_rate=samp_rate,
+                level_dbm=scale_power(pwr, self._power_range))
+        elif radio_type == 'usrp':
             self.radio_sink = uhd.usrp_sink(
                 ",".join((f'addr={ipXmitAddr}', '')),
                 uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
@@ -321,12 +331,13 @@ class amVideoRecordedXmitter(gr.top_block, Qt.QWidget):
             self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
             self.radio_sink.set_center_freq(cf, 0)
             self.radio_sink.set_antenna("TX/RX", 0)
-            self.radio_sink.set_gain(pwr, 0)
+            self._power_range = resolve_power_range(radio_type, self.radio_sink)
+            self.radio_sink.set_gain(scale_power(pwr, self._power_range), 0)
         else:
             self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
             self.radio_sink.set_sample_rate(0, samp_rate)
             self.radio_sink.set_frequency(0, cf)
-            self.radio_sink.set_gain(0, 'VGA', pwr)
+            self.radio_sink.set_gain(0, 'VGA', scale_power(pwr, self._power_range))
             self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_ccc(
                 interpolation=10,

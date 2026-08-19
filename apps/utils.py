@@ -157,3 +157,57 @@ def read_settings():
         print(f"Error reading settings:", e)
         
     return settings
+
+
+# --- Radio output power -----------------------------------------------------
+#
+# The power slider is a plain 0-100% control. Each radio has a different native
+# gain unit and a different usable span, so the percentage is mapped onto that
+# radio's own range: 0% is always its minimum and 100% always its maximum.
+#
+# This replaced an older scheme where the slider was labelled dBm but actually
+# fed `(rfPwr+50)*(rfPwr>-50)` to HackRF/USRP - which capped both radios at
+# 20 dB of gain and left the bottom 30 dB of the slider doing nothing at all.
+
+RADIO_POWER_RANGE = {
+    'hackrf': (0.0, 47.0),     # SoapySDR VGA gain, dB
+    'usrp':   (0.0, 31.5),     # UHD gain, dB - replaced by the device's own
+                               # range when it can be queried
+    'vsg':    (-120.0, 10.0),  # Signal Hound calibrated output level, dBm
+}
+
+
+def resolve_power_range(radio_type, sink=None):
+    """Return (min, max) for a radio, in that radio's own gain units.
+
+    USRP gain range depends on the daughterboard, so query the device when a
+    constructed sink is available and fall back to the table otherwise.
+    """
+    if radio_type == 'usrp' and sink is not None:
+        try:
+            rng = sink.get_gain_range()
+            return (float(rng.start()), float(rng.stop()))
+        except Exception:
+            pass
+    return RADIO_POWER_RANGE.get(radio_type, RADIO_POWER_RANGE['hackrf'])
+
+
+def scale_power(percent, power_range):
+    """Map a 0-100% slider position onto a radio's gain/level range."""
+    low, high = power_range
+    percent = min(max(float(percent), 0.0), 100.0)
+    return low + (high - low) * percent / 100.0
+
+
+def power_percent(value, default=50):
+    """Sanitise a saved power setting.
+
+    Configs written before the percentage change hold dBm-ish values such as
+    -50, which would silently clamp to 0% (no output). Fall back to the default
+    for anything outside 0-100.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return value if 0.0 <= value <= 100.0 else default

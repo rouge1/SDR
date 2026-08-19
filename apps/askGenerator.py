@@ -39,7 +39,8 @@ from gnuradio.filter import firdes # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme, read_settings
+from apps.utils import (apply_dark_theme, read_settings, power_percent,
+                        resolve_power_range, scale_power)
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -91,6 +92,9 @@ class ConfigDialog(Qt.QDialog):
                 ok_button.setGraphicsEffect(None)
             self.layout.addWidget(Qt.QLabel("Select USRP:"))
             self.layout.addWidget(self.usrp_combo)
+        elif self.radio_type == 'vsg':
+            self.layout.addWidget(Qt.QLabel("Radio: Signal Hound VSG60 (USB)"))
+            ok_button.setEnabled(True)
         else:
             self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
             ok_button.setEnabled(True)
@@ -111,12 +115,12 @@ class ConfigDialog(Qt.QDialog):
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
         self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.pwr_slider.setMinimum(-80)
-        self.pwr_slider.setMaximum(-30)
-        self.pwr_slider.setValue(-50)
-        self.pwr_label = Qt.QLabel("Power Level: -50 dBm")
+        self.pwr_slider.setMinimum(0)
+        self.pwr_slider.setMaximum(100)
+        self.pwr_slider.setValue(50)
+        self.pwr_label = Qt.QLabel("Power Level: 50%")
         self.pwr_slider.valueChanged.connect(
-            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+            lambda v: self.pwr_label.setText(f"Power Level: {v}%"))
         self.pwr_layout.addWidget(self.pwr_label)
         self.pwr_layout.addWidget(self.pwr_slider)
         self.layout.addLayout(self.pwr_layout)
@@ -201,7 +205,7 @@ class ConfigDialog(Qt.QDialog):
                 if self.radio_type == 'usrp' and hasattr(self, 'usrp_combo'):
                     self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
-                self.pwr_slider.setValue(config.get('power_level', -50))
+                self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.bits_combo.setCurrentIndex(config.get('bits_index', 0))
                 self.carrier_on_radio.setChecked(config.get('carrier_condition', 0) == 1)
                 self.carrier_off_radio.setChecked(config.get('carrier_condition', 0) == 0)
@@ -364,8 +368,8 @@ class askGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(3, 6):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._rfPwr_range = Range(-80, -30, 1, rfPwrDefault, 200)
-        self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power", "counter_slider", float, QtCore.Qt.Horizontal)
+        self._rfPwr_range = Range(0, 100, 1, rfPwrDefault, 200)
+        self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power (%)", "counter_slider", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._rfPwr_win, 1, 0, 1, 5)
         for r in range(1, 2):
             self.top_grid_layout.setRowStretch(r, 1)
@@ -443,7 +447,14 @@ class askGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(6, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        if radio_type == 'usrp':
+        self._power_range = resolve_power_range(radio_type)
+        if radio_type == 'vsg':
+            from apps.vsg_sink import vsg_sink
+            self.radio_sink = vsg_sink(
+                center_freq=cf*1e6,
+                sample_rate=samp_rate,
+                level_dbm=scale_power(rfPwr, self._power_range))
+        elif radio_type == 'usrp':
             import time
             self.radio_sink = uhd.usrp_sink(
                 ",".join(('addr='+ipXmitAddr, '')),
@@ -454,12 +465,13 @@ class askGenerator(gr.top_block, Qt.QWidget):
             self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
             self.radio_sink.set_center_freq(cf*1e6, 0)
             self.radio_sink.set_antenna("TX/RX", 0)
-            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+            self._power_range = resolve_power_range(radio_type, self.radio_sink)
+            self.radio_sink.set_gain(scale_power(rfPwr, self._power_range), 0)
         else:
             self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
             self.radio_sink.set_sample_rate(0, samp_rate)
             self.radio_sink.set_frequency(0, cf*1e6)
-            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
+            self.radio_sink.set_gain(0, 'VGA', scale_power(rfPwr, self._power_range))
             self.radio_sink.set_gain(0, 'AMP', 0)
         self.qtgui_time_sink_x_0 = qtgui.time_sink_f(
             5000, #size
@@ -658,7 +670,7 @@ class askGenerator(gr.top_block, Qt.QWidget):
         self.blocks_selector_0.set_enabled(True)
         self.blocks_repeat_0_0 = blocks.repeat(gr.sizeof_char*1, int(samp_rate/symRate/1000))
         self.blocks_null_source_0 = blocks.null_source(gr.sizeof_float*1)
-        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(10**((rfPwr<=-50)*(rfPwr+50)/20))
+        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(1)
         self.blocks_multiply_const_vxx_1 = blocks.multiply_const_ff(1/(2**bitsPerSym-1))
         self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(0.475)
         self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
@@ -809,11 +821,13 @@ class askGenerator(gr.top_block, Qt.QWidget):
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        self.blocks_multiply_const_vxx_2.set_k(10**((self.rfPwr<=-50)*(self.rfPwr+50)/20))
-        if self.radio_type == 'usrp':
-            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        self.blocks_multiply_const_vxx_2.set_k(1)
+        if self.radio_type == 'vsg':
+            self.radio_sink.set_level(scale_power(self.rfPwr, self._power_range))
+        elif self.radio_type == 'usrp':
+            self.radio_sink.set_gain(scale_power(self.rfPwr, self._power_range), 0)
         else:
-            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
+            self.radio_sink.set_gain(0, 'VGA', scale_power(self.rfPwr, self._power_range))
 
     def get_modName(self):
         return self.modName

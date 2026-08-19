@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""GNU Radio sink block for the Signal Hound VSG60 vector signal generator.
+
+The VSG60 has no SoapySDR module and no native GNU Radio block, so this
+wraps the vendor C API (``libvsg_api.so``) with ctypes and exposes it as a
+``gr.sync_block``.
+
+The block deliberately mirrors the setter names used by ``uhd.usrp_sink`` and
+``soapy.sink`` so it drops into the existing ``if radio_type == ...`` branches
+in the app modules without special-casing every call site.
+
+Hardware limits (measured on firmware 6, API 1.0.3):
+    frequency    30 MHz .. 6 GHz
+    sample rate  12.5 kS/s .. 50 MS/s
+    level        -120 .. +10 dBm   (calibrated absolute output power)
+"""
+
+import ctypes
+import os
+import threading
+
+import numpy as np
+from gnuradio import gr  # type: ignore
+
+# Hardware limits - values outside these are clamped by the device itself,
+# we clamp first so the reported settings match what is actually applied.
+FREQ_MIN_HZ = 30e6
+FREQ_MAX_HZ = 6e9
+RATE_MIN = 12.5e3
+RATE_MAX = 50e6
+LEVEL_MIN_DBM = -120.0
+LEVEL_MAX_DBM = 10.0
+
+# The vendor library ships inside the Sceptre install rather than a system
+# prefix, so search the known locations. VSG_API_LIB overrides for other setups.
+_LIB_SEARCH_PATHS = [
+    os.environ.get('VSG_API_LIB', ''),
+    '/opt/sceptre-installer/sceptre-5.6.3-pacman-linux-avx2/lib/libvsg_api.so.1',
+    '/usr/local/lib/libvsg_api.so.1',
+    '/usr/lib/libvsg_api.so.1',
+    'libvsg_api.so.1',
+    'libvsg_api.so',
+]
+
+_lib = None
+
+
+def _load_library():
+    """Load libvsg_api once and cache it. Raises RuntimeError if unavailable."""
+    global _lib
+    if _lib is not None:
+        return _lib
+
+    last_error = None
+    for path in _LIB_SEARCH_PATHS:
+        if not path:
+            continue
+        try:
+            lib = ctypes.CDLL(path)
+        except OSError as e:
+            last_error = e
+            continue
+
+        # Signatures. Everything returns VsgStatus (int); <0 is an error,
+        # >0 is a warning (e.g. a clamped setting).
+        lib.vsgGetAPIVersion.restype = ctypes.c_char_p
+        lib.vsgGetErrorString.restype = ctypes.c_char_p
+        lib.vsgGetErrorString.argtypes = [ctypes.c_int]
+        lib.vsgOpenDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        lib.vsgOpenDeviceBySerial.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        lib.vsgCloseDevice.argtypes = [ctypes.c_int]
+        lib.vsgAbort.argtypes = [ctypes.c_int]
+        lib.vsgPreset.argtypes = [ctypes.c_int]
+        lib.vsgGetDeviceList.argtypes = [ctypes.POINTER(ctypes.c_int),
+                                         ctypes.POINTER(ctypes.c_int)]
+        lib.vsgSetFrequency.argtypes = [ctypes.c_int, ctypes.c_double]
+        lib.vsgSetLevel.argtypes = [ctypes.c_int, ctypes.c_double]
+        lib.vsgSetSampleRate.argtypes = [ctypes.c_int, ctypes.c_double]
+        lib.vsgSetRFOutputState.argtypes = [ctypes.c_int, ctypes.c_int]
+        lib.vsgGetSerialNumber.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+        lib.vsgSubmitIQ.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_float),
+                                    ctypes.c_int]
+        lib.vsgFlushAndWait.argtypes = [ctypes.c_int]
+        _lib = lib
+        return _lib
+
+    raise RuntimeError(
+        "Signal Hound VSG API library (libvsg_api.so) not found. "
+        "Set VSG_API_LIB to its full path. Last error: %s" % last_error)
+
+
+def _err(lib, status):
+    return lib.vsgGetErrorString(status).decode('utf-8', 'replace')
+
+
+def is_available():
+    """True if the vendor library can be loaded (does not touch hardware)."""
+    try:
+        _load_library()
+        return True
+    except RuntimeError:
+        return False
+
+
+def find_devices():
+    """Return the serial numbers of attached VSG units.
+
+    Does not open the device, so it is safe to call for pre-launch validation
+    while nothing else is using the hardware.
+    """
+    lib = _load_library()
+    serials = (ctypes.c_int * 8)()
+    # The count is in/out: it must be primed with the array capacity or the
+    # API reports zero devices.
+    count = ctypes.c_int(8)
+    status = lib.vsgGetDeviceList(serials, ctypes.byref(count))
+    if status < 0:
+        raise RuntimeError("vsgGetDeviceList failed: %s" % _err(lib, status))
+    return [serials[i] for i in range(max(0, count.value))]
+
+
+# The vendor library guards single-client access with C assert(), which calls
+# abort() - a second vsgOpenDevice on a held device kills the process outright
+# with SIGABRT before Python sees anything, and can leave the unit needing a USB
+# reset. It cannot be caught, only avoided, and vsgGetDeviceList still lists a
+# device another process is holding, so discovery cannot tell us either. Hence
+# this advisory PID lock: it turns the abort into a normal Python exception for
+# anything that goes through this module.
+_LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          os.pardir, 'config', '.vsg60.lock')
+
+
+def _lock_holder():
+    """PID of the process holding the VSG, or None if free or stale."""
+    try:
+        with open(_LOCK_PATH) as handle:
+            pid = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)  # liveness probe only, sends no signal
+    except OSError:
+        return None      # holder died without cleaning up
+    return pid
+
+
+def in_use():
+    """True if another live process holds the VSG through this module.
+
+    Only sees users that go through this code - an external Signal Hound
+    application holding the device is invisible here.
+    """
+    return _lock_holder() is not None
+
+
+def _acquire_lock():
+    """Claim the device, or raise RuntimeError naming the current holder."""
+    for _ in range(2):
+        try:
+            fd = os.open(_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            holder = _lock_holder()
+            if holder is not None:
+                raise RuntimeError(
+                    "Signal Hound VSG is already in use by process %d. Close "
+                    "that flowgraph before starting another one." % holder)
+            # Stale lock from a crashed run - clear it and retry once.
+            try:
+                os.unlink(_LOCK_PATH)
+            except OSError:
+                pass
+            continue
+        except OSError as e:
+            print("Warning: could not create VSG lock (%s); continuing" % e)
+            return
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(str(os.getpid()))
+        return
+
+
+def _release_lock():
+    if _lock_holder() == os.getpid():
+        try:
+            os.unlink(_LOCK_PATH)
+        except OSError:
+            pass
+
+
+class vsg_sink(gr.sync_block):
+    """Complex baseband sink driving a Signal Hound VSG60.
+
+    ``vsgSubmitIQ`` blocks once the device's internal queue is full, which
+    gives the flowgraph real hardware backpressure - no throttle block is
+    needed. ctypes releases the GIL for the call, so the Qt GUI stays live
+    while the work thread is parked in the driver.
+
+    The vendor API is not thread safe: a setter called from the Qt thread
+    while the work thread sits in ``vsgSubmitIQ`` corrupts the device state
+    and every later call fails. All API calls are therefore serialised on
+    ``_lock``. A setter waits at most one buffer (~100 ms) for an in-flight
+    submit, which is imperceptible on a slider.
+    """
+
+    def __init__(self, center_freq=915e6, sample_rate=1e6, level_dbm=-40.0,
+                 serial=None):
+        gr.sync_block.__init__(self, name="vsg_sink",
+                               in_sig=[np.complex64], out_sig=None)
+
+        self._lib = _load_library()
+        self._device = ctypes.c_int(-1)
+        self._closed = False
+        self._lock = threading.RLock()
+
+        # Must happen before the open: a second open would abort the process.
+        _acquire_lock()
+        self._holds_lock = True
+        try:
+            if serial:
+                status = self._lib.vsgOpenDeviceBySerial(
+                    ctypes.byref(self._device), int(serial))
+            else:
+                status = self._lib.vsgOpenDevice(ctypes.byref(self._device))
+            if status < 0:
+                raise RuntimeError("Could not open Signal Hound VSG: %s"
+                                   % _err(self._lib, status))
+        except Exception:
+            _release_lock()
+            self._holds_lock = False
+            raise
+
+        sn = ctypes.c_int(0)
+        self._lib.vsgGetSerialNumber(self._device, ctypes.byref(sn))
+        self._serial = sn.value
+
+        self._center_freq = 0.0
+        self._sample_rate = 0.0
+        self._level_dbm = LEVEL_MIN_DBM
+
+        # Bring the level up only after frequency and rate are programmed, so
+        # the first thing emitted is the intended signal.
+        self.set_level(LEVEL_MIN_DBM)
+        self.set_sample_rate(0, sample_rate)
+        self.set_frequency(0, center_freq)
+        self.set_level(level_dbm)
+        self._lib.vsgSetRFOutputState(self._device, 1)
+
+        print("Signal Hound VSG %d: %.6f MHz, %.4f MS/s, %.1f dBm"
+              % (self._serial, self._center_freq / 1e6,
+                 self._sample_rate / 1e6, self._level_dbm))
+
+    # --- streaming -------------------------------------------------------
+    def work(self, input_items, output_items):
+        if self._closed:
+            return -1
+
+        samples = input_items[0]
+        # complex64 is already interleaved float32 I/Q, so the view is free.
+        buf = np.ascontiguousarray(samples).view(np.float32)
+        with self._lock:
+            if self._closed:
+                return -1
+            status = self._lib.vsgSubmitIQ(
+                self._device,
+                buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                len(samples))
+        if status < 0:
+            print("VSG submit error: %s" % _err(self._lib, status))
+            return -1
+        return len(samples)
+
+    def stop(self):
+        self._shutdown()
+        return True
+
+    def _shutdown(self):
+        if self._closed:
+            return
+        self._closed = True
+        # Abort deliberately runs outside the lock: its whole purpose is to
+        # unblock a submit parked in the driver, so waiting for that submit
+        # to release the lock first would deadlock.
+        try:
+            self._lib.vsgAbort(self._device)
+        except Exception:
+            pass
+        with self._lock:
+            try:
+                self._lib.vsgSetRFOutputState(self._device, 0)
+                self._lib.vsgSetLevel(self._device, ctypes.c_double(LEVEL_MIN_DBM))
+                self._lib.vsgCloseDevice(self._device)
+            except Exception as e:
+                print("Error closing Signal Hound VSG: %s" % e)
+        if getattr(self, '_holds_lock', False):
+            _release_lock()
+            self._holds_lock = False
+
+    def __del__(self):
+        self._shutdown()
+
+    # --- settings --------------------------------------------------------
+    # Names mirror uhd.usrp_sink / soapy.sink so the app modules can call
+    # whichever idiom they already use.
+    def set_frequency(self, channel, freq_hz):
+        freq_hz = float(min(max(freq_hz, FREQ_MIN_HZ), FREQ_MAX_HZ))
+        with self._lock:
+            if self._closed:
+                return
+            status = self._lib.vsgSetFrequency(self._device, ctypes.c_double(freq_hz))
+            if status < 0:
+                print("VSG set frequency failed: %s" % _err(self._lib, status))
+                return
+            self._center_freq = freq_hz
+
+    def set_center_freq(self, freq_hz, channel=0):
+        self.set_frequency(channel, freq_hz)
+
+    def set_sample_rate(self, channel, rate):
+        rate = float(min(max(rate, RATE_MIN), RATE_MAX))
+        with self._lock:
+            if self._closed:
+                return
+            status = self._lib.vsgSetSampleRate(self._device, ctypes.c_double(rate))
+            if status < 0:
+                print("VSG set sample rate failed: %s" % _err(self._lib, status))
+                return
+            self._sample_rate = rate
+
+    def set_samp_rate(self, rate):
+        self.set_sample_rate(0, rate)
+
+    def set_level(self, level_dbm):
+        """Absolute output power in dBm - the VSG is calibrated, so this is
+        the real level at the port rather than a relative gain index."""
+        level_dbm = float(min(max(level_dbm, LEVEL_MIN_DBM), LEVEL_MAX_DBM))
+        with self._lock:
+            if self._closed:
+                return
+            status = self._lib.vsgSetLevel(self._device, ctypes.c_double(level_dbm))
+            if status < 0:
+                print("VSG set level failed: %s" % _err(self._lib, status))
+                return
+            self._level_dbm = level_dbm
+
+    def set_gain(self, *args):
+        """Accepts the USRP ``set_gain(value, chan)`` and HackRF
+        ``set_gain(chan, name, value)`` shapes; both are treated as dBm.
+        The HackRF 'AMP' stage has no VSG equivalent and is ignored."""
+        if len(args) == 3:
+            _, name, value = args
+            if str(name).upper() == 'AMP':
+                return
+            self.set_level(value)
+        elif args:
+            self.set_level(args[0])
+
+    def set_antenna(self, *args):
+        """No-op: the VSG60 has a single fixed RF output port."""
+
+    def set_time_now(self, *args):
+        """No-op: accepted for USRP call-site compatibility."""
+
+    def get_serial(self):
+        return self._serial

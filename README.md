@@ -7,7 +7,7 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 ## Features
 
 - Clean, dark-themed graphical interface for launching GNU Radio applications
-- Supports **HackRF One** (USB via SoapySDR) and **Ettus USRP** (network via UHD) radio backends
+- Supports **HackRF One** (USB via SoapySDR), **Ettus USRP** (network via UHD), and **Signal Hound VSG60** (USB via the vendor VSG API) radio backends
 - 11 signal generation and transmission modules (audio, video, digital modulations)
 - Persistent window positioning and per-app configuration
 - Single and multi-radio operation modes
@@ -26,6 +26,7 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 
 - **HackRF One** — connected via USB; SoapySDR HackRF driver must be available in the conda environment
 - **Ettus USRP** — reachable over the network via UHD 4.x; IP address configured in the Settings dialog
+- **Signal Hound VSG60** — connected via USB; requires the vendor `libvsg_api.so`. The launcher searches the Sceptre install path and standard library prefixes; set `VSG_API_LIB` to override. 30 MHz – 6 GHz, up to 50 MS/s, calibrated output from −120 to +10 dBm
 
 ---
 
@@ -99,7 +100,7 @@ On first launch, open the **Settings** dialog (gear icon, top-right) and configu
 | Setting | Description |
 |---------|-------------|
 | Media Directory | Path to WAV/video files used by audio and video transmitter apps |
-| Radio Hardware | Select **HackRF One (USB)** or **Ettus USRP (Network)** |
+| Radio Hardware | Select **HackRF One (USB)**, **Ettus USRP (Network)**, or **Signal Hound VSG60 (USB)** |
 | Launcher Mode | **Single** — launcher hides while an app runs; **Multi** — launcher stays open (requires ≥ 2 USRP IPs) |
 | SDR IP Addresses | USRP only — enter each USRP IP address and click Add |
 
@@ -171,10 +172,16 @@ Refer to `apps/amSineGenerator.py` as a reference implementation.
 Add `--name gnu` to override the hardcoded prefix in `environment.yml`.
 
 **App launches but no RF output (HackRF)**
-Ensure the HackRF is connected before starting. Run `SoapySDRUtil --find` to confirm it is detected. The VGA gain formula maps power slider values of −50 dBm → 0 dB VGA and −30 dBm → 20 dB VGA.
+Ensure the HackRF is connected before starting. Run `SoapySDRUtil --find` to confirm it is detected. The power slider is a 0–100% control mapped onto the HackRF's VGA range, so 100% is 47 dB of VGA gain.
 
 **App launches but no RF output (USRP)**
 Confirm the USRP IP is reachable (`ping <ip>`) and matches what is configured in Settings.
+
+**App launches but no RF output (Signal Hound VSG60)**
+Confirm the unit is detected with `lsusb | grep 2817`. The power slider maps 0–100% onto −120 to +10 dBm, so 100% is the VSG's maximum calibrated output. Requested frequencies outside 30 MHz – 6 GHz are clamped to the nearest limit and the clamp is logged to the console.
+
+**Signal Hound VSG60 crashes with an assertion**
+The vendor library calls `abort()` rather than returning an error if the device is already open in another process, which kills the app and can leave the VSG wedged. Launching twice from this launcher is caught and refused with a dialog, but an external Signal Hound application holding the device cannot be detected. If it does happen: close the other user of the device, then reset it — unplug/replug, or issue a `USBDEVFS_RESET` ioctl on the node shown by `lsusb | grep 2817`.
 
 **Audio apps produce no sound / error on launch**
 ALSA audio source is not supported. The system must use PipeWire. Verify with `pactl info | grep "Server Name"`.

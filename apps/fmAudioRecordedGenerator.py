@@ -40,7 +40,8 @@ from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
-from apps.utils import apply_dark_theme, read_settings
+from apps.utils import (apply_dark_theme, read_settings, power_percent,
+                        resolve_power_range, scale_power)
 
 def get_wav_files(settings):
     """Get list of wav files from media directory"""
@@ -109,8 +110,10 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_usrp_selector(self):
-        if self.radio_type == 'hackrf':
-            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+        if self.radio_type in ('hackrf', 'vsg'):
+            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
+                     else "Radio: HackRF One (USB)")
+            self.layout.addWidget(Qt.QLabel(label))
             self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
             return
         self.usrp_combo = Qt.QComboBox()
@@ -150,12 +153,12 @@ class ConfigDialog(Qt.QDialog):
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
         self.pwr_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.pwr_slider.setMinimum(-80)
-        self.pwr_slider.setMaximum(-30)
-        self.pwr_slider.setValue(-50)
-        self.pwr_label = Qt.QLabel("Power Level: -50 dBm")
+        self.pwr_slider.setMinimum(0)
+        self.pwr_slider.setMaximum(100)
+        self.pwr_slider.setValue(50)
+        self.pwr_label = Qt.QLabel("Power Level: 50%")
         self.pwr_slider.valueChanged.connect(
-            lambda v: self.pwr_label.setText(f"Power Level: {v} dBm"))
+            lambda v: self.pwr_label.setText(f"Power Level: {v}%"))
         self.pwr_layout.addWidget(self.pwr_label)
         self.pwr_layout.addWidget(self.pwr_slider)
         self.layout.addLayout(self.pwr_layout)
@@ -262,7 +265,7 @@ class ConfigDialog(Qt.QDialog):
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_slider.setValue(config.get('center_freq', 300))
-                self.pwr_slider.setValue(config.get('power_level', -50))
+                self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.dev_slider.setValue(config.get('freq_dev', 100))
                 self.sine_slider.setValue(config.get('sine_freq', 1000))
                 
@@ -479,10 +482,17 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 3):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self._rfPwr_range = Range(-80, -30, 1, rfPwr, 200)
-        self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power (dBm)", "counter_slider", float, QtCore.Qt.Horizontal)
+        self._rfPwr_range = Range(0, 100, 1, rfPwr, 200)
+        self._rfPwr_win = RangeWidget(self._rfPwr_range, self.set_rfPwr, "RF Output Power (%)", "counter_slider", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._rfPwr_win, 2, 0, 1, 10)
-        if radio_type == 'usrp':
+        self._power_range = resolve_power_range(radio_type)
+        if radio_type == 'vsg':
+            from apps.vsg_sink import vsg_sink
+            self.radio_sink = vsg_sink(
+                center_freq=centerFreq*1e6,
+                sample_rate=samp_rate,
+                level_dbm=scale_power(rfPwr, self._power_range))
+        elif radio_type == 'usrp':
             self.radio_sink = uhd.usrp_sink(
                 ",".join((f'addr={ipXmitAddr}', '')),
                 uhd.stream_args(cpu_format="fc32", args='', channels=list(range(0,1))),
@@ -492,12 +502,13 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
             self.radio_sink.set_time_now(uhd.time_spec(time.time()), uhd.ALL_MBOARDS)
             self.radio_sink.set_center_freq(centerFreq*1e6, 0)
             self.radio_sink.set_antenna("TX/RX", 0)
-            self.radio_sink.set_gain((rfPwr+50)*(rfPwr>-50), 0)
+            self._power_range = resolve_power_range(radio_type, self.radio_sink)
+            self.radio_sink.set_gain(scale_power(rfPwr, self._power_range), 0)
         else:
             self.radio_sink = soapy.sink('driver=hackrf', 'fc32', 1, '', '', [''], [''])
             self.radio_sink.set_sample_rate(0, samp_rate)
             self.radio_sink.set_frequency(0, centerFreq*1e6)
-            self.radio_sink.set_gain(0, 'VGA', (rfPwr+50)*(rfPwr>-50))
+            self.radio_sink.set_gain(0, 'VGA', scale_power(rfPwr, self._power_range))
             self.radio_sink.set_gain(0, 'AMP', 0)
         self.rational_resampler_xxx_0_0 = filter.rational_resampler_fff(
                 interpolation=40,
@@ -777,10 +788,12 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        if self.radio_type == 'usrp':
-            self.radio_sink.set_gain((self.rfPwr+50)*(self.rfPwr>-50), 0)
+        if self.radio_type == 'vsg':
+            self.radio_sink.set_level(scale_power(self.rfPwr, self._power_range))
+        elif self.radio_type == 'usrp':
+            self.radio_sink.set_gain(scale_power(self.rfPwr, self._power_range), 0)
         else:
-            self.radio_sink.set_gain(0, 'VGA', (self.rfPwr+50)*(self.rfPwr>-50))
+            self.radio_sink.set_gain(0, 'VGA', scale_power(self.rfPwr, self._power_range))
 
     def get_centerFreq(self):
         return self.centerFreq

@@ -304,6 +304,34 @@ class GNURadioLauncher(QMainWindow):
                         )
                         return
 
+                # Validate the Signal Hound VSG is present before launching
+                elif config_values.get('radio_type') == 'vsg':
+                    try:
+                        from apps.vsg_sink import find_devices, in_use
+                        if not find_devices():
+                            raise RuntimeError("no VSG device found on USB")
+                        # The vendor library aborts the process on a second
+                        # open, so refuse before we get anywhere near it.
+                        if in_use():
+                            QMessageBox.warning(
+                                self, "Signal Hound VSG In Use",
+                                "The Signal Hound VSG60 is already being used "
+                                "by another running flowgraph.\n\n"
+                                "Close that application first - opening the VSG "
+                                "twice crashes both and can leave the device "
+                                "needing a USB reset."
+                            )
+                            return
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self, "Signal Hound VSG Not Found",
+                            "No Signal Hound VSG60 was detected on USB.\n\n"
+                            f"{e}\n\n"
+                            "Please connect your VSG60 and try again, "
+                            "or change the radio type in Settings."
+                        )
+                        return
+
                 # Load radio mode setting
                 radio_mode = 'single'
                 try:
@@ -333,7 +361,15 @@ class GNURadioLauncher(QMainWindow):
 
         except Exception as e:
             error_dialog = QMessageBox()
-            if 'hackrf' in str(e).lower():
+            if 'vsg' in str(e).lower() or 'signal hound' in str(e).lower():
+                error_dialog.setIcon(QMessageBox.Warning)
+                error_dialog.setWindowTitle("Signal Hound VSG Not Found")
+                error_dialog.setText("Signal Hound VSG60 not detected on USB.")
+                error_dialog.setInformativeText(
+                    "Please connect your VSG60 and try again, "
+                    "or change the radio type in Settings."
+                )
+            elif 'hackrf' in str(e).lower():
                 error_dialog.setIcon(QMessageBox.Warning)
                 error_dialog.setWindowTitle("HackRF Not Found")
                 error_dialog.setText("HackRF One not detected on USB.")

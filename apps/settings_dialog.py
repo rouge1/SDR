@@ -66,8 +66,10 @@ class SettingsDialog(QDialog):
         self.radio_hw_combo = QComboBox()
         self.radio_hw_combo.addItem("HackRF One (USB)", "hackrf")
         self.radio_hw_combo.addItem("Ettus USRP (Network)", "usrp")
+        self.radio_hw_combo.addItem("Signal Hound VSG60 (USB)", "vsg")
         current_radio = self.settings.get('radio_type', 'hackrf')
-        self.radio_hw_combo.setCurrentIndex(0 if current_radio == 'hackrf' else 1)
+        radio_index = self.radio_hw_combo.findData(current_radio)
+        self.radio_hw_combo.setCurrentIndex(radio_index if radio_index >= 0 else 0)
         self.radio_hw_combo.view().setStyleSheet("""
             QAbstractItemView {
                 background-color: #4b4b4b;
