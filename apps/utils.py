@@ -200,14 +200,20 @@ def scale_power(percent, power_range):
 
 
 def power_percent(value, default=50):
-    """Sanitise a saved power setting.
+    """Sanitise a saved power setting, as an int.
 
     Configs written before the percentage change hold dBm-ish values such as
     -50, which would silently clamp to 0% (no output). Fall back to the default
     for anything outside 0-100.
+
+    Returns an int because this feeds QSlider.setValue(), which rejects a float
+    with a TypeError - and load_config() swallows exceptions, so a float here
+    silently drops every setting restored after the power slider.
     """
     try:
         value = float(value)
     except (TypeError, ValueError):
         return default
-    return value if 0.0 <= value <= 100.0 else default
+    if not 0.0 <= value <= 100.0:
+        return default
+    return int(round(value))
