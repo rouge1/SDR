@@ -307,7 +307,19 @@ class GNURadioLauncher(QMainWindow):
                 # Validate the Signal Hound VSG is present before launching
                 elif config_values.get('radio_type') == 'vsg':
                     try:
-                        from apps.vsg_sink import find_devices, in_use
+                        from apps.vsg_sink import (find_devices, in_use, is_available,
+                                                   library_error)
+                        # A missing vendor library is a software install
+                        # problem, not an absent device - reporting it as
+                        # "not detected on USB" sends people to check cables.
+                        if not is_available():
+                            QMessageBox.warning(
+                                self, "Signal Hound VSG Software Not Found",
+                                "The Signal Hound VSG API library could not be "
+                                "loaded, so the VSG60 cannot be used on this "
+                                f"machine.\n\n{library_error()}"
+                            )
+                            return
                         if not find_devices():
                             raise RuntimeError("no VSG device found on USB")
                         # The vendor library aborts the process on a second

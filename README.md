@@ -26,7 +26,7 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 
 - **HackRF One** — connected via USB; SoapySDR HackRF driver must be available in the conda environment
 - **Ettus USRP** — reachable over the network via UHD 4.x; IP address configured in the Settings dialog
-- **Signal Hound VSG60** — connected via USB; requires the vendor `libvsg_api.so`. The launcher searches the Sceptre install path and standard library prefixes; set `VSG_API_LIB` to override. 30 MHz – 6 GHz, up to 50 MS/s, calibrated output from −120 to +10 dBm
+- **Signal Hound VSG60** — connected via USB; requires the vendor `libvsg_api.so`, which is **not** included in this repository — see [Signal Hound VSG60 library](#signal-hound-vsg60-library) below. 30 MHz – 6 GHz, up to 50 MS/s, calibrated output from −120 to +10 dBm
 
 ---
 
@@ -76,6 +76,58 @@ Expected output: `3.10.12.0`
 
 ---
 
+## Signal Hound VSG60 library
+
+Only needed if you are using a VSG60. The vendor library `libvsg_api.so.1` is
+proprietary Signal Hound code with no redistribution grant, so it is **not
+committed to this repository** and cannot be installed with pip or conda. You
+supply it from your own licensed copy.
+
+It is a single self-contained ~8 MB file. It links only against standard system
+libraries (`libusb-1.0`, `libstdc++`, `libudev`) and requires nothing newer than
+glibc 2.17, so one file is all you need — no Sceptre install on the target
+machine.
+
+```sh
+# From a machine that has Sceptre installed locally:
+./scripts/setup_vsg.sh
+
+# From an explicit path (a Signal Hound SDK download, a USB stick, ...):
+./scripts/setup_vsg.sh /path/to/libvsg_api.so.1
+
+# Copied from another machine that has it:
+./scripts/setup_vsg.sh user@host
+```
+
+The script puts the library in `vendor/` (gitignored — do not commit it),
+installs the udev rule below, and verifies that the library loads and whether a
+VSG is detected.
+
+**Where to get the library:** any Sceptre install has it at
+`/opt/sceptre/lib/libvsg_api.so.1`, or download the standalone VSG60 SDK from
+Signal Hound, which is the same library without the rest of the Sceptre payload.
+
+**Doing it by hand instead.** Drop the file anywhere the loader looks —
+`vendor/` in this checkout, `/usr/local/lib` (run `ldconfig` afterwards), or a
+path of your choosing exported as `VSG_API_LIB` (the file itself or the
+directory holding it). Then add the udev rule, or the API cannot claim the
+device even though `lsusb` lists it:
+
+```sh
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2817", MODE="0666", GROUP="plugdev"' \
+  | sudo tee /etc/udev/rules.d/sh_usb.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Replug the VSG60 afterwards.
+
+> **Do not copy the whole `/opt/sceptre/lib` directory.** The library's `RUNPATH`
+> starts with `$ORIGIN`, so it would load Sceptre's bundled `libc`, `libstdc++`
+> and `libudev` from alongside it instead of the system ones. Copy the single
+> file.
+
+---
+
 ## Running the Application
 
 ```sh
@@ -119,6 +171,9 @@ SDR/
 ├── config/                       # Auto-created; gitignored
 │   └── window_settings.json      # Global settings (radio type, IPs, media dir)
 ├── icons/                        # Button icons
+├── scripts/
+│   └── setup_vsg.sh              # Installs the VSG60 vendor library + udev rule
+├── vendor/                       # Gitignored; holds libvsg_api.so.1 if used
 ├── gnuradio_launcher.py          # Main launcher window
 ├── start_app.sh                  # Launch helper script
 └── environment.yml               # Conda environment definition
@@ -176,6 +231,12 @@ Ensure the HackRF is connected before starting. Run `SoapySDRUtil --find` to con
 
 **App launches but no RF output (USRP)**
 Confirm the USRP IP is reachable (`ping <ip>`) and matches what is configured in Settings.
+
+**Signal Hound VSG60: "VSG API library not found" / "Software Not Found"**
+The vendor library is missing on this machine — the device itself is fine, and `lsusb | grep 2817` will still list it. The dialog names every directory searched and every path tried. See [Signal Hound VSG60 library](#signal-hound-vsg60-library); usually `./scripts/setup_vsg.sh` is enough. Note the Sceptre install directory is named after its version, so it differs from machine to machine.
+
+**Signal Hound VSG60 detected by `lsusb` but not by the launcher**
+The udev rule is missing, so the API cannot claim the device. Install it as shown in [Signal Hound VSG60 library](#signal-hound-vsg60-library) and replug the unit.
 
 **App launches but no RF output (Signal Hound VSG60)**
 Confirm the unit is detected with `lsusb | grep 2817`. The power slider maps 0–100% onto −120 to +10 dBm, so 100% is the VSG's maximum calibrated output. Requested frequencies outside 30 MHz – 6 GHz are clamped to the nearest limit and the clamp is logged to the console.

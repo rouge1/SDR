@@ -65,7 +65,27 @@ Three radio backends are supported, selected via `radio_type` in settings:
 - `vsgSubmitIQ` blocks when the device queue is full, so it supplies real backpressure — the flowgraph needs no throttle block.
 - `vsgGetDeviceList` needs its count argument **primed with the array capacity** or it reports zero devices.
 - **The vendor API is not thread safe.** A setter called from the Qt thread while the work thread is inside `vsgSubmitIQ` corrupts the device: the submit fails and every subsequent call returns an error until reopen. `vsg_sink` serialises all API calls on an `RLock`; `vsgAbort` is deliberately called *outside* the lock during shutdown, since its job is to unblock a parked submit.
-- The library ships inside the Sceptre install rather than a system prefix. `vsg_sink.py` searches known paths; `VSG_API_LIB` overrides.
+- The library ships inside the Sceptre install rather than a system prefix, in a
+  directory named after the Sceptre version, so the path differs per machine.
+  `vsg_sink.py` therefore searches *directories* — `/opt/sceptre/lib` (the
+  symlink the installer points at the current install), then
+  `/opt/sceptre-installer/*/lib` newest version first, then `/usr/local/lib`
+  and `/usr/lib`, then the bare soname for ldconfig'd installs. `VSG_API_LIB`
+  overrides and accepts either the library file or the directory holding it.
+  When the load fails the error names every directory searched and every path
+  tried; the launcher reports a missing library as a *software* problem rather
+  than as "no VSG detected on USB", which is a different fix.
+- **Running a VSG without installing Sceptre.** Sceptre is not required — it is
+  just where the library happens to ship. `libvsg_api.so.1` is self-contained
+  (~8 MB, API 1.2.1): standing alone it links only against system
+  `libusb-1.0`, `libstdc++`, `libudev`, `libm`, `libgcc_s`, `libc`, and needs
+  no glibc newer than 2.17. Copy that one file to the target machine, point
+  `VSG_API_LIB` at it (or at its directory), and install the udev rule
+  `SUBSYSTEM=="usb", ATTR{idVendor}=="2817", MODE="0666", GROUP="plugdev"` as
+  `/etc/udev/rules.d/sh_usb.rules`. Do **not** copy the whole
+  `/opt/sceptre/lib` directory: its `RUNPATH` starts with `$ORIGIN`, so the
+  siblings there (a bundled libc, libstdc++, libudev) would be picked up ahead
+  of the system ones and mixed into the host runtime.
 - **A second open aborts the process.** The vendor library enforces single-client access with C `assert()`, which calls `abort()` — `vsgOpenDevice` on a device another process holds raises SIGABRT and core-dumps before Python sees anything, and can leave the unit needing a USB reset. It is uncatchable, and `vsgGetDeviceList` still lists a held device, so discovery cannot detect the condition either. `vsg_sink` therefore keeps an advisory PID lock at `config/.vsg60.lock`: `_acquire_lock()` runs before the open and raises a normal `RuntimeError` instead, `in_use()` lets the launcher show a dialog, and a lock whose PID is dead is treated as stale and cleared. This only sees users that go through this module — an external Signal Hound application holding the device is invisible to it.
 
 ### Output Power

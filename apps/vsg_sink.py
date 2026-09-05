@@ -17,7 +17,9 @@ Hardware limits (measured on firmware 6, API 1.0.3):
 """
 
 import ctypes
+import glob
 import os
+import re
 import threading
 
 import numpy as np
@@ -32,16 +34,73 @@ RATE_MAX = 50e6
 LEVEL_MIN_DBM = -120.0
 LEVEL_MAX_DBM = 10.0
 
+_LIB_NAMES = ('libvsg_api.so.1', 'libvsg_api.so')
+
 # The vendor library ships inside the Sceptre install rather than a system
-# prefix, so search the known locations. VSG_API_LIB overrides for other setups.
-_LIB_SEARCH_PATHS = [
-    os.environ.get('VSG_API_LIB', ''),
-    '/opt/sceptre-installer/sceptre-5.6.3-pacman-linux-avx2/lib/libvsg_api.so.1',
-    '/usr/local/lib/libvsg_api.so.1',
-    '/usr/lib/libvsg_api.so.1',
-    'libvsg_api.so.1',
-    'libvsg_api.so',
+# prefix, and that directory is named after the Sceptre version, so the path is
+# different on every machine. Search directories rather than one hardcoded
+# version: /opt/sceptre is the symlink the installer points at the current
+# install, and the installer directory may hold several versions side by side.
+# VSG_API_LIB overrides for setups that keep the library somewhere else.
+# vendor/ sits next to this checkout so a machine without a Sceptre install can
+# hold the library with the code it belongs to. It is gitignored: the library is
+# proprietary vendor code with no redistribution grant, so it must not be
+# committed - see README for how to put it there.
+_VENDOR_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'vendor')
+
+_LIB_SEARCH_DIRS = [
+    _VENDOR_DIR,
+    '/opt/sceptre/lib',
+    '/opt/sceptre-installer/*/lib',
+    '/usr/local/lib',
+    '/usr/lib',
 ]
+
+
+def _version_key(path):
+    """Order sceptre-5.11.0 above sceptre-5.6.3 - numerically, not lexically."""
+    match = re.search(r'sceptre-(\d+(?:\.\d+)*)', path)
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group(1).split('.'))
+
+
+def _candidate_paths():
+    """Every path to try, best first, for this machine's layout."""
+    candidates = []
+
+    override = os.environ.get('VSG_API_LIB', '')
+    if override:
+        # Accept the library itself or the directory holding it - pointing the
+        # variable at a directory is the easier mistake to make.
+        if os.path.isdir(override):
+            candidates += [os.path.join(override, name) for name in _LIB_NAMES]
+        else:
+            candidates.append(override)
+
+    for pattern in _LIB_SEARCH_DIRS:
+        matches = []
+        for name in _LIB_NAMES:
+            matches += glob.glob(os.path.join(pattern, name))
+        # Newest version first within one search location; the locations
+        # themselves stay in the order listed above.
+        candidates += sorted(matches, key=_version_key, reverse=True)
+
+    # Drop duplicates - /opt/sceptre is normally a symlink to one of the
+    # versioned directories - while keeping the order above.
+    seen = set()
+    ordered = []
+    for path in candidates:
+        key = os.path.realpath(path)
+        if key not in seen:
+            seen.add(key)
+            ordered.append(path)
+
+    # Last resort: let the dynamic loader look on its own search path, for
+    # installs that have run ldconfig or that set LD_LIBRARY_PATH.
+    return ordered + list(_LIB_NAMES)
+
 
 _lib = None
 
@@ -52,14 +111,12 @@ def _load_library():
     if _lib is not None:
         return _lib
 
-    last_error = None
-    for path in _LIB_SEARCH_PATHS:
-        if not path:
-            continue
+    failures = []
+    for path in _candidate_paths():
         try:
             lib = ctypes.CDLL(path)
         except OSError as e:
-            last_error = e
+            failures.append((path, e))
             continue
 
         # Signatures. Everything returns VsgStatus (int); <0 is an error,
@@ -85,9 +142,22 @@ def _load_library():
         _lib = lib
         return _lib
 
+    # Report where we looked and every path tried, not just the last failure.
+    # When nothing is installed the only candidates are the bare sonames, whose
+    # "cannot open shared object file" says nothing about which directories
+    # were searched - which is exactly what someone debugging a new machine
+    # needs to know.
+    tried = "\n".join("  %s\n    %s" % (path, error) for path, error in failures)
+    override = os.environ.get('VSG_API_LIB', '')
     raise RuntimeError(
-        "Signal Hound VSG API library (libvsg_api.so) not found. "
-        "Set VSG_API_LIB to its full path. Last error: %s" % last_error)
+        "Signal Hound VSG API library (libvsg_api.so) not found. Install the "
+        "Signal Hound / Sceptre software, or set VSG_API_LIB to the full path "
+        "of libvsg_api.so.\n\n"
+        "VSG_API_LIB: %s\n"
+        "Searched: %s\n\n"
+        "Tried:\n%s" % (override or "(not set)",
+                        ", ".join(_LIB_SEARCH_DIRS),
+                        tried or "  (nothing)"))
 
 
 def _err(lib, status):
@@ -101,6 +171,19 @@ def is_available():
         return True
     except RuntimeError:
         return False
+
+
+def library_error():
+    """The reason the library could not be loaded, or '' if it loaded fine.
+
+    Lets a caller tell "the software is not installed" apart from "no device is
+    plugged in", which are the same message to the user otherwise.
+    """
+    try:
+        _load_library()
+        return ''
+    except RuntimeError as e:
+        return str(e)
 
 
 def find_devices():

@@ -7,6 +7,12 @@ apps/_pycache__/
 # Config / user state (position, size, saved values)
 config/
 
+# Vendor binaries — proprietary, not redistributable, must never be committed.
+# Signal Hound VSG API library: see README "Signal Hound VSG60 library".
+vendor/
+*.so
+*.so.[0-9]*
+
 # Conda / virtualenv
 .venv/
 *.conda
