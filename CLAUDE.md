@@ -144,6 +144,152 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ⏳ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ⏳ |
+| `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
+| `fmRdsTransmitter.py` | FM broadcast transmitter with RDS | ✅ |
+
+### RDS Receiver (the one receiving app)
+
+`rdsReceiver.py` tunes an FM broadcast station and decodes the data on its
+57 kHz subcarrier: station ID (PI), program service name, RadioText, program
+type and clock time. Two consequences of being the only receiver:
+
+- **It picks its own radio** rather than using the global `radio_type`, because
+  the VSG60 transmits only and may well be the configured radio. The dialog
+  offers HackRF or USRP.
+- **Gains are applied after `tb.start()`** (`main()` calls `tb.apply_gain()`).
+  SoapyHackRF silently ignores the `AMP` stage when it is set before the stream
+  is running - worth ~14 dB, which is the difference between decoding and not.
+
+The decoding itself lives in `apps/rds_core.py`, deliberately free of GNU Radio
+and Qt so it can be run against a recorded capture:
+
+```sh
+python scripts/test_rds_core.py <capture>   # capture path without .cfile
+```
+
+`RdsDemod` mixes the MPX down by the 57 kHz subcarrier and integrates each
+biphase symbol; `RdsProtocol` syncs to the 26-bit block structure, corrects
+error bursts up to 5 bits with the (26,16) code, and assembles the fields.
+Three things that are easy to get wrong and cost real time here:
+
+- **The 57 kHz subcarrier and the 1187.5 bit/s clock are both locked to the
+  19 kHz stereo pilot** (x3 and /16). One PLL lock on the pilot supplies the
+  carrier phase *and* the symbol timing, so no separate recovery loops.
+- **The symbol timing offset is not a constant and must be measured.** The bit
+  grid is anchored at whatever pilot phase the first sample had, so it differs
+  every run and with any filter delay. `_pick_tau` measures it by scoring
+  candidate offsets on how many valid offset words appear. A wrong value
+  produces plenty of bits at exactly the right rate and decodes *nothing*.
+- **RadioText is buffered per A/B flag, not cleared on toggle.** The flag means
+  "new message, clear what you have", but it is a single bit in block B, so a
+  corrupted one would wipe a good message. `RdsProtocol` keeps a buffer for each
+  flag value: a bad bit writes into the page nobody is displaying, and a genuine
+  page change clears its target buffer *and writes the same group into it*.
+  Clearing without writing loses the first four characters of every page - which
+  is exactly what paged paragraphs exposed.
+- **Do not average PS or RadioText over time.** US stations scroll messages
+  through the 8-character PS field and often alternate two RadioText messages
+  without toggling the A/B flag, so averaging blends them into gibberish. The
+  live fields take characters as they arrive; the stable station name comes
+  from the most common complete PS (`ps_history`).
+
+A station's PI need not match its call sign. 98.7 WMZQ transmits `0x16F2` where
+the RBDS formula gives `0x76F2` - altered in the high nibble only, which US
+stations do for traffic-data (TMC) services, shared-PI simulcasts and factory
+defaults. Mapping `0x16F2` straight back yields the nonsense "KCQK".
+
+`callsign_candidates()` therefore restores each possible high nibble, and
+`RdsProtocol.confirmed_callsign()` picks the candidate that appears in the
+station's own PS or RadioText - "98.7WMZQ" confirms WMZQ out of the nine
+possibilities. The UI shows a confirmed call sign plainly and an
+uncorroborated one as "maybe", with the PI itself always the real identifier.
+
+Why the nibble changes, confirmed off-air against NRSC-G300-C section 5.1: the
+RDS-TMC standard has a receiver match the PI's *country code* against its map
+data, and the US was assigned country code 1, so stations carrying traffic data
+set the high nibble to 1. All three local iHeartMedia stations do it - WMZQ
+7→1, WIHT 6→1, WBIG 5→1 - and each restores exactly to its real call sign. Only
+WMZQ actually transmits TMC (`has_tmc`, ODA AID 0xCD46 in group 8A); the others
+appear to follow the group convention.
+
+**RadioText+ (`RTPLUS_AID`, 0x4BD7).** The same NRSC guideline tells receivers
+to read the RT+ StationName field rather than back-calculating a call sign, and
+all three local stations carry RT+ in group 12A. It tags substrings of the
+RadioText by class, so "Love Somebody" and "Morgan Wallen" arrive as separate
+`title` and `artist` fields. Stations do ship offsets that do not match the text
+they actually sent (99.5 tags two characters late, yielding "jured? Attorne"),
+so `_parse_rtplus` drops any tag that would slice a word in half.
+
+### FM + RDS Transmitter
+
+`fmRdsTransmitter.py` plays audio from the media folder as a real FM broadcast
+signal and carries a live-editable station name, RadioText and now-playing tags
+on the 57 kHz subcarrier. The encoder is `apps/rds_encode.py`, again free of GNU
+Radio and Qt so it can be tested without a radio:
+
+```sh
+python scripts/test_rds_loopback.py        # encoder -> decoder, no radio at all
+python scripts/test_fm_rds_tx.py <wav>     # whole modulation chain -> decoded back
+```
+
+The multiplex is built at 200 kHz (everything up to 60 kHz fits), interpolated
+to the 2 MS/s the radio runs at, and only then frequency modulated - doing it in
+that order matters, because the modulated signal is far wider than the
+multiplex. Levels are shares of the 75 kHz peak deviation: audio 0.55, pilot
+0.09 (the standard 9 %), RDS 0.04. Measured output is ~48 kHz peak deviation
+with music playing.
+
+Things worth knowing before changing it:
+
+- **Keep a Python reference to every block.** `rds_source` is a Python block; if
+  its wrapper is garbage collected while the C++ scheduler is running, the
+  process segfaults with no Python frame in the traceback. The app stores blocks
+  on `self`, and `scripts/test_fm_rds_tx.py` keeps a `tb.keepalive` tuple - a
+  plain function that builds a flowgraph and returns only the top block will
+  crash.
+- **0 % power is not off.** On the bench, a HackRF at the minimum VGA setting
+  still put the signal 32.5 dB above the noise floor at the receiver several
+  feet away, decoding at 100 %. Treat "lowest setting" as "still transmitting",
+  pick an empty channel, and do not assume a low slider is harmless.
+- The pilot and the RDS subcarrier are generated from one sample counter in
+  `RdsSubcarrier`, so 57 kHz stays exactly three times the pilot and the bit
+  clock exactly a sixteenth of it. Receivers depend on that lock.
+- RT+ offsets are computed from the very RadioText string that gets sent
+  (`set_now_playing` does both together), which is precisely what 99.5 locally
+  gets wrong. Setting RadioText directly clears the tags, since stale offsets
+  would slice the new text at the wrong points.
+- **Messages longer than RadioText are paged.** `set_paragraph()` splits text on
+  word boundaries into 64-character pages, sends each one complete, then toggles
+  the A/B flag so receivers clear before the next. Pages advance on segments
+  sent rather than a clock, so a page is never replaced halfway out. Budget
+  ~4.2 s per page at the standard group mix: a 250-character paragraph is five
+  pages and takes about 21 s to deliver in full.
+- **Paged text is numbered "2/5 " for a reason.** The cycle repeats forever, so
+  a receiver tuning in mid-paragraph gets every page but *rotated*, not in
+  reading order - measured off-air, a capture began at page 2 and wrapped to
+  page 1 last. The prefix is what allows reassembly without waiting to spot
+  where the cycle wraps; it also costs page width, which can add a page and so
+  widen the prefix, which `set_paragraph` settles by iterating.
+
+### Signal Hound BB60D as a receiver
+
+The BB60D works well for RDS (0.0 % block errors on a strong station) but is
+**not** driven through `gr-soapy`. It is a SoapySDR device - the module is a
+system one at `/usr/local/lib/SoapySDR/modules0.8/libSignalHoundBB60.so`, so
+`SOAPY_SDR_PLUGIN_PATH` must point there - and while `soapy.source(...)`
+constructs fine, *every* gr-soapy setter (`set_frequency`, `set_gain`,
+`set_sample_rate`) then fails with `setupStream: Invalid format ''`. Its sample
+rates are also 40/20/10/5/2.5 MSps with nothing near the 2 MS/s the HackRF path
+uses, so 2.5 MSps (decimate by 10) is the one to use.
+
+What does work today is recording with raw SoapySDR and decoding offline -
+`/data/python/bluey-ox-walker/bin/record_iq.py` on the **system** Python already
+does this (`--driver SignalHoundBB60`), and its output is complex float32, which
+`scripts/test_rds_core.py` reads directly given a JSON sidecar. Note that module
+wants `setupStream` called *before* any configuration.
+
+Driving it live from the launcher would mean a small source block wrapping raw
+SoapySDR, in the spirit of `apps/vsg_sink.py`.
 
 ### Adding a New Application
 
