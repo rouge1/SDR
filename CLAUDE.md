@@ -254,6 +254,35 @@ Things worth knowing before changing it:
 - The pilot and the RDS subcarrier are generated from one sample counter in
   `RdsSubcarrier`, so 57 kHz stays exactly three times the pilot and the bit
   clock exactly a sixteenth of it. Receivers depend on that lock.
+- **Stereo is matrixed, not sent as left and right.** A 2-channel file becomes
+  mid (L+R)/2 as ordinary audio plus side (L-R)/2 on a 38 kHz DSB-SC
+  subcarrier, which is what keeps the signal listenable on a mono receiver.
+  `rds_source` emits that 38 kHz carrier on its second output, from the same
+  sample counter as the pilot so it stays exactly twice it - a separate
+  oscillator would drift and lose stereo. In mono that output goes to a null
+  sink, because an unconnected port fails validation. `next_track()` rebuilds
+  the whole audio chain rather than swapping one block, since the next file may
+  be stereo where this one was mono. Verified off-air: 38 kHz subcarrier 24.8 dB
+  out of the noise, 47 kHz peak deviation, RDS unaffected at 904/904 blocks.
+  Test it with `scripts/test_fm_stereo.py <stereo.wav>`.
+- **The recovered side/mid ratio reads high off the air, and should.** Measured
+  -5.8 dB against -8.7 dB in the source file; in a noiseless software run the
+  gap is only 1.4 dB. FM noise grows with baseband frequency and the difference
+  signal sits at 23-53 kHz where there is more of it. That is the same effect
+  that makes stereo reception noisier than mono, not a fault in the chain.
+- **Channel separation is the measurement that actually proves stereo, and it
+  needs its phase fitted.** `scripts/test_fm_separation.py` drives one channel
+  with a tone while the other stays silent and measures how much leaks across,
+  reading only at the tone frequency so noise cannot flatter the result
+  (validated to 0.1 dB against deliberately injected crosstalk). Measured
+  34.3 dB through the chain and 32-33 dB off the air via a BB60D, which is
+  normal for FM stereo. But the regenerated 38 kHz subcarrier has to be
+  phase-aligned with the multiplex: the pilot reaches the PLL through a
+  band-pass whose group delay the multiplex does not share, so assuming zero
+  offset reads 18 dB and looks exactly like a broken transmitter. The delay
+  arithmetic predicts the offset - a 401-tap band-pass delays 200 samples,
+  0.2 of a cycle at 19 kHz, 72 degrees of pilot phase, doubled to ~144 degrees
+  at 38 kHz - and the fit lands on 144 in software and 146 off the air.
 - RT+ offsets are computed from the very RadioText string that gets sent
   (`set_now_playing` does both together), which is precisely what 99.5 locally
   gets wrong. Setting RadioText directly clears the tags, since stale offsets
