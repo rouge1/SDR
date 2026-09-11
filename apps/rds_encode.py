@@ -303,7 +303,17 @@ class RdsSubcarrier:
             self._bits = np.concatenate([self._bits, tx])
 
     def generate(self, count):
-        """Return ``count`` samples of pilot + RDS, summed."""
+        """Just the pilot + RDS sum, for callers that need nothing else."""
+        return self.generate_all(count)[0]
+
+    def generate_all(self, count):
+        """Return (pilot + RDS, 38 kHz stereo carrier) for the next samples.
+
+        The stereo carrier comes from the same sample counter as the pilot, so
+        it stays at exactly twice the pilot frequency just as RDS stays at
+        exactly three times it. Separate oscillators would drift apart, and a
+        receiver recovering both from the pilot would slowly lose stereo.
+        """
         n = np.arange(self._n, self._n + count, dtype=np.float64)
         t = n / self.fs
 
@@ -332,6 +342,8 @@ class RdsSubcarrier:
         rds = shaped * np.cos(2 * np.pi * SUBCARRIER_HZ * t)
         pilot = np.cos(2 * np.pi * PILOT_HZ * t)
 
+        carrier38 = np.cos(2 * (2 * np.pi * PILOT_HZ) * t)
         self._n += count
-        return (self.pilot_level * pilot
-                + self.rds_injection * rds).astype(np.float32)
+        subcarriers = (self.pilot_level * pilot
+                       + self.rds_injection * rds).astype(np.float32)
+        return subcarriers, carrier38.astype(np.float32)

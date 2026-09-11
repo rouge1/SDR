@@ -57,7 +57,11 @@ def build(encoder, audio_path, out_path):
     # afterwards, which is a truer check anyway - it measures what actually
     # came out rather than what went in.
     tb.connect(src, resamp, preemph, lpf, (mpx, 0))
-    tb.connect(rds, (mpx, 1))
+    tb.connect((rds, 0), (mpx, 1))
+    # rds_source also emits a 38 kHz stereo carrier on its second output. This
+    # mono chain has no use for it, and an unconnected port fails validation.
+    null_carrier = blocks.null_sink(gr.sizeof_float)
+    tb.connect((rds, 1), null_carrier)
     tb.connect(mpx, up, mod, head, sink)
     # Keep Python references to every block alive. These are locals, and once
     # this function returns they can be garbage collected while the C++
@@ -65,7 +69,8 @@ def build(encoder, audio_path, out_path):
     # Python frame in the traceback, as soon as it calls a Python block's
     # work() on a freed object. The apps are safe because they store blocks on
     # self; a plain function has to say so explicitly.
-    tb.keepalive = (src, resamp, preemph, lpf, rds, mpx, up, mod, head, sink)
+    tb.keepalive = (src, resamp, preemph, lpf, rds, mpx, up, mod, head, sink,
+                    null_carrier)
     return tb
 
 

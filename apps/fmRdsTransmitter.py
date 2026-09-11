@@ -16,6 +16,7 @@ import os
 import signal
 import sys
 import time
+import wave
 
 import numpy as np  # type: ignore
 try:
@@ -59,6 +60,18 @@ def track_name(path):
     if not path:
         return ''
     return os.path.splitext(os.path.basename(path))[0].replace('-', ' ')
+
+
+def wav_channels(path):
+    """Channel count of a WAV file, or 0 if it is not a readable WAV."""
+    try:
+        w = wave.open(path)
+    except Exception:
+        return 0
+    try:
+        return w.getnchannels()
+    finally:
+        w.close()
 
 
 def wav_files(settings):
@@ -272,18 +285,26 @@ class ConfigDialog(Qt.QDialog):
 
 
 class rds_source(gr.sync_block):
-    """Streams the pilot + RDS subcarrier from apps/rds_encode.py."""
+    """Streams the subcarriers from apps/rds_encode.py.
+
+    Output 0 is the 19 kHz pilot plus the 57 kHz RDS subcarrier. Output 1 is a
+    bare 38 kHz carrier for the stereo difference signal, generated from the
+    same sample counter so it is exactly twice the pilot. It is produced even
+    in mono, where the flowgraph simply discards it.
+    """
 
     def __init__(self, encoder, rate):
         gr.sync_block.__init__(self, name='rds_source', in_sig=None,
-                               out_sig=[np.float32])
+                               out_sig=[np.float32, np.float32])
         self.sub = RdsSubcarrier(encoder, rate, rds_injection=RDS_INJECTION,
                                  pilot_level=PILOT_LEVEL)
 
     def work(self, input_items, output_items):
-        out = output_items[0]
-        out[:] = self.sub.generate(len(out))
-        return len(out)
+        n = len(output_items[0])
+        subcarriers, carrier38 = self.sub.generate_all(n)
+        output_items[0][:] = subcarriers
+        output_items[1][:] = carrier38
+        return n
 
 
 class fmRdsTransmitter(gr.top_block, Qt.QWidget):
@@ -410,17 +431,75 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
                                        0.5, 0, 0)
         return blocks.null_source(gr.sizeof_float)
 
-    def _build_flowgraph(self):
-        self.audio_src = self._audio_branch(self.audio_choice)
-        # 48 kHz media up to the 200 kHz multiplex rate: 200/48 = 25/6.
-        self.audio_resamp = filter.rational_resampler_fff(
-            interpolation=25, decimation=6, taps=[], fractional_bw=0)
-        self.preemph = analog.fm_preemph(MPX_RATE, 75e-6)
-        self.audio_lpf = filter.fir_filter_fff(
-            1, firdes.low_pass(AUDIO_LEVEL, MPX_RATE, 15e3, 2e3))
+    def _build_audio(self):
+        """Create the audio blocks for the current track, mono or stereo.
 
+        A stereo file is matrixed into mid (L+R)/2 and side (L-R)/2, because FM
+        does not transmit left and right: it sends the sum as ordinary audio and
+        the difference on the 38 kHz subcarrier, which is what keeps the signal
+        listenable on a mono receiver.
+        """
+        self.audio_src = self._audio_branch(self.audio_choice)
+        self.stereo = wav_channels(self.audio_choice or '') == 2
+        # 48 kHz media up to the 200 kHz multiplex rate: 200/48 = 25/6.
+        def resampler():
+            return filter.rational_resampler_fff(
+                interpolation=25, decimation=6, taps=[], fractional_bw=0)
+
+        def audio_shaping():
+            # AUDIO_LEVEL rides in the filter gain, so peak deviation stays
+            # within budget once the pilot and RDS are added on top.
+            return (analog.fm_preemph(MPX_RATE, 75e-6),
+                    filter.fir_filter_fff(
+                        1, firdes.low_pass(AUDIO_LEVEL, MPX_RATE, 15e3, 2e3)))
+
+        if not self.stereo:
+            self.audio_resamp = resampler()
+            self.preemph, self.audio_lpf = audio_shaping()
+            return
+        self.resamp_l, self.resamp_r = resampler(), resampler()
+        self.lr_add, self.lr_sub = blocks.add_ff(1), blocks.sub_ff(1)
+        self.mid_half = blocks.multiply_const_ff(0.5)
+        self.side_half = blocks.multiply_const_ff(0.5)
+        self.mid_preemph, self.mid_lpf = audio_shaping()
+        self.side_preemph, self.side_lpf = audio_shaping()
+        self.side_mix = blocks.multiply_ff(1)     # side x 38 kHz carrier
+        self.audio_sum = blocks.add_vff(1)        # mid + modulated side
+
+    def _connect_audio(self):
+        if not self.stereo:
+            self.connect(self.audio_src, self.audio_resamp, self.preemph,
+                         self.audio_lpf, (self.mpx_sum, 0))
+            # The stereo carrier is still produced; nothing wants it in mono.
+            self.connect((self.rds, 1), self.null_carrier)
+            return
+        self.connect((self.audio_src, 0), self.resamp_l)
+        self.connect((self.audio_src, 1), self.resamp_r)
+        self.connect(self.resamp_l, (self.lr_add, 0))
+        self.connect(self.resamp_r, (self.lr_add, 1))
+        self.connect(self.resamp_l, (self.lr_sub, 0))
+        self.connect(self.resamp_r, (self.lr_sub, 1))
+        self.connect(self.lr_add, self.mid_half, self.mid_preemph,
+                     self.mid_lpf, (self.audio_sum, 0))
+        self.connect(self.lr_sub, self.side_half, self.side_preemph,
+                     self.side_lpf, (self.side_mix, 0))
+        self.connect((self.rds, 1), (self.side_mix, 1))
+        self.connect(self.side_mix, (self.audio_sum, 1))
+        self.connect(self.audio_sum, (self.mpx_sum, 0))
+
+    def _connect_all(self):
+        self._connect_audio()
+        self.connect((self.rds, 0), (self.mpx_sum, 1))
+        self.connect(self.mpx_sum, self.mpx_resamp, self.modulator,
+                     self.radio_sink)
+        if hasattr(self, 'mpx_sink'):
+            self.connect(self.mpx_sum, self.mpx_sink)
+
+    def _build_flowgraph(self):
         self.rds = rds_source(self.encoder, MPX_RATE)
+        self.null_carrier = blocks.null_sink(gr.sizeof_float)
         self.mpx_sum = blocks.add_vff(1)
+        self._build_audio()
         # MPX up to the radio's rate, then frequency modulate. Doing it in this
         # order matters: the modulated signal is far wider than the multiplex.
         self.mpx_resamp = filter.rational_resampler_fff(
@@ -455,11 +534,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             self.radio_sink.set_sample_rate(0, TX_RATE)
             self.radio_sink.set_frequency(0, self.freq_mhz * 1e6)
 
-        self.connect(self.audio_src, self.audio_resamp, self.preemph,
-                     self.audio_lpf, (self.mpx_sum, 0))
-        self.connect(self.rds, (self.mpx_sum, 1))
-        self.connect(self.mpx_sum, self.mpx_resamp, self.modulator,
-                     self.radio_sink)
+        self._connect_all()
         self._update_track_label()
 
     def _build_spectrum(self):
@@ -474,6 +549,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.mpx_sink.disable_legend()
         self.top_grid_layout.addWidget(
             sip.wrapinstance(self.mpx_sink.qwidget(), Qt.QWidget), 1, 0, 6, 10)
+        self.mpx_sink.set_line_label(0, 'MPX')
         self.connect(self.mpx_sum, self.mpx_sink)
 
     # ------------------------------------------------------------ controls
@@ -515,12 +591,14 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             return
         self.track_index = (self.track_index + 1) % len(self.playlist)
         path = self.playlist[self.track_index]
-        self.lock()
-        self.disconnect(self.audio_src, self.audio_resamp)
-        self.audio_src = self._audio_branch(path)
-        self.connect(self.audio_src, self.audio_resamp)
-        self.unlock()
         self.audio_choice = path
+        # Rebuild rather than swap one block: the next track may be stereo
+        # where this one was mono, which is a different chain entirely.
+        self.lock()
+        self.disconnect_all()
+        self._build_audio()
+        self._connect_all()
+        self.unlock()
         self._update_track_label()
         if self.track_in_rt:
             self.encoder.set_now_playing('', track_name(path))
