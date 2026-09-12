@@ -200,25 +200,41 @@ class _TextField:
     blends separate messages into gibberish, and waiting for two consecutive
     receptions to agree never commits anything at all when the text alternates.
 
-    Only blocks that passed (or were repaired by) the CRC reach this class, so
-    the characters arriving here are already filtered.
+    Only blocks that passed (or were repaired by) the CRC reach this class, but
+    a repair is no proof. The (26,16) code maps almost every syndrome to *some*
+    correction, so a block whose error burst is too long comes back "corrected"
+    and wrong rather than rejected: 'Tyler' as 'Eyler', a space as '&'. Off air
+    that happens several times a minute. Characters from a block that needed
+    correcting are therefore provisional: one fills a position nothing has
+    written yet, and stays until a clean block replaces it. It never replaces a
+    clean character, nor another provisional one - a repair that came out
+    right must not be overwritten by the next one that came out wrong.
     """
 
     def __init__(self, size):
         self.size = size
         self.committed = [' '] * size
-        # Positions this message has actually sent. Cleared with the text, so
-        # it always describes the message on display and never the one before.
+        # Positions this message has sent in blocks that needed no correction.
+        # Cleared with the text, so it always describes the message on display
+        # and never the one before.
         self.written = set()
+        self.provisional = set()
 
-    def put(self, pos, char):
-        if 0 <= pos < self.size:
+    def put(self, pos, char, trusted=True):
+        if not 0 <= pos < self.size:
+            return
+        if trusted:
             self.committed[pos] = char
             self.written.add(pos)
+            self.provisional.discard(pos)
+        elif pos not in self.written and pos not in self.provisional:
+            self.committed[pos] = char
+            self.provisional.add(pos)
 
     def clear(self):
         self.committed = [' '] * self.size
         self.written = set()
+        self.provisional = set()
 
     def differs(self, pos, chars, minimum=2):
         """True if this segment contradicts what the message already sent.
@@ -228,23 +244,21 @@ class _TextField:
         only warning some of them give (see the A/B flag note in
         ``RdsProtocol._decode_group``).
 
-        ``minimum`` is what keeps a corrupted block from being mistaken for
-        one. The (26,16) code maps almost every syndrome to some correction, so
-        a block whose error burst is too long to repair comes back "corrected"
-        and wrong rather than rejected, and drops a stray character into the
-        text - 'Tyler' arriving as 'Eyler', a '-' as '!'. Off air that happens
-        several times a minute, and treating each one as a new message blanks
-        the display and costs four seconds of refill. A real change rewrites
-        most of a segment; a bad block usually lands one character. A segment
-        that disagrees in only one place is written anyway, so what survives of
-        the disagreement is that single character.
+        Ask it only about a segment whose blocks arrived clean; it compares only
+        against characters that did too. Otherwise a wrongly corrected block
+        reads as a new message and blanks the display for the four seconds a
+        refill takes - and so does the clean pass that repairs it. Measured on
+        encoded bursts at 96.6% blocks good, that kept the text wrong on screen
+        nearly two thirds of the time, and short or blank a fifth of it.
+        ``minimum`` stays at two characters as a second guard, against an error
+        the syndrome cannot see.
         """
         n = sum(pos + j in self.written and self.committed[pos + j] != ch
                 for j, ch in enumerate(chars))
         return n >= minimum
 
     def range_written(self, start, end):
-        """True if every position in [start, end) came from this message."""
+        """True if every position in [start, end) came clean from this message."""
         if start < 0 or end > self.size or end <= start:
             return False
         return all(p in self.written for p in range(start, end))
@@ -294,7 +308,6 @@ class RdsProtocol:
         self.pty = None
         self.tp = None
         self.ta = None
-        self.clock = None
         self.group_counts = collections.Counter()
         self.blocks_ok = 0
         self.blocks_seen = 0
@@ -302,7 +315,9 @@ class RdsProtocol:
         # Bits fed so far. RDS runs at exactly 1187.5 bit/s, so this is a clock
         # that behaves the same live as when replaying a capture flat out.
         self.bits_in = 0
-        self._clock_pending = None
+        self._group_s = 0.0         # stream second the group in hand began
+        self._clock_pending = None  # the last clock reading, trusted or not
+        self._clock_sync = None     # (UTC, offset hours, stream second) synced
 
     # -- bit plumbing ------------------------------------------------------
     def feed(self, bits):
@@ -343,7 +358,7 @@ class RdsProtocol:
                 self._miss = 0
             if n < 104:
                 return
-            grp, bad = {}, 0
+            grp, bad, corrected = {}, 0, set()
             for j, cands in enumerate((['A'], ['B'], ['C', "C'"], ['D'])):
                 v = self._peek(26 * j)
                 hit = None
@@ -356,10 +371,15 @@ class RdsProtocol:
                 if hit:
                     grp[key[hit[0]]] = hit[1]
                     self.blocks_ok += 1
+                    # Repaired rather than received intact - see _TextField.
+                    if syndrome(v) != SYN_OFF[hit[0]]:
+                        corrected.add(key[hit[0]])
                 else:
                     bad += 1
             if grp:
-                self._decode_group(grp)
+                # The group is still at the head of the buffer, so this is
+                # where it began in the stream.
+                self._decode_group(grp, corrected, at_bit=self.bits_in - n)
             self._miss = self._miss + 1 if bad >= 3 else 0
             if self._miss >= self.drop_after:
                 self._synced = False
@@ -367,7 +387,15 @@ class RdsProtocol:
                 self._bits.popleft()
 
     # -- group interpretation ---------------------------------------------
-    def _decode_group(self, b):
+    def _decode_group(self, b, corrected=frozenset(), at_bit=None):
+        """Interpret one group.
+
+        ``corrected`` names the blocks error correction had to repair, and
+        ``at_bit`` is where the group began in the stream. Tests hand groups
+        over directly, and the default - everything fed so far - is what they
+        mean by it.
+        """
+        self._group_s = (self.bits_in if at_bit is None else at_bit) / 1187.5
         if 'A' in b:
             self.pi_votes[b['A']] += 1
         if 'B' not in b:
@@ -408,7 +436,12 @@ class RdsProtocol:
             # require the new value twice before believing it.
             ab = (b['B'] >> 4) & 1
             buf = self.rt_pages[ab]
-            if ab != self._rt_ab:
+            # A group only gets a say in what message is on air if every block
+            # it uses arrived intact: a repaired block may well be wrong, and
+            # that includes the flag and the segment address in block B.
+            trusted = not corrected.intersection(
+                ('B', 'D') if ver_b else ('B', 'C', 'D'))
+            if ab != self._rt_ab and trusted:
                 # A new message begins with this group. Clear its buffer and
                 # then write this very group into it - clearing without writing
                 # would discard the first four characters of every page.
@@ -431,17 +464,20 @@ class RdsProtocol:
                 # what is on display is a splice of the two: "98.7WMZQBest
                 # Country", or a car dealership in the middle of a song title.
                 # The contradiction itself is the announcement.
-                if buf.differs(base, chars):
+                if trusted and buf.differs(base, chars):
                     buf.clear()
                     if self._rt_show is None or ab == self._rt_show:
                         # The tags describe the message that carried them, and
                         # that message is gone.
                         self.rtplus.clear()
                 for j, ch in enumerate(chars):
-                    buf.put(base + j, ch)
+                    buf.put(base + j, ch, trusted)
             # Switch which buffer is reported only once the new flag has been
-            # seen twice, so one bad bit cannot flash a half-empty page up.
-            if self._rt_show is None or ab == self._rt_show:
+            # seen twice in clean groups, so one bad bit cannot flash a
+            # half-empty page up.
+            if not trusted:
+                pass
+            elif self._rt_show is None or ab == self._rt_show:
                 self._rt_show_pending = None
                 self._rt_show = ab
             elif ab == self._rt_show_pending:
@@ -449,7 +485,8 @@ class RdsProtocol:
                 self._rt_show_pending = None
             else:
                 self._rt_show_pending = ab
-            self.rt = self.rt_pages[self._rt_show]
+            if self._rt_show is not None:
+                self.rt = self.rt_pages[self._rt_show]
         elif gtype == 4 and not ver_b and 'C' in b and 'D' in b:
             self._decode_clock(b)
 
@@ -502,10 +539,13 @@ class RdsProtocol:
         for a station with no clock. The same 12 minutes held one 1B and one
         12B, types that station never sends, so such groups do get through.
 
-        A reading is accepted only when the next one carries the same offset
-        and a time that has moved on by as much as the bitstream has. A station
-        whose clock is simply wrong still shows, consistently wrong; it is the
-        one-off garbage that is kept off the screen.
+        A first reading is accepted only when the next one carries the same
+        offset and a time that has moved on by as much as the bitstream has.
+        From then on a reading is a sync, the way a car radio treats one: the
+        clock runs on by stream time, so a lost group costs nothing, and a
+        single reading that agrees with the running clock re-syncs it. A
+        station whose clock is simply wrong still shows, consistently wrong; it
+        is the one-off garbage that is kept off the screen.
         """
         mjd = ((b['B'] & 0x3) << 15) | ((b['C'] >> 1) & 0x7FFF)
         hour = ((b['C'] & 0x1) << 4) | ((b['D'] >> 12) & 0xF)
@@ -523,24 +563,28 @@ class RdsProtocol:
         k = 1 if mp in (14, 15) else 0
         year = 1900 + yp + k
         month = mp - 1 - k * 12
-        reading = {
-            'year': year, 'month': month, 'day': day,
-            'hour': hour, 'minute': minute,
-            'utc_offset_hours': sign * off_half_hours / 2.0,
-        }
-        stamp = mjd * 1440 + hour * 60 + minute       # UTC, in minutes
-        heard_at = self.bits_in / 1187.5              # seconds of bitstream
-        previous = self._clock_pending
-        self._clock_pending = (stamp, reading['utc_offset_hours'], heard_at)
-        if previous is None:
-            return
-        p_stamp, p_offset, p_heard = previous
-        elapsed_min = (heard_at - p_heard) / 60.0
-        # 1.5 minutes of slack: the minute can tick over between the two
+        utc = datetime(year, month, day, hour, minute)
+        offset = sign * off_half_hours / 2.0
+        at = self._group_s
+        # 90 s of slack either way: the minute can tick over between two
         # groups, and a station may repeat the same minute's group.
-        if (p_offset == reading['utc_offset_hours']
-                and abs((stamp - p_stamp) - elapsed_min) <= 1.5):
-            self.clock = reading
+        running = self._clock_at(at)
+        agrees_running = (running is not None and running[1] == offset
+                          and abs((utc - running[0]).total_seconds()) <= 90)
+        previous = self._clock_pending
+        self._clock_pending = (utc, offset, at)
+        agrees_previous = (
+            previous is not None and previous[1] == offset
+            and abs((utc - previous[0]).total_seconds() - (at - previous[2])) <= 90)
+        if agrees_running or agrees_previous:
+            self._clock_sync = (utc, offset, at)
+
+    def _clock_at(self, at):
+        """(UTC, offset hours) at stream second ``at``, or None before a sync."""
+        if self._clock_sync is None:
+            return None
+        utc, offset, synced_at = self._clock_sync
+        return utc + timedelta(seconds=at - synced_at), offset
 
     def confirmed_callsign(self, pi):
         """A call sign the station's own text backs up, or None.
@@ -559,6 +603,22 @@ class RdsProtocol:
         return None
 
     # -- output ------------------------------------------------------------
+    def clock_reading(self):
+        """The station clock as it stands now, or None before the first sync.
+
+        UTC fields and offset in the same shape a clock group decodes to, plus
+        the second and how long ago (in stream seconds) it was last synced.
+        """
+        now = self.bits_in / 1187.5
+        running = self._clock_at(now)
+        if running is None:
+            return None
+        utc, offset = running
+        return {'year': utc.year, 'month': utc.month, 'day': utc.day,
+                'hour': utc.hour, 'minute': utc.minute, 'second': utc.second,
+                'utc_offset_hours': offset,
+                'synced_ago_s': now - self._clock_sync[2]}
+
     def snapshot(self):
         pi = self.pi_votes.most_common(1)[0][0] if self.pi_votes else None
         table = PTY_RBDS if self.region == 'RBDS' else PTY_RDS
@@ -581,7 +641,7 @@ class RdsProtocol:
             'has_tmc': TMC_AID in self.oda_aids,
             'tp': self.tp,
             'ta': self.ta,
-            'clock': self.clock,
+            'clock': self.clock_reading(),
             'groups': self.groups,
             'blocks_ok': self.blocks_ok,
             'blocks_seen': self.blocks_seen,

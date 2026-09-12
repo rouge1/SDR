@@ -7,9 +7,9 @@
 # carried on its 57 kHz subcarrier (station ID, program service name,
 # RadioText, program type, clock time).
 #
-# This is the only receiving application in the launcher, so unlike the
-# transmitters it picks its own radio: the Signal Hound VSG60 can only
-# transmit, and the global radio_type setting may well be set to it.
+# This is the only receiving application in the launcher. It uses the radio
+# chosen in Settings, as the transmitters do - except that the Signal Hound
+# VSG60 can only transmit, so with that selected the dialog just says so.
 
 import json
 import os
@@ -72,13 +72,19 @@ class ConfigDialog(Qt.QDialog):
 
         settings = read_settings()
         self.ipList = settings.get('ip_addresses', [])
+        # The radio is the one chosen in Settings, as for every other app.
+        self.radio_type = settings.get('radio_type', 'hackrf')
+        if self.radio_type == 'vsg':
+            self.create_cannot_receive()
+            apply_dark_theme(self)
+            return
 
         self.button_box = Qt.QDialogButtonBox(
             Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
-        self.create_receiver_selector(settings)
+        self.create_receiver_selector()
         self.create_frequency_control()
         self.create_gain_control()
         self.create_options()
@@ -88,29 +94,44 @@ class ConfigDialog(Qt.QDialog):
         self.update_ok_state()
         apply_dark_theme(self)
 
-    def create_receiver_selector(self, settings):
-        self.layout.addWidget(Qt.QLabel("Receiver:"))
-        self.radio_combo = Qt.QComboBox()
-        self.radio_combo.addItem("HackRF One (USB)", "hackrf")
-        self.radio_combo.addItem("Ettus USRP (Network)", "usrp")
-        # The VSG60 transmits only, so fall back to the HackRF when it is the
-        # configured radio rather than offering something that cannot receive.
-        current = settings.get('radio_type', 'hackrf')
-        self.radio_combo.setCurrentIndex(1 if current == 'usrp' else 0)
-        self.radio_combo.currentIndexChanged.connect(self.update_ok_state)
-        self.layout.addWidget(self.radio_combo)
+    def create_cannot_receive(self):
+        """The whole dialog, when Settings name a radio that cannot receive.
 
+        The Signal Hound VSG60 is a signal generator. Rejecting here means the
+        launcher never gets as far as opening a device.
+        """
+        self.setWindowTitle("RDS Receiver")
+        row = Qt.QHBoxLayout()
+        icon = Qt.QLabel()
+        icon.setPixmap(self.style().standardIcon(
+            Qt.QStyle.SP_MessageBoxWarning).pixmap(48, 48))
+        icon.setAlignment(QtCore.Qt.AlignTop)
+        row.addWidget(icon)
+        message = Qt.QLabel(
+            "<b>The Signal Hound VSG60 cannot receive.</b><br><br>"
+            "It only transmits, so the RDS Receiver has no radio to listen "
+            "with. Choose the HackRF One or an Ettus USRP in Settings (the "
+            "gear icon), then open the RDS Receiver again.")
+        message.setWordWrap(True)
+        message.setAlignment(QtCore.Qt.AlignTop)
+        row.addWidget(message, 1)
+        self.layout.addLayout(row)
+        close = Qt.QDialogButtonBox(Qt.QDialogButtonBox.Close)
+        close.rejected.connect(self.reject)
+        self.layout.addWidget(close)
+
+    def create_receiver_selector(self):
+        if self.radio_type != 'usrp':
+            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            return
         self.usrp_combo = Qt.QComboBox()
         if self.ipList:
             for i, ip in enumerate(self.ipList):
                 self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})", ip.strip())
         else:
             self.usrp_combo.addItem("IP addr missing - Go to Settings")
+        self.layout.addWidget(Qt.QLabel("Select USRP:"))
         self.layout.addWidget(self.usrp_combo)
-
-        note = Qt.QLabel("The Signal Hound VSG60 cannot receive, so it is not listed.")
-        note.setWordWrap(True)
-        self.layout.addWidget(note)
 
     def create_frequency_control(self):
         row = Qt.QHBoxLayout()
@@ -147,9 +168,8 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.audio_check)
 
     def update_ok_state(self):
-        needs_ip = self.radio_combo.currentData() == 'usrp'
         ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        enabled = (not needs_ip) or bool(self.ipList)
+        enabled = self.radio_type != 'usrp' or bool(self.ipList)
         ok.setEnabled(enabled)
         if enabled:
             ok.setGraphicsEffect(None)
@@ -170,17 +190,19 @@ class ConfigDialog(Qt.QDialog):
                   file=sys.stderr)
             return
         # Restore each setting independently: one unreadable value must not
-        # discard everything saved after it.
-        for key, apply in (
-            ('radio_type', lambda v: self.radio_combo.setCurrentIndex(
-                1 if v == 'usrp' else 0)),
-            ('usrp_index', lambda v: self.usrp_combo.setCurrentIndex(int(v))),
+        # discard everything saved after it. The radio type is not among them;
+        # it comes from Settings.
+        restore = [
             ('frequency_mhz', lambda v: self.freq_spin.setValue(float(v))),
             ('gain_percent', lambda v: self.gain_slider.setValue(int(v))),
             ('region', lambda v: self.region_combo.setCurrentIndex(
                 1 if v == 'RDS' else 0)),
             ('audio', lambda v: self.audio_check.setChecked(bool(v))),
-        ):
+        ]
+        if hasattr(self, 'usrp_combo'):
+            restore.append(
+                ('usrp_index', lambda v: self.usrp_combo.setCurrentIndex(int(v))))
+        for key, apply in restore:
             if key in config:
                 try:
                     apply(config[key])
@@ -190,13 +212,14 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'radio_type': self.radio_combo.currentData(),
-            'usrp_index': max(self.usrp_combo.currentIndex(), 0),
+            'radio_type': self.radio_type,
             'frequency_mhz': self.freq_spin.value(),
             'gain_percent': self.gain_slider.value(),
             'region': self.region_combo.currentData(),
             'audio': self.audio_check.isChecked(),
         }
+        if hasattr(self, 'usrp_combo'):
+            config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
         os.makedirs(self.config_dir, exist_ok=True)
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
@@ -206,12 +229,11 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        radio_type = self.radio_combo.currentData()
-        ip = self.usrp_combo.currentData() if self.ipList else ''
+        usrp = hasattr(self, 'usrp_combo') and bool(self.ipList)
         return {
-            'radio_type': radio_type,
-            'ipXmitAddr': ip or '',
-            'ipNum': self.usrp_combo.currentIndex() + 1 if self.ipList else 0,
+            'radio_type': self.radio_type,
+            'ipXmitAddr': (self.usrp_combo.currentData() or '') if usrp else '',
+            'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
             'frequency_mhz': self.freq_spin.value(),
             'gain_percent': self.gain_slider.value(),
             'region': self.region_combo.currentData(),
@@ -537,7 +559,15 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
         flags.append("Stereo pilot locked" if stereo else "No pilot")
         self.lbl['flags'].setText(", ".join(flags))
 
-        self.lbl['clock'].setText(clock_text(snap['clock']) or '-')
+        clock = snap['clock']
+        if clock:
+            # The clock runs on between groups, so say how fresh its last sync
+            # is: a station that stops sending leaves it running unchecked.
+            ago = clock['synced_ago_s']
+            ago = f"{ago:.0f} s" if ago < 120 else f"{ago / 60:.0f} min"
+            self.lbl['clock'].setText(f"{clock_text(clock)}   synced {ago} ago")
+        else:
+            self.lbl['clock'].setText('-')
 
         seen = snap['blocks_seen']
         if seen:

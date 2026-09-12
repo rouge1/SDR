@@ -157,9 +157,10 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 57 kHz subcarrier: station ID (PI), program service name, RadioText, program
 type and clock time. Two consequences of being the only receiver:
 
-- **It picks its own radio** rather than using the global `radio_type`, because
-  the VSG60 transmits only and may well be the configured radio. The dialog
-  offers HackRF or USRP.
+- **It uses the radio chosen in Settings**, like every other app: the HackRF,
+  or a USRP picked from the configured addresses. The VSG60 transmits only, so
+  with it selected the whole dialog is an error pointing at Settings, and
+  closing it launches nothing.
 - **Gains are applied after `tb.start()`** (`main()` calls `tb.apply_gain()`).
   SoapyHackRF silently ignores the `AMP` stage when it is set before the stream
   is running - worth ~14 dB, which is the difference between decoding and not.
@@ -199,27 +200,47 @@ Three things that are easy to get wrong and cost real time here:
   overwrote the last segment by segment, the display showed splices like
   "98.7WMZQBest Country", and a car-dealer advert turned up inside the song
   name. A segment that contradicts characters the current message has already
-  sent now starts a new message and drops its RT+ tags. It takes **two**
-  differing characters, not one. The (26,16) code maps nearly every syndrome to
-  *some* correction, so a block whose error burst is too long comes back wrong
-  rather than rejected - 'Tyler' as 'Eyler' - and treating that one stray
-  character as a new message blanked the display several times a minute.
+  sent now starts a new message and drops its RT+ tags.
+- **Only blocks that arrived clean may announce a new message.** The (26,16)
+  code maps nearly every syndrome to *some* correction, so a block whose error
+  burst is too long comes back wrong rather than rejected - 'Tyler' as 'Eyler',
+  a space as '&'. Taking that for a new message blanked the display, and so did
+  the clean pass that repaired it. Requiring two differing characters was not
+  enough, because a bad block usually changes both of the characters it
+  carries. Characters from a block that needed correcting are therefore
+  provisional: one fills a position nothing has written yet and stays until a
+  clean block replaces it. It never overwrites a clean character - nor another
+  provisional one, since a repair that came out right would otherwise be
+  replaced by the next that came out wrong - never counts as a contradiction,
+  and a corrected A/B flag cannot clear a buffer. Measured with encoded error
+  bursts at 96.6% blocks good, the text had been wrong on screen nearly two
+  thirds of the time and short or blank a fifth of it; afterwards both were
+  zero at 96.6, 98.4 and 99.4%, and `scripts/test_rds_radiotext.py` now
+  requires never. Off air, the VSG60 into the Windows laptop's HackRF at 96-97%
+  blocks good: 114 wrong or blank displays in five minutes before, none in six
+  and a half after.
 - **An RT+ tag may only slice characters the current message sent.** Tags that
   arrived while the next message was still filling in cut across both, welding
   "Dan +" from the new text to "ntry" from the tail of "Country". Stations repeat
   the tag group every second or two, so a refused tag lands on the next pass.
-- **A clock time is shown only once a second one agrees.** Stations that send
-  group 4A do so about once a minute, and many send none: 98.7 sent no 4A in
-  12 minutes of 99.99% clean blocks, yet the receiver once displayed
+- **A clock group is a sync, the way a car radio treats it.** Stations that
+  send group 4A do so about once a minute, and many send none: 98.7 sent no 4A
+  in 12 minutes of 99.99% clean blocks, yet the receiver once displayed
   "2168-10-28 01:27 (UTC-9)" for it. A block B that the code corrects wrongly
   turns any group into a 4A - those same 12 minutes held one 1B and one 12B,
-  types the station never sends - and its C and D then decode as a date.
-  `_decode_clock` therefore needs the next 4A to carry the same offset and a
-  time that has moved on by as much as the bitstream has (`bits_in` at
-  1187.5 bit/s, so replaying a capture flat out behaves the same). A station
-  whose clock is wrong but consistent still shows. It is shown as local time:
-  the group carries UTC hours and minutes with the offset beside them, so
-  printing those fields next to "(UTC-4)", as the receiver once did, reads four
+  types the station never sends - and its C and D then decode as a date. The
+  first reading is therefore believed only once the next 4A carries the same
+  offset and a time that has moved on by as much as the bitstream has
+  (`bits_in` at 1187.5 bit/s, so replaying a capture flat out behaves the
+  same). From then on the clock runs by itself on that stream time: a lost
+  group costs nothing, one group agreeing with the running clock re-syncs it,
+  and the window says how long ago that was. Before this, a lost group left
+  the display a minute or more behind. Garbage that disagrees is ignored, while
+  a genuine change - the offset moving when daylight saving ends - takes two
+  agreeing groups. A station whose clock is wrong but consistent still shows.
+  It is shown as local time: the group carries UTC hours and minutes with the
+  offset beside them, so printing those fields next to "(UTC-4)", as the
+  receiver once did, reads four
   hours fast and can show tomorrow's date. `clock_text()` does the arithmetic
   for both the receiver and the transmitter's On Air box.
 - **Do not average PS or RadioText over time.** US stations scroll messages
@@ -339,8 +360,9 @@ Things worth knowing before changing it:
   **Verified off-air**, the VSG60 on the Linux box at 102.1 MHz and -42 dBm
   into the Windows laptop's HackRF: every group left 39-89 ms after its
   minute, and the receiver showed the right local minute within a second of
-  it. Groups lost to a deliberate drop to -55 dBm left the display on the last
-  confirmed minute rather than on a guess.
+  it. With the encoder told to stop sending after two groups, the receiver's
+  clock went on turning over within half a second of each minute for the
+  remaining four.
 - **Tests drive the clock from the bitstream, not the wall.** Handing the
   encoder `clock=lambda: start + timedelta(seconds=enc.bits_sent / 1187.5)`
   makes a minute edge arrive on schedule however fast the stream is produced,

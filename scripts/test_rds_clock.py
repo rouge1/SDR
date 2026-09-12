@@ -2,10 +2,11 @@
 """Drive clock time (group 4A) through the receiver and the transmitter.
 
 98.7 sends no clock at all, yet the receiver once showed "2168-10-28 01:27
-(UTC-9)": one corrupted group decoded as a group 4A. A clock time is now shown
-only once the next 4A agrees with it. The first half feeds hand-built groups
-straight to the protocol layer, with the bit count set by hand as the passage
-of time - no radio, no capture.
+(UTC-9)": one corrupted group decoded as a group 4A. A clock group is now a
+sync, the way a car radio treats it: the first is believed only once a second
+agrees, and between groups the clock runs on by itself. The first half feeds
+hand-built groups straight to the protocol layer, with the bit count set by hand
+as the passage of time - no radio, no capture.
 
 The second half runs the transmitter's encoder on a clock that advances with
 the bitstream rather than the wall, and decodes its bits straight back, so
@@ -36,13 +37,23 @@ def group_4a(proto, seconds, year, month, day, hour, minute, offset_hours):
     b = (4 << 12) | (10 << 5) | ((mjd >> 15) & 0x3)
     c = ((mjd & 0x7FFF) << 1) | (hour >> 4)
     d = ((hour & 0xF) << 12) | (minute << 6) | ((offset_hours < 0) << 5) | (half_hours & 0x1F)
-    proto.bits_in = int(seconds * BITRATE)
+    advance(proto, seconds)
     proto._decode_group({'A': 0x16F2, 'B': b, 'C': c, 'D': d})
+
+
+def advance(proto, seconds):
+    """Move the stream on to ``seconds``, as if that much had been received."""
+    proto.bits_in = int(seconds * BITRATE)
 
 
 def shown(proto):
     """What the receiver window displays: local time, not the UTC fields."""
     return clock_text(proto.snapshot()['clock'])
+
+
+def synced_ago(proto):
+    clock = proto.snapshot()['clock']
+    return round(clock['synced_ago_s']) if clock else None
 
 
 def transmit(clock_at, seconds):
@@ -91,23 +102,58 @@ check("a second reading a minute on is", shown(p), "2026-09-12 16:28 (UTC-4)")
 # What the receiver actually displayed on 98.7, from a group that was never 4A.
 group_4a(p, 90, 2168, 10, 28, 1, 27, -9)
 check("the corrupted group is never shown", shown(p), "2026-09-12 16:28 (UTC-4)")
+check("nor taken as a sync", synced_ago(p), 30)
 group_4a(p, 120, 2026, 9, 12, 20, 29, -4)
-check("the next real reading cannot pair with the garbage",
-      shown(p), "2026-09-12 16:28 (UTC-4)")
-group_4a(p, 180, 2026, 9, 12, 20, 30, -4)
-check("the one after that confirms again", shown(p), "2026-09-12 16:30 (UTC-4)")
+check("a real reading agreeing with the running clock syncs at once",
+      (shown(p), synced_ago(p)), ("2026-09-12 16:29 (UTC-4)", 0))
+
+print("\nbefore the first sync, garbage breaks a pair")
+p = RdsProtocol()
+group_4a(p, 0, 2026, 9, 12, 20, 27, -4)
+group_4a(p, 30, 2168, 10, 28, 1, 27, -9)
+group_4a(p, 60, 2026, 9, 12, 20, 28, -4)
+check("a real reading cannot pair with the garbage", shown(p), None)
+group_4a(p, 120, 2026, 9, 12, 20, 29, -4)
+check("the one after that confirms", shown(p), "2026-09-12 16:29 (UTC-4)")
 
 print("\nimpossible offsets are rejected outright")
-group_4a(p, 200, 2026, 9, 12, 20, 30, -13)
-check("a 13-hour offset changes nothing", shown(p), "2026-09-12 16:30 (UTC-4)")
+group_4a(p, 140, 2026, 9, 12, 20, 29, -13)
+check("a 13-hour offset changes nothing",
+      (shown(p), synced_ago(p)), ("2026-09-12 16:29 (UTC-4)", 20))
+
+print("\nthe clock runs on between groups, the way a car radio's does")
+p = RdsProtocol()
+group_4a(p, 0, 2026, 9, 12, 20, 27, -4)
+group_4a(p, 60, 2026, 9, 12, 20, 28, -4)
+advance(p, 185)                           # the next two groups were lost
+check("two minutes on it still reads the right minute", shown(p),
+      "2026-09-12 16:30 (UTC-4)")
+check("and knows how long since it was synced", synced_ago(p), 125)
 group_4a(p, 240, 2026, 9, 12, 20, 31, -4)
-check("and does not break the chain", shown(p), "2026-09-12 16:31 (UTC-4)")
+check("one group puts it back in sync", (shown(p), synced_ago(p)),
+      ("2026-09-12 16:31 (UTC-4)", 0))
+p = RdsProtocol()
+group_4a(p, 0, 2026, 9, 13, 3, 58, -4)
+group_4a(p, 60, 2026, 9, 13, 3, 59, -4)
+advance(p, 150)
+check("running past local midnight turns the date", shown(p),
+      "2026-09-13 00:00 (UTC-4)")
 
 print("\nreadings must move on with the stream")
 p = RdsProtocol()
 group_4a(p, 0, 2026, 9, 12, 20, 27, -4)
 group_4a(p, 60, 2026, 9, 12, 23, 45, -4)
 check("a jump of hours in one minute is not confirmed", shown(p), None)
+
+print("\na station changing its offset (daylight saving ending)")
+p = RdsProtocol()
+group_4a(p, 0, 2026, 11, 1, 5, 58, -4)
+group_4a(p, 60, 2026, 11, 1, 5, 59, -4)            # 01:59 EDT
+group_4a(p, 120, 2026, 11, 1, 6, 0, -5)            # 01:00 EST
+check("one reading with a new offset is not enough", shown(p),
+      "2026-11-01 02:00 (UTC-4)")
+group_4a(p, 180, 2026, 11, 1, 6, 1, -5)
+check("the second switches the clock over", shown(p), "2026-11-01 01:01 (UTC-5)")
 
 print("\na station repeating the same minute's group")
 p = RdsProtocol()
