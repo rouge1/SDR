@@ -217,3 +217,18 @@ def power_percent(value, default=50):
     if not 0.0 <= value <= 100.0:
         return default
     return int(round(value))
+
+
+# Every spectrum plot uses this vertical range, so a signal at a given level
+# looks the same height in whichever app you open.
+#
+# Top is 0 dB: that is digital full scale, and nothing can get above it. The
+# strongest thing any of these flowgraphs can put on a plot is an unmodulated
+# carrier - all of its power in one bin - and that measures about -10 dB. The
+# old ceilings of +10 were showing 20 dB of space no signal could ever reach.
+#
+# Bottom is -170 dB because the FFT's own numerical noise floor sits near -160.
+# The old floors of -120/-140 cut straight through it, so the skirts of a
+# signal ended in a flat clipped band across the bottom of the plot instead of
+# descending into the grass.
+SPECTRUM_Y_AXIS = (-170, 0)

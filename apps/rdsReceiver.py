@@ -28,7 +28,7 @@ from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
 from apps.rds_core import RdsDemod, RdsProtocol
-from apps.utils import apply_dark_theme, read_settings
+from apps.utils import apply_dark_theme, read_settings, SPECTRUM_Y_AXIS
 
 SAMP_RATE = 2e6
 MPX_RATE = 250e3          # 2 MS/s / 8
@@ -453,7 +453,7 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
             'FM Baseband (MPX) - pilot 19 kHz, stereo 38 kHz, RDS 57 kHz', 1,
             None)
         self.mpx_sink.set_update_time(0.10)
-        self.mpx_sink.set_y_axis(-120, -10)
+        self.mpx_sink.set_y_axis(*SPECTRUM_Y_AXIS)
         self.mpx_sink.set_y_label('Relative Gain', 'dB')
         self.mpx_sink.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.mpx_sink.enable_autoscale(False)

@@ -35,7 +35,7 @@ from PyQt5.QtCore import QObject, pyqtSlot # type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 import glob
 
 if __name__ == '__main__':
@@ -505,7 +505,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
             None # parent
         )
         self.qtgui_freq_sink_x_1.set_update_time(0.10)
-        self.qtgui_freq_sink_x_1.set_y_axis((-120), (-20))
+        self.qtgui_freq_sink_x_1.set_y_axis(*SPECTRUM_Y_AXIS)
         self.qtgui_freq_sink_x_1.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_1.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.qtgui_freq_sink_x_1.enable_autoscale(False)

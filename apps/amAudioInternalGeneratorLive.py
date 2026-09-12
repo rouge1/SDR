@@ -44,7 +44,7 @@ from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 def get_wav_files(settings):
     """Get list of wav files from media directory"""
@@ -682,7 +682,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
             None # parent
         )
         self.qtgui_freq_sink_x_0.set_update_time(0.10)
-        self.qtgui_freq_sink_x_0.set_y_axis(-140, 10)
+        self.qtgui_freq_sink_x_0.set_y_axis(*SPECTRUM_Y_AXIS)
         self.qtgui_freq_sink_x_0.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.qtgui_freq_sink_x_0.enable_autoscale(False)

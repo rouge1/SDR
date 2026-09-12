@@ -40,7 +40,7 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -347,7 +347,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
             None # parent
         )
         self.qtgui_freq_sink_x_0.set_update_time(0.10)
-        self.qtgui_freq_sink_x_0.set_y_axis(-140, -20)
+        self.qtgui_freq_sink_x_0.set_y_axis(*SPECTRUM_Y_AXIS)
         self.qtgui_freq_sink_x_0.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
         self.qtgui_freq_sink_x_0.enable_autoscale(False)

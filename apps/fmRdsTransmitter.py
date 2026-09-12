@@ -31,7 +31,7 @@ from PyQt5 import Qt, QtCore  # type: ignore
 from apps.rds_core import PTY_RBDS
 from apps.rds_encode import RdsEncoder, RdsSubcarrier
 from apps.utils import (apply_dark_theme, power_percent, read_settings,
-                        resolve_power_range, scale_power)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 MPX_RATE = 200e3          # everything below 100 kHz fits comfortably
 TX_RATE = 2e6             # MPX interpolated by 10
@@ -542,7 +542,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             2048, window.WIN_BLACKMAN_hARRIS, 0, MPX_RATE,
             'Transmitted baseband (MPX) - pilot 19 kHz, RDS 57 kHz', 1, None)
         self.mpx_sink.set_update_time(0.10)
-        self.mpx_sink.set_y_axis(-120, 0)
+        self.mpx_sink.set_y_axis(*SPECTRUM_Y_AXIS)
         self.mpx_sink.enable_grid(True)
         self.mpx_sink.enable_autoscale(False)
         self.mpx_sink.set_plot_pos_half(True)
