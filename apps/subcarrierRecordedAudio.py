@@ -36,7 +36,7 @@ from PyQt5.QtCore import pyqtSlot  # type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 import glob
 
 
@@ -46,7 +46,10 @@ class ConfigDialog(Qt.QDialog):
         self.setWindowTitle("Subcarrier Recorded Audio Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "subcarrierRecorded_config.json")
+        self.config_file = os.path.join(self.config_dir, "subcarrierRecordedAudio_config.json")
+        # Older builds saved this dialog under subcarrierRecorded_config.json;
+        # fold that in once so nothing the user set is lost.
+        adopt_legacy_config(self.config_dir, "subcarrierRecorded_config.json", self.config_file)
         
         settings = read_settings()
         self.ipList = settings.get('ip_addresses', [])

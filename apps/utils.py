@@ -62,6 +62,46 @@ def geometry_is_reachable(app, position, minimum=(160, 40)):
     return False
 
 
+def adopt_legacy_config(config_dir, legacy_name, config_file):
+    """Fold a config saved under an old filename into the module-named one.
+
+    Four dialogs used to save under a name that did not match their module -
+    fmAudioRecordedGenerator wrote fmAudioGenerator_config.json, atscXmitter
+    wrote atsc_config.json, and so on - while the launcher has always written
+    dialog_position to ``<module>_config.json``. Settings and window geometry
+    therefore ended up in two separate files for those four. Renaming on its own
+    would have orphaned whatever was already saved, so the old file is merged in
+    on first run instead.
+
+    Keys from the launcher-written file win, because that is the one that may
+    already hold ``dialog_position``; the legacy file only ever held the
+    dialog's own settings, so in practice they do not overlap. The old file is
+    then renamed aside rather than deleted - that makes the migration a one
+    shot, and leaves the original recoverable if a merge ever goes wrong.
+    """
+    legacy = os.path.join(config_dir, legacy_name)
+    if not os.path.exists(legacy):
+        return
+    try:
+        with open(legacy) as f:
+            merged = json.load(f)
+        if not isinstance(merged, dict):
+            return
+        if os.path.exists(config_file):
+            with open(config_file) as f:
+                current = json.load(f)
+            if isinstance(current, dict):
+                merged.update(current)
+        os.makedirs(config_dir, exist_ok=True)
+        with open(config_file, 'w') as f:
+            json.dump(merged, f, indent=4)
+        os.replace(legacy, legacy + '.migrated')
+    except Exception as e:
+        # A failed migration must never stop the dialog opening. The app falls
+        # back to defaults and the legacy file is left where it is.
+        print(f"Could not migrate {legacy_name}: {e}")
+
+
 #This function is called to apply the theme to the launcher
 def apply_launcher_theme(widget):
     stylesheet = """

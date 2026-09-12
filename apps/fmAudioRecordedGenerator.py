@@ -41,7 +41,7 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
 def get_wav_files(settings):
     """Get list of wav files from media directory"""
@@ -61,7 +61,10 @@ class ConfigDialog(Qt.QDialog):
         self.setWindowTitle("FM Audio Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
-        self.config_file = os.path.join(self.config_dir, "fmAudioGenerator_config.json")
+        self.config_file = os.path.join(self.config_dir, "fmAudioRecordedGenerator_config.json")
+        # Older builds saved this dialog under fmAudioGenerator_config.json;
+        # fold that in once so nothing the user set is lost.
+        adopt_legacy_config(self.config_dir, "fmAudioGenerator_config.json", self.config_file)
         
         # Read settings from window_settings.json
         settings = read_settings()
