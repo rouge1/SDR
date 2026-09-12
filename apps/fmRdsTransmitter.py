@@ -28,8 +28,8 @@ from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from apps.rds_core import PTY_RBDS
-from apps.rds_encode import RdsEncoder, RdsSubcarrier
+from apps.rds_core import PTY_RBDS, clock_text
+from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
 from apps.utils import (apply_dark_theme, power_percent, read_settings,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
@@ -363,6 +363,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             ps=values.get('ps', 'GNURADIO'),
             radiotext=values.get('radiotext', ''),
             pty=int(values.get('pty', 5) or 0),
+            clock=system_clock,
         )
         if self.track_in_rt and self.audio_choice not in ('tone', 'silence'):
             self.encoder.set_now_playing('', track_name(self.audio_choice))
@@ -436,7 +437,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         The edit boxes above hold what was typed, which is not always what is
         being sent: Next Track rewrites RadioText and its RT+ tags, and a paged
         paragraph moves on by itself. So this reads the encoder's state rather
-        than the boxes, with the same four fields the receiver shows.
+        than the boxes, with the same fields the receiver shows.
         """
         box = Qt.QGroupBox("On Air")
         grid = Qt.QGridLayout()
@@ -452,7 +453,8 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         fields = (('station', "Station", big),
                   ('ps', "Now showing (PS)", mono),
                   ('nowplaying', "Now Playing", big),
-                  ('radiotext', "RadioText", mono))
+                  ('radiotext', "RadioText", mono),
+                  ('clock', "Station Clock", mono))
         for row, (key, caption, font) in enumerate(fields):
             grid.addWidget(Qt.QLabel(f"<b>{caption}</b>"), row, 0)
             value = Qt.QLabel("-")
@@ -483,6 +485,8 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             ' - '.join(x for x in (parts.get(4), parts.get(1)) if x) or '-')
         # A carriage return ends a short page; what follows it is not shown.
         self.lbl['radiotext'].setText(full.split('\r')[0].rstrip() or '-')
+        # The last clock group sent, so it changes once a minute, not every tick.
+        self.lbl['clock'].setText(clock_text(snap['clock']) or '-')
 
     # ----------------------------------------------------------- flowgraph
     def _audio_branch(self, path):

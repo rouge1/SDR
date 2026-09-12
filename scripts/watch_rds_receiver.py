@@ -49,7 +49,8 @@ ap.add_argument('--freq', type=float, default=None, help='MHz')
 ap.add_argument('--gain', type=float, default=None, help='percent')
 ap.add_argument('--timing', action='store_true')
 ap.add_argument('--rt', type=float, default=0.0,
-                help='also log RadioText/RT+ changes this often, in seconds')
+                help='also log RadioText/RT+ and clock changes this often, '
+                     'in seconds')
 ap.add_argument('--gains', default='',
                 help='comma-separated gain percents to step through, one per '
                      '--reset-every segment, e.g. 30,40,55,70')
@@ -66,7 +67,7 @@ from PyQt5 import Qt                      # noqa: E402
 app = Qt.QApplication(sys.argv[:1])       # before any QWidget
 
 from apps import rdsReceiver as R         # noqa: E402
-from apps.rds_core import RdsDemod        # noqa: E402
+from apps.rds_core import RdsDemod, clock_text  # noqa: E402
 
 cfg = {'radio_type': 'hackrf', 'frequency_mhz': 98.7, 'gain_percent': 40,
        'region': 'RBDS', 'audio': True}
@@ -207,9 +208,12 @@ _rt_last = [None]
 def rt_tick():
     snap = tb.rds.snapshot()
     now = ' - '.join(x for x in (snap['artist'], snap['title']) if x)
-    line = f"now={now!r} rt={snap['radiotext']!r}"
+    line = (f"now={now!r} rt={snap['radiotext']!r} "
+            f"clock={clock_text(snap['clock'])!r}")
     if line != _rt_last[0]:
-        print(f"[{time.time() - state['t0']:6.1f}] {line}", flush=True)
+        # Wall time too, so a clock change can be read against the real minute.
+        print(f"[{time.time() - state['t0']:6.1f} {time.strftime('%H:%M:%S')}] "
+              f"{line}", flush=True)
         _rt_last[0] = line
 
 

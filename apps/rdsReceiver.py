@@ -27,7 +27,7 @@ from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from apps.rds_core import RdsDemod, RdsProtocol
+from apps.rds_core import RdsDemod, RdsProtocol, clock_text
 from apps.utils import apply_dark_theme, read_settings, SPECTRUM_Y_AXIS
 
 SAMP_RATE = 2e6
@@ -537,14 +537,7 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
         flags.append("Stereo pilot locked" if stereo else "No pilot")
         self.lbl['flags'].setText(", ".join(flags))
 
-        clock = snap['clock']
-        if clock:
-            self.lbl['clock'].setText(
-                f"{clock['year']:04d}-{clock['month']:02d}-{clock['day']:02d} "
-                f"{clock['hour']:02d}:{clock['minute']:02d} "
-                f"(UTC{clock['utc_offset_hours']:+g})")
-        else:
-            self.lbl['clock'].setText('-')
+        self.lbl['clock'].setText(clock_text(snap['clock']) or '-')
 
         seen = snap['blocks_seen']
         if seen:

@@ -170,6 +170,7 @@ and Qt so it can be run against a recorded capture:
 ```sh
 python scripts/test_rds_core.py <capture>   # capture path without .cfile
 python scripts/test_rds_radiotext.py        # RadioText changes - no radio, no capture
+python scripts/test_rds_clock.py            # clock time, received and sent - no radio
 ```
 
 `RdsDemod` mixes the MPX down by the 57 kHz subcarrier and integrates each
@@ -207,6 +208,20 @@ Three things that are easy to get wrong and cost real time here:
   arrived while the next message was still filling in cut across both, welding
   "Dan +" from the new text to "ntry" from the tail of "Country". Stations repeat
   the tag group every second or two, so a refused tag lands on the next pass.
+- **A clock time is shown only once a second one agrees.** Stations that send
+  group 4A do so about once a minute, and many send none: 98.7 sent no 4A in
+  12 minutes of 99.99% clean blocks, yet the receiver once displayed
+  "2168-10-28 01:27 (UTC-9)" for it. A block B that the code corrects wrongly
+  turns any group into a 4A - those same 12 minutes held one 1B and one 12B,
+  types the station never sends - and its C and D then decode as a date.
+  `_decode_clock` therefore needs the next 4A to carry the same offset and a
+  time that has moved on by as much as the bitstream has (`bits_in` at
+  1187.5 bit/s, so replaying a capture flat out behaves the same). A station
+  whose clock is wrong but consistent still shows. It is shown as local time:
+  the group carries UTC hours and minutes with the offset beside them, so
+  printing those fields next to "(UTC-4)", as the receiver once did, reads four
+  hours fast and can show tomorrow's date. `clock_text()` does the arithmetic
+  for both the receiver and the transmitter's On Air box.
 - **Do not average PS or RadioText over time.** US stations scroll messages
   through the 8-character PS field and often alternate two RadioText messages
   without toggling the A/B flag, so averaging blends them into gibberish. The
@@ -306,9 +321,31 @@ Things worth knowing before changing it:
 - **The On Air box reads the encoder, not the edit boxes.** What was typed is
   not always what is being sent: Next Track rewrites RadioText and its RT+
   tags, and a paged paragraph moves on by itself. So Station (call letters and
-  PI), PS, Now Playing (the RadioText sliced by its own RT+ tags) and RadioText
-  come from `RdsEncoder.snapshot()` on a 500 ms timer - the same four fields
-  the RDS Receiver shows, so the two windows can be compared side by side.
+  PI), PS, Now Playing (the RadioText sliced by its own RT+ tags), RadioText
+  and Station Clock (the last group 4A sent) come from
+  `RdsEncoder.snapshot()` on a 500 ms timer - the same fields the RDS Receiver
+  shows, so the two windows can be compared side by side.
+- **The clock is the computer's own, sent as group 4A** once as the stream
+  starts and then at the start of every minute, as NRSC-4-A Annex M asks. The
+  hour and minute go out as UTC with the local offset beside them, and
+  `system_clock()` is read afresh each minute so daylight saving follows the
+  OS. The encoder checks the minute ahead of every group, so the group leaves
+  within 88 ms of the edge. A receiver needs two groups before it trusts one,
+  so the Station Clock appears one to two minutes after tuning in. An
+  `RdsEncoder` built without a `clock` sends none, which is what NRSC-G300-C
+  section 5.8 asks of a station with no reliable time source. `docs/` holds
+  those rules and the Annex G date formulas, but not the bit layout itself:
+  that is Part I section 3.1.5.6, and the NRSC-4-A PDF there is Part II only.
+  **Verified off-air**, the VSG60 on the Linux box at 102.1 MHz and -42 dBm
+  into the Windows laptop's HackRF: every group left 39-89 ms after its
+  minute, and the receiver showed the right local minute within a second of
+  it. Groups lost to a deliberate drop to -55 dBm left the display on the last
+  confirmed minute rather than on a guess.
+- **Tests drive the clock from the bitstream, not the wall.** Handing the
+  encoder `clock=lambda: start + timedelta(seconds=enc.bits_sent / 1187.5)`
+  makes a minute edge arrive on schedule however fast the stream is produced,
+  so `scripts/test_rds_clock.py` runs minutes of transmission - daylight saving
+  ending, UTC already in the new year - in under a second.
 - RT+ offsets are computed from the very RadioText string that gets sent
   (`set_now_playing` does both together), which is precisely what 99.5 locally
   gets wrong. Setting RadioText directly clears the tags, since stale offsets

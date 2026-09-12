@@ -20,6 +20,7 @@ of the four blocks in a group we are looking at, and the code corrects any
 single error burst up to 5 bits long.
 """
 import collections
+from datetime import datetime, timedelta
 
 import numpy as np
 from scipy import signal
@@ -172,6 +173,22 @@ def callsign_candidates(pi):
     return out
 
 
+def clock_text(clock):
+    """A group 4A reading as local time, e.g. '2026-09-12 16:28 (UTC-4)'.
+
+    The group carries UTC and the local offset separately, and the receiver is
+    left to add them. Printing the UTC fields beside "(UTC-4)" reads four hours
+    out, and the date can differ too - 00:28 UTC is still yesterday evening in
+    the US. Returns None when there is no reading.
+    """
+    if not clock:
+        return None
+    local = (datetime(clock['year'], clock['month'], clock['day'],
+                      clock['hour'], clock['minute'])
+             + timedelta(hours=clock['utc_offset_hours']))
+    return f"{local:%Y-%m-%d %H:%M} (UTC{clock['utc_offset_hours']:+g})"
+
+
 class _TextField:
     """The live contents of a character field such as PS or RadioText.
 
@@ -282,9 +299,14 @@ class RdsProtocol:
         self.blocks_ok = 0
         self.blocks_seen = 0
         self.groups = 0
+        # Bits fed so far. RDS runs at exactly 1187.5 bit/s, so this is a clock
+        # that behaves the same live as when replaying a capture flat out.
+        self.bits_in = 0
+        self._clock_pending = None
 
     # -- bit plumbing ------------------------------------------------------
     def feed(self, bits):
+        self.bits_in += len(bits)
         self._bits.extend(int(b) for b in bits)
         self._run()
 
@@ -470,12 +492,29 @@ class RdsProtocol:
                 self.rtplus[RTPLUS_CLASSES.get(ctype, f"class{ctype}")] = value
 
     def _decode_clock(self, b):
+        """Group 4A clock time, shown only once a second reading agrees with it.
+
+        A station that sends the clock sends it about once a minute, and many
+        send none: 98.7 sent no 4A at all in 12 minutes of 99.99% clean blocks.
+        So one group earns no trust. A block B that the (26,16) code corrects
+        wrongly can turn any group into a 4A, and its C and D then decode as a
+        date - which is how the receiver once showed 2168-10-28 01:27 (UTC-9)
+        for a station with no clock. The same 12 minutes held one 1B and one
+        12B, types that station never sends, so such groups do get through.
+
+        A reading is accepted only when the next one carries the same offset
+        and a time that has moved on by as much as the bitstream has. A station
+        whose clock is simply wrong still shows, consistently wrong; it is the
+        one-off garbage that is kept off the screen.
+        """
         mjd = ((b['B'] & 0x3) << 15) | ((b['C'] >> 1) & 0x7FFF)
         hour = ((b['C'] & 0x1) << 4) | ((b['D'] >> 12) & 0xF)
         minute = (b['D'] >> 6) & 0x3F
         sign = -1 if (b['D'] >> 5) & 1 else 1
         off_half_hours = b['D'] & 0x1F
-        if not (0 <= hour < 24 and 0 <= minute < 60 and mjd > 15000):
+        # Local offsets run to +-12 hours, in half hours.
+        if not (0 <= hour < 24 and 0 <= minute < 60 and mjd > 15000
+                and off_half_hours <= 24):
             return
         # Modified Julian Date -> calendar date.
         yp = int((mjd - 15078.2) / 365.25)
@@ -484,11 +523,24 @@ class RdsProtocol:
         k = 1 if mp in (14, 15) else 0
         year = 1900 + yp + k
         month = mp - 1 - k * 12
-        self.clock = {
+        reading = {
             'year': year, 'month': month, 'day': day,
             'hour': hour, 'minute': minute,
             'utc_offset_hours': sign * off_half_hours / 2.0,
         }
+        stamp = mjd * 1440 + hour * 60 + minute       # UTC, in minutes
+        heard_at = self.bits_in / 1187.5              # seconds of bitstream
+        previous = self._clock_pending
+        self._clock_pending = (stamp, reading['utc_offset_hours'], heard_at)
+        if previous is None:
+            return
+        p_stamp, p_offset, p_heard = previous
+        elapsed_min = (heard_at - p_heard) / 60.0
+        # 1.5 minutes of slack: the minute can tick over between the two
+        # groups, and a station may repeat the same minute's group.
+        if (p_offset == reading['utc_offset_hours']
+                and abs((stamp - p_stamp) - elapsed_min) <= 1.5):
+            self.clock = reading
 
     def confirmed_callsign(self, pi):
         """A call sign the station's own text backs up, or None.

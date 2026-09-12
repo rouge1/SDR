@@ -10,14 +10,15 @@ at fault.
 """
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from apps.rds_core import (  # noqa: E402
-    RdsDemod, RdsProtocol, pi_to_callsign, software_pilot_pll,
+    RdsDemod, RdsProtocol, clock_text, pi_to_callsign, software_pilot_pll,
 )
-from apps.rds_encode import RdsEncoder, RdsSubcarrier  # noqa: E402
+from apps.rds_encode import BITRATE, RdsEncoder, RdsSubcarrier  # noqa: E402
 
 FS = 200e3
 SECONDS = 15
@@ -26,10 +27,16 @@ PS = 'GNURADIO'
 ARTIST = 'Claude Test'
 TITLE = 'Loopback Tune'
 PTY = 5                # Rock, in the RBDS table
+#: Ten seconds short of a minute, so the clock group sent at the start and the
+#: one at the minute edge confirm each other well inside the run.
+CLOCK_START = datetime(2026, 9, 12, 16, 27, 50, tzinfo=timezone(timedelta(hours=-4)))
 
 
 def main():
     enc = RdsEncoder(pi=PI, ps=PS, pty=PTY)
+    # Driven by the bitstream rather than the wall, since this runs faster
+    # than real time.
+    enc.clock = lambda: CLOCK_START + timedelta(seconds=enc.bits_sent / BITRATE)
     enc.set_now_playing(ARTIST, TITLE)
     sub = RdsSubcarrier(enc, FS)
 
@@ -51,6 +58,7 @@ def main():
     print(f"decoded back: {snap['groups']} groups, "
           f"{snap['blocks_ok']}/{snap['blocks_seen']} blocks ({good:.1f}% good)")
     print()
+    clock = clock_text(snap['clock'])
     checks = [
         ('PI', snap['pi'], PI, f"{snap['pi_hex']} -> "
                                f"{pi_to_callsign(snap['pi']) if snap['pi'] else None}"),
@@ -58,6 +66,7 @@ def main():
         ('artist', snap['artist'], ARTIST, repr(snap['artist'])),
         ('title', snap['title'], TITLE, repr(snap['title'])),
         ('PTY', snap['pty'], 'Rock', repr(snap['pty'])),
+        ('clock', clock, '2026-09-12 16:28 (UTC-4)', repr(clock)),
     ]
     ok = True
     for name, got, want, shown in checks:

@@ -19,6 +19,7 @@ Two details matter more than they look:
   a receiver find block boundaries at all.
 """
 import threading
+from datetime import date, datetime, timezone
 
 import numpy as np
 from scipy import signal
@@ -28,6 +29,16 @@ from apps.rds_core import OFFSET, POLY, RTPLUS_AID
 BITRATE = 1187.5
 SUBCARRIER_HZ = 57000.0
 PILOT_HZ = 19000.0
+#: Day 0 of the Modified Julian Date that group 4A counts days in.
+MJD_EPOCH = date(1858, 11, 17).toordinal()
+
+
+def system_clock():
+    """The computer's local time, carrying its current UTC offset.
+
+    Read afresh for every clock group, so the offset follows daylight saving.
+    """
+    return datetime.now().astimezone()
 
 
 def checkword(info):
@@ -74,11 +85,21 @@ class RdsEncoder:
     """An endless, live-editable RDS group sequence.
 
     Setters are safe to call from a UI thread while the flowgraph pulls groups.
+
+    ``clock`` is a callable returning the current time as a timezone-aware
+    datetime (``system_clock`` for the computer's own). With one, a group 4A
+    goes out as soon as the stream starts and then at the start of every
+    minute; without one, no clock time is sent at all, which is what the NRSC
+    asks of a station that has no reliable time source.
     """
 
     def __init__(self, pi=0x4CA1, ps='GNURADIO', radiotext='', pty=0,
-                 tp=0, ta=0, ms=1, station_name=None):
+                 tp=0, ta=0, ms=1, station_name=None, clock=None):
         self._lock = threading.Lock()
+        self.clock = clock
+        self.bits_sent = 0                # stream position, at 1187.5 bit/s
+        self._ct_minute = None            # the minute last sent as group 4A
+        self._ct_sent = None              # that group, as rds_core reads it
         self.pi = pi
         self.pty = pty
         self.tp = tp
@@ -187,6 +208,7 @@ class RdsEncoder:
                 'ps': ''.join(self._ps), 'radiotext': ''.join(self._rt).rstrip(),
                 'pty': self.pty, 'tp': self.tp, 'ta': self.ta,
                 'rtplus': self._rtplus,
+                'clock': self._ct_sent,
             }
 
     # -- group construction ------------------------------------------------
@@ -242,6 +264,29 @@ class RdsEncoder:
         return [make_block(self.pi, 'A'), make_block(b, 'B'),
                 make_block(c, 'C'), make_block(d, 'D')]
 
+    def _group_4a(self, now):
+        """Clock time and date.
+
+        The hour and minute are UTC, not local time, with the local offset
+        alongside in half hours: the receiver adds the two. The date is a
+        Modified Julian Date, 17 bits split across blocks B and C.
+        """
+        utc = now.astimezone(timezone.utc)
+        offset = now.utcoffset().total_seconds() / 3600
+        half_hours = int(round(abs(offset) * 2))
+        mjd = utc.toordinal() - MJD_EPOCH
+        b = self._common_b(4) | ((mjd >> 15) & 0x3)
+        c = ((mjd & 0x7FFF) << 1) | (utc.hour >> 4)
+        d = ((utc.hour & 0xF) << 12 | utc.minute << 6
+             | (offset < 0) << 5 | (half_hours & 0x1F))
+        self._ct_sent = {
+            'year': utc.year, 'month': utc.month, 'day': utc.day,
+            'hour': utc.hour, 'minute': utc.minute,
+            'utc_offset_hours': (-1 if offset < 0 else 1) * half_hours / 2.0,
+        }
+        return [make_block(self.pi, 'A'), make_block(b, 'B'),
+                make_block(c, 'C'), make_block(d, 'D')]
+
     #: Roughly the mix a real station sends: PS often, RadioText steadily, and
     #: the RT+ announcement and tags sprinkled in.
     SEQUENCE = ('0A', '0A', '2A', '0A', '2A', '0A', '2A', '3A', '0A', '2A',
@@ -249,14 +294,39 @@ class RdsEncoder:
 
     def next_group(self):
         with self._lock:
-            for _ in range(len(self.SEQUENCE)):
-                kind = self.SEQUENCE[self._seq_index % len(self.SEQUENCE)]
-                self._seq_index += 1
-                if kind in ('3A', '12A') and not self._rtplus:
-                    continue                      # nothing to announce yet
-                return {'0A': self._group_0a, '2A': self._group_2a,
-                        '3A': self._group_3a, '12A': self._group_12a}[kind]()
-            return self._group_0a()
+            group = self._clock_group_due()
+            if group is None:
+                group = self._scheduled_group()
+            self.bits_sent += 104
+            return group
+
+    def _clock_group_due(self):
+        """Group 4A if the minute has turned since the last one, else None.
+
+        Checked ahead of every group, so the clock leaves the encoder within
+        one group (88 ms) of the minute edge, which is when the standard wants
+        it - the flowgraph and the radio's buffers then add their own delay.
+        """
+        if self.clock is None:
+            return None
+        now = self.clock()
+        if now.tzinfo is None:
+            now = now.astimezone()        # naive: the computer's local time
+        minute = now.replace(second=0, microsecond=0)
+        if minute == self._ct_minute:
+            return None
+        self._ct_minute = minute
+        return self._group_4a(now)
+
+    def _scheduled_group(self):
+        for _ in range(len(self.SEQUENCE)):
+            kind = self.SEQUENCE[self._seq_index % len(self.SEQUENCE)]
+            self._seq_index += 1
+            if kind in ('3A', '12A') and not self._rtplus:
+                continue                          # nothing to announce yet
+            return {'0A': self._group_0a, '2A': self._group_2a,
+                    '3A': self._group_3a, '12A': self._group_12a}[kind]()
+        return self._group_0a()
 
     def next_bits(self):
         """104 bits: one group of four 26-bit blocks, most significant first."""
