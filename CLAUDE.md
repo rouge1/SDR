@@ -300,6 +300,35 @@ Things worth knowing before changing it:
   where the cycle wraps; it also costs page width, which can add a page and so
   widen the prefix, which `set_paragraph` settles by iterating.
 
+### Testing the launcher end to end
+
+The `scripts/test_*.py` above all bypass the GUI. `scripts/test_launcher_gui.py`
+covers what they cannot - that `./start_app.sh` starts, that a button press
+reaches `launch_application`, that the dialog accepts, that the flowgraph
+window appears, and that closing it brings the launcher back - by driving real
+X input through xdotool (`apt install xdotool`):
+
+```sh
+python scripts/test_launcher_gui.py "RDS Receiver"
+python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
+```
+
+- **Close any running launcher first.** A launcher process keeps a USB handle
+  on the HackRF - `/proc/<pid>/fd` shows `/dev/bus/usb/...` - even while it is
+  only *sitting on a config dialog*. `SoapySDR.Device.enumerate` then returns
+  zero devices and the app under test fails with `Device::make() no match`,
+  which surfaces as a modal error box that nothing dismisses, so an automated
+  run just hangs. The script refuses to start if it finds one.
+- **Button coordinates are found, not computed.** High-DPI scaling moves the
+  grid, so `button_grid()` locates the icons as bright blobs in a screenshot
+  and `registered_apps()` reads label -> (row, col) out of the launcher's own
+  `create_app_button` calls. A button that moves takes the click with it.
+- Screenshots are grabbed with Qt rather than scrot/import/maim, none of which
+  are guaranteed present, while PyQt5 is already a hard dependency.
+- `Return` activates the dialog's default button, which is OK - cheaper than
+  hunting for its pixels. Window close buttons sit at `(X + WIDTH - 33,
+  Y + 30)` from the frame geometry xdotool reports, *not* at its corner.
+
 ### Signal Hound BB60D as a receiver
 
 The BB60D works well for RDS (0.0 % block errors on a strong station) but is
@@ -319,6 +348,33 @@ wants `setupStream` called *before* any configuration.
 
 Driving it live from the launcher would mean a small source block wrapping raw
 SoapySDR, in the spirit of `apps/vsg_sink.py`.
+
+**Verified off-air, HackRF transmitting into the BB60D** at 102.1 MHz and 78 %
+power: the signal read 63.6 dB above the noise floor and decoded 912/912 blocks
+with 0.0 % errors - PI, PS, RadioText, RT+ and PTY all as sent. Channel
+separation measured 33.7 dB and 32.9 dB with the 38 kHz phase fitted to 144
+degrees, matching the software chain. A RadioText edit typed into the running
+app arrived intact on the next capture, with its RT+ tags cleared as
+`_set_rt_locked` intends.
+
+Three things cost time on the way there, all in the *measuring*, not the radio:
+
+- **Flat SNR across gain means the antenna, not the gain.** With the BB60D's
+  antenna off, a local FM station sat ~16 dB above the noise floor at every one
+  of 0/20/30/40 dB of gain - more gain lifts signal and noise together.
+  Connecting it raised the capture rms by 23 dB and the station to 27.6 dB.
+  (`record_iq.py --gain 0` also genuinely zeroes the RF stage; its default is
+  30.) A bare CW carrier is the quickest way to split "the RF path is dead"
+  from "the app is not radiating" - one read 76.8 dB out of the noise.
+- **Redirect a capture harness's stdout and Python block-buffers it.** A script
+  that waits on a log line to know the transmitter is up will start recording
+  long after it should, or not while it is running at all, and the capture
+  comes back as pure noise with nothing wrong anywhere. Run it with `python
+  -u`.
+- **Slice well clear of a live change.** Measuring a field that was edited
+  mid-capture, a window that straddles the transition catches an RT+ tag
+  belonging to the *outgoing* message and reads exactly like a stale-tag bug.
+  Decode a slice safely after the change before believing one.
 
 ### Adding a New Application
 
