@@ -303,6 +303,12 @@ Things worth knowing before changing it:
   arithmetic predicts the offset - a 401-tap band-pass delays 200 samples,
   0.2 of a cycle at 19 kHz, 72 degrees of pilot phase, doubled to ~144 degrees
   at 38 kHz - and the fit lands on 144 in software and 146 off the air.
+- **The On Air box reads the encoder, not the edit boxes.** What was typed is
+  not always what is being sent: Next Track rewrites RadioText and its RT+
+  tags, and a paged paragraph moves on by itself. So Station (call letters and
+  PI), PS, Now Playing (the RadioText sliced by its own RT+ tags) and RadioText
+  come from `RdsEncoder.snapshot()` on a 500 ms timer - the same four fields
+  the RDS Receiver shows, so the two windows can be compared side by side.
 - RT+ offsets are computed from the very RadioText string that gets sent
   (`set_now_playing` does both together), which is precisely what 99.5 locally
   gets wrong. Setting RadioText directly clears the tags, since stale offsets

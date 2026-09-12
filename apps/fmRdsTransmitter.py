@@ -356,7 +356,8 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.track_index = (self.playlist.index(self.audio_choice)
                             if self.audio_choice in self.playlist else 0)
 
-        pi = call_to_pi(values.get('call', '')) or 0x4413
+        self.call = (values.get('call', '') or '').strip().upper()
+        pi = call_to_pi(self.call) or 0x4413
         self.encoder = RdsEncoder(
             pi=pi,
             ps=values.get('ps', 'GNURADIO'),
@@ -367,8 +368,14 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             self.encoder.set_now_playing('', track_name(self.audio_choice))
 
         self._build_controls()
+        self._build_readout()
         self._build_flowgraph()
         self._build_spectrum()
+
+        self.readout_timer = Qt.QTimer(self)
+        self.readout_timer.timeout.connect(self.refresh_readout)
+        self.readout_timer.start(500)
+        self.refresh_readout()
 
     # ------------------------------------------------------------------ UI
     def _build_controls(self):
@@ -394,7 +401,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.pwr_value = Qt.QLabel(f"{int(self.power_percent)}%")
         grid.addWidget(self.pwr_value, 0, 4)
 
-        grid.addWidget(Qt.QLabel("<b>Station name</b>"), 1, 0)
+        grid.addWidget(Qt.QLabel("<b>PS</b>"), 1, 0)
         self.ps_edit = Qt.QLineEdit(self.encoder.snapshot()['ps'].strip())
         self.ps_edit.setMaxLength(8)
         grid.addWidget(self.ps_edit, 1, 1)
@@ -421,6 +428,61 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         """Push the edited station name and RadioText on to the air."""
         self.encoder.set_ps(self.ps_edit.text())
         self.encoder.set_radiotext(self.rt_edit.text())
+        self.refresh_readout()
+
+    def _build_readout(self):
+        """What is actually on the air, in the RDS Receiver's own words.
+
+        The edit boxes above hold what was typed, which is not always what is
+        being sent: Next Track rewrites RadioText and its RT+ tags, and a paged
+        paragraph moves on by itself. So this reads the encoder's state rather
+        than the boxes, with the same four fields the receiver shows.
+        """
+        box = Qt.QGroupBox("On Air")
+        grid = Qt.QGridLayout()
+        box.setLayout(grid)
+        big = Qt.QFont()
+        big.setPointSize(15)
+        big.setBold(True)
+        mono = Qt.QFont("Monospace")
+        mono.setStyleHint(Qt.QFont.TypeWriter)
+        mono.setPointSize(13)
+
+        self.lbl = {}
+        fields = (('station', "Station", big),
+                  ('ps', "Now showing (PS)", mono),
+                  ('nowplaying', "Now Playing", big),
+                  ('radiotext', "RadioText", mono))
+        for row, (key, caption, font) in enumerate(fields):
+            grid.addWidget(Qt.QLabel(f"<b>{caption}</b>"), row, 0)
+            value = Qt.QLabel("-")
+            value.setFont(font)
+            # Typed text, so never let a stray '<' be taken for markup.
+            value.setTextFormat(QtCore.Qt.PlainText)
+            value.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            value.setWordWrap(True)
+            grid.addWidget(value, row, 1)
+            self.lbl[key] = value
+        grid.setColumnStretch(1, 1)
+        self.top_grid_layout.addWidget(box, 1, 0, 1, 10)
+
+    def refresh_readout(self):
+        snap = self.encoder.snapshot()
+        full = snap['radiotext']
+        self.lbl['station'].setText(
+            f"{self.call}  (PI {snap['pi_hex']})" if call_to_pi(self.call)
+            else f"PI {snap['pi_hex']}")
+        self.lbl['ps'].setText(snap['ps'] if snap['ps'].strip() else '-')
+        # RT+ tags are offsets into the RadioText being sent, stored as
+        # (content type, start, length - 1): 4 is artist, 1 is title.
+        parts = {}
+        for ctype, start, length in snap['rtplus'] or ():
+            if ctype in (1, 4):
+                parts[ctype] = full[start:start + length + 1].strip()
+        self.lbl['nowplaying'].setText(
+            ' - '.join(x for x in (parts.get(4), parts.get(1)) if x) or '-')
+        # A carriage return ends a short page; what follows it is not shown.
+        self.lbl['radiotext'].setText(full.split('\r')[0].rstrip() or '-')
 
     # ----------------------------------------------------------- flowgraph
     def _audio_branch(self, path):
@@ -548,7 +610,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.mpx_sink.set_plot_pos_half(True)
         self.mpx_sink.disable_legend()
         self.top_grid_layout.addWidget(
-            sip.wrapinstance(self.mpx_sink.qwidget(), Qt.QWidget), 1, 0, 6, 10)
+            sip.wrapinstance(self.mpx_sink.qwidget(), Qt.QWidget), 2, 0, 6, 10)
         self.mpx_sink.set_line_label(0, 'MPX')
         self.connect(self.mpx_sum, self.mpx_sink)
 
@@ -605,6 +667,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             self.rt_edit.setText(self.encoder.snapshot()['radiotext'])
 
     def closeEvent(self, event):
+        self.readout_timer.stop()
         self.settings = Qt.QSettings("GNU Radio", "fmRdsTransmitter")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
