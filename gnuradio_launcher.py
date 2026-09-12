@@ -25,6 +25,7 @@ from PyQt5.QtGui import QIcon, QPixmap, QFont # type: ignore
 # Add PIL import at the top with other imports
 from PIL import Image, ImageEnhance # type: ignore
 import io
+import numpy as np # type: ignore
 
 # Local imports 
 from apps.utils import apply_launcher_theme, apply_dark_theme, DialogGeometryTracker
@@ -60,17 +61,16 @@ class GNURadioLauncher(QMainWindow):
         enhancer = ImageEnhance.Brightness(img)
         img = enhancer.enhance(1.1)  # Adjust this value to make it brighter/darker
         
-        datas = img.getdata()
-        new_data = []
+        # Knock the light background out of the icon: a pixel whose R, G and B
+        # are all at or above the threshold becomes fully transparent.
+        # numpy rather than getdata()/putdata() - Pillow 12 deprecates those and
+        # 14 removes them, and Windows solves to a newer Pillow than Linux does,
+        # so the loop warned there and not here.
         threshold = 100
-        
-        for item in datas:
-            if item[0] >= threshold and item[1] >= threshold and item[2] >= threshold:
-                new_data.append((255, 255, 255, 0))
-            else:
-                new_data.append(item)
-        
-        img.putdata(new_data)
+        arr = np.asarray(img).copy()
+        light = (arr[:, :, :3] >= threshold).all(axis=2)
+        arr[light] = (255, 255, 255, 0)
+        img = Image.fromarray(arr, "RGBA")
         
         # Convert PIL image to QPixmap
         buffer = io.BytesIO()
