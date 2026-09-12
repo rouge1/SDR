@@ -544,7 +544,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.mpx_sink.set_update_time(0.10)
         self.mpx_sink.set_y_axis(*SPECTRUM_Y_AXIS)
         self.mpx_sink.enable_grid(True)
-        self.mpx_sink.enable_autoscale(False)
+        self.mpx_sink.enable_autoscale(True)
         self.mpx_sink.set_plot_pos_half(True)
         self.mpx_sink.disable_legend()
         self.top_grid_layout.addWidget(

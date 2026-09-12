@@ -555,7 +555,7 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.qtgui_freq_sink_x_0.set_y_axis(*SPECTRUM_Y_AXIS)
         self.qtgui_freq_sink_x_0.set_y_label('Relative Gain', 'dB')
         self.qtgui_freq_sink_x_0.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
-        self.qtgui_freq_sink_x_0.enable_autoscale(False)
+        self.qtgui_freq_sink_x_0.enable_autoscale(True)
         self.qtgui_freq_sink_x_0.enable_grid(True)
         self.qtgui_freq_sink_x_0.set_fft_average(1.0)
         self.qtgui_freq_sink_x_0.enable_axis_labels(True)

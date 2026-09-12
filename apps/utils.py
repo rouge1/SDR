@@ -294,8 +294,18 @@ def power_percent(value, default=50):
     return int(round(value))
 
 
-# Every spectrum plot uses this vertical range, so a signal at a given level
-# looks the same height in whichever app you open.
+# Every spectrum plot opens on this vertical range, so a signal at a given
+# level looks the same height in whichever app you open.
+#
+# Autoscale is on only for the baseband plots (freq_sink_f - the MPX views and
+# the subcarrier's audio), and off for the RF ones (freq_sink_c). Autoscale fits
+# the axis from the lowest bin to the highest, and the RF spectra of these
+# synthesised signals have bins at numerical zero: fmAudioRecordedGenerator and
+# amSineGenerator both stretched to about -380 dB, which left the carrier and
+# the noise floor squeezed into the top third of the plot - the opposite of
+# centring it. The baseband plots have audio or noise in every bin and fit
+# well, fmRdsTransmitter offscreen and rdsReceiver live on 98.7 alike. RF plots
+# therefore keep this measured fixed range.
 #
 # Top is 0 dB: that is digital full scale, and nothing can get above it. The
 # strongest thing any of these flowgraphs can put on a plot is an unmodulated

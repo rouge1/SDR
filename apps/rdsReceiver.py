@@ -456,7 +456,7 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
         self.mpx_sink.set_y_axis(*SPECTRUM_Y_AXIS)
         self.mpx_sink.set_y_label('Relative Gain', 'dB')
         self.mpx_sink.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
-        self.mpx_sink.enable_autoscale(False)
+        self.mpx_sink.enable_autoscale(True)
         self.mpx_sink.enable_grid(True)
         self.mpx_sink.set_fft_average(0.2)
         self.mpx_sink.enable_axis_labels(True)
