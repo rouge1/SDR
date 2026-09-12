@@ -103,13 +103,14 @@ class GNURadioLauncher(QMainWindow):
         self.create_app_button("FM Audio Generator", "fmAudioRecordedGenerator", "fmAudio.png", grid, 2, 1)
         self.create_app_button("FM Subcarrier", "subcarrierRecordedAudio", "fmSubcarrier.jpg", grid, 2, 2)
         self.create_app_button("FM + RDS Transmitter", "fmRdsTransmitter", "fmrds.png", grid, 2, 3)
+        # The only receiver, sat beside the transmitter it decodes rather than
+        # alone on a row of its own.
+        self.create_app_button("RDS Receiver", "rdsReceiver", "rds.png", grid, 2, 4)
         # Video
         self.create_app_button("ATSC Video Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
         #self.create_app_button("ATSC Transmitter", "atscXmitter", "atsc.jpg", grid, 3, 0)
         self.create_app_button("NTSC Analog Video", "ntscAnalogVideoRecorded", "ntsc.jpg", grid, 3, 1)
         self.create_app_button("AM Video Transmitter", "amVideoRecordedXmitter", "amVideo.jpg", grid, 3, 2)
-        # Receivers
-        self.create_app_button("RDS Receiver", "rdsReceiver", "rds.png", grid, 3, 3)
         
         # Apply stylesheet
         apply_launcher_theme(self)
