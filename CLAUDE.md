@@ -15,6 +15,10 @@ python gnuradio_launcher.py
 
 The app requires a display (X11/Wayland) and either a HackRF One (USB) or Ettus USRP (network) connected. Radio type is selected in the Settings dialog.
 
+On Windows it is `start_app.ps1` instead, and the environment comes from
+`environment-windows.yml` rather than `environment.yml` - see
+[Running on Windows](#running-on-windows).
+
 ## Architecture
 
 This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applications. The launcher presents a grid of buttons, each opening a config dialog before launching a GNU Radio flowgraph.
@@ -375,6 +379,73 @@ Three things cost time on the way there, all in the *measuring*, not the radio:
   mid-capture, a window that straddles the transition catches an RT+ tag
   belonging to the *outgoing* message and reads exactly like a stale-tag bug.
   Decode a slice safely after the change before believing one.
+
+### Running on Windows
+
+The launcher runs natively on Windows - no WSL, no USB/IP passthrough.
+conda-forge ships the *same* GNU Radio for win-64 that this repo uses on Linux
+(3.10.12.0, py312), so the flowgraphs run against the version they were written
+for.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+```
+
+`bootstrap_windows.ps1` installs Miniforge if there is no conda, builds the
+`gnu` environment, then verifies that gnuradio, qtgui, soapy, PyQt5 and
+SoapySDR import and reports how many radios Soapy sees. It is idempotent -
+re-run it after a pull and it updates in place.
+
+- **`environment.yml` cannot solve on Windows at all.** It is a full Linux
+  solve: every package pinned to a `linux-64` build string, with `alsa-lib`,
+  `pulseaudio-client` and `libgcc` in the list. `environment-windows.yml` names
+  only what the code imports and lets conda choose builds, which is also why it
+  needs no edit when conda-forge rolls a build number.
+- **Activate; do not call the environment's `python.exe` directly.** GNU
+  Radio's DLLs live in `envs\gnu\Library\bin`, which only activation puts on
+  PATH. Without it the import dies with a bare `DLL load failed` that names
+  nothing useful. `start_app.ps1` goes through the conda *shell hook*, so it
+  works without `conda init` having been run.
+- `start_app.ps1` also has to `Set-Location` to the repo root, for the same
+  reason `start_app.sh` does its `cd`: the launcher opens `icons/settings.png`
+  and `config/` by relative path.
+- **Check whether WinUSB is already bound before sending anyone to Zadig.** The
+  HackRF here needed no driver work at all - Windows had already attached its
+  own WinUSB. `(Get-PnpDeviceProperty -InstanceId <id>)` showing
+  `DEVPKEY_Device_Service = WINUSB` means the driver step is done; Soapy
+  enumerating 0 devices is what says it is not.
+- **Pillow is newer on Windows than on Linux** (12.3.0 against 11.1.0 here), so
+  PIL calls can be silent in one place and warn in the other -
+  `getdata()`/`putdata()` are deprecated in 12 and removed in 14. The launcher
+  keys the settings icon's light background out with numpy instead, which is
+  version-independent and produces a pixel-identical image.
+- `vmcircbuf_prefs ... failed to open` on startup is cosmetic. The path it
+  prints is malformed - `AppData\Roaming.config\gnuradio`, `%APPDATA%` and
+  `.config` run together with no separator - so the preference never gets
+  written and the line reprints every run. It does not affect the flowgraph.
+- **A GUI started over SSH never reaches the desktop.** Windows OpenSSH runs
+  children in session 0; the user's desktop is session 1. Flowgraphs still run
+  headless there with `QT_QPA_PLATFORM=offscreen` (font warnings are expected
+  and harmless), which is enough to transmit and be measured, but the window is
+  invisible. `Get-Process python | Select Id,SessionId` is what tells you whose
+  process is whose.
+- `gr-audio` is present in the Windows build, so `rdsReceiver.py` can run there
+  too, not just the transmitters.
+
+**Verified cross-machine**, Windows HackRF transmitting and a BB60D on the
+Linux box receiving: 102.1 MHz at 78 % read 66.3 dB above the noise floor and
+decoded 1368/1368 blocks at 0.0 % errors, with PS, RadioText and PTY exactly as
+configured. The transmitter was launched from the Windows GUI, not headless.
+
+The one thing that cost time was, again, not the code: with no antenna on the
+HackRF the whole chain came up clean - device opened, gains applied, no errors -
+and put *nothing* on the air. The bare CW carrier at maximum gain read 2.6 dB
+above the floor where the same test on the Linux bench reads 76.8 dB; with the
+antenna connected the signal jumped to 66.3 dB and the capture rms rose 44 dB.
+Validate the receiver against a known-strong station first - a wideband sweep
+that finds 57 FM carriers proves the fault is on the transmit side before you
+go looking for it there.
 
 ### Adding a New Application
 
