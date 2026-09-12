@@ -1,0 +1,28 @@
+# Windows (win-64) environment for the launcher.
+#
+# environment.yml is a full Linux solve - every package pinned to a linux-64
+# build string, with alsa-lib, pulseaudio and libgcc in it - so it cannot solve
+# on Windows at all. This file lists only what the code actually imports and
+# lets conda pick the builds, which is also why it needs no maintenance when
+# conda-forge rolls a build number.
+#
+# conda-forge ships the same GNU Radio here as on Linux (3.10.12.0, py312), so
+# the flowgraphs run against the version they were written for.
+#
+#   conda env create -f environment-windows.yml
+#   conda activate gnu
+#
+# The HackRF additionally needs a WinUSB driver bound to it - see
+# scripts/bootstrap_windows.ps1 and the README.
+name: gnu
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - gnuradio=3.10.12          # metapackage: core, qtgui, soapy, uhd, audio
+  - soapysdr
+  - soapysdr-module-hackrf    # the HackRF backend gr-soapy talks to
+  - pyqt=5.15
+  - numpy
+  - scipy
+  - pillow                    # the launcher tints its icons with PIL
