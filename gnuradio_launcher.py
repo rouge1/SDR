@@ -28,7 +28,8 @@ import io
 import numpy as np # type: ignore
 
 # Local imports 
-from apps.utils import apply_launcher_theme, apply_dark_theme, DialogGeometryTracker
+from apps.utils import (apply_launcher_theme, apply_dark_theme,
+                       DialogGeometryTracker, geometry_is_reachable)
 from apps.settings_dialog import SettingsDialog
 
 
@@ -163,21 +164,19 @@ class GNURadioLauncher(QMainWindow):
                     settings = json.load(f)
                     if 'window_position' in settings:
                         position = settings['window_position']
-                        screen = self.app.primaryScreen().geometry()
-                        
-                        # Restore position if valid
-                        if (0 <= position['x'] <= screen.width() - self.width() and 
-                            0 <= position['y'] <= screen.height() - self.height()):
-                            self.move(QPoint(position['x'], position['y']))
-                        else:
-                            self.center_window()
-                            
-                        # Restore size if saved and valid
+                        screen = self.app.primaryScreen().availableGeometry()
+
+                        # Size first, so the reachability test and the move both
+                        # work on the geometry the window will actually have.
                         if 'width' in position and 'height' in position:
-                            # Ensure size is within reasonable bounds
                             width = min(max(position['width'], 800), screen.width())
                             height = min(max(position['height'], 600), screen.height())
                             self.resize(width, height)
+
+                        if geometry_is_reachable(self.app, position):
+                            self.move(QPoint(position['x'], position['y']))
+                        else:
+                            self.center_window()
                     else:
                         self.center_window()
             else:
@@ -247,14 +246,12 @@ class GNURadioLauncher(QMainWindow):
                         app_config = json.load(f)
                     position = app_config.get('dialog_position')
                     if position:
-                        valid_position = (
-                            0 <= position['x'] <= screen.width() - config_dialog.width() and
-                            0 <= position['y'] <= screen.height() - config_dialog.height()
-                        )
-                        if valid_position:
-                            config_dialog.move(QPoint(position['x'], position['y']))
+                        if geometry_is_reachable(self.app, position):
+                            # Size first: moving then resizing can push the
+                            # dialog somewhere the saved position never meant.
                             if 'width' in position and 'height' in position:
                                 config_dialog.resize(position['width'], position['height'])
+                            config_dialog.move(QPoint(position['x'], position['y']))
                         else:
                             config_dialog.move(default_pos)
                     else:

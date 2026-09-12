@@ -4,8 +4,10 @@
 import os
 import json
 import re
-from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton, QComboBox, QLabel # type: ignore
+from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton, QComboBox, QLabel, QApplication # type: ignore
 from PyQt5.QtCore import Qt # type: ignore
+
+from apps.utils import geometry_is_reachable
 
 class SettingsDialog(QDialog):
     def __init__(self, settings_file, parent=None):
@@ -130,9 +132,13 @@ class SettingsDialog(QDialog):
                 with open(self.settings_file, 'r') as f:
                     saved = json.load(f)
                 pos = saved.get('settings_dialog_position')
-                if pos:
-                    self.move(pos['x'], pos['y'])
+                # Unlike the other two restore sites this one never checked
+                # anything, so it would happily put the dialog somewhere the
+                # screen no longer reaches - the opposite failure, and just as
+                # awkward once a monitor is unplugged.
+                if pos and geometry_is_reachable(QApplication.instance(), pos):
                     self.resize(pos['width'], pos['height'])
+                    self.move(pos['x'], pos['y'])
         except Exception as e:
             print(f"Error restoring settings dialog geometry: {e}")
         

@@ -1,7 +1,7 @@
 import json
 import os
 from PyQt5 import Qt  #type: ignore
-from PyQt5.QtCore import QObject, QEvent  #type: ignore
+from PyQt5.QtCore import QObject, QEvent, QRect  #type: ignore
 
 
 class DialogGeometryTracker(QObject):
@@ -25,6 +25,41 @@ class DialogGeometryTracker(QObject):
                 'height': obj.height(),
             }
         return False
+
+
+def geometry_is_reachable(app, position, minimum=(160, 40)):
+    """True if a window restored at this saved geometry could still be grabbed.
+
+    The point of validating a saved position is that the user can reach the
+    title bar again, not that the window fits neatly. The per-site checks this
+    replaces got three things wrong:
+
+    - They measured against the dialog's ``width()`` *before* it was shown,
+      which is Qt's 640x480 default and has nothing to do with the dialog - its
+      real size hint is more like 515x631. On a 1366x768 laptop that made the
+      test ``0 <= x <= 726``, so any dialog parked on the right half of the
+      screen was judged invalid, reopened at the default position, and had that
+      default saved back over the real one. It looked like the position was
+      never being remembered.
+    - They demanded the whole window fit inside the screen, throwing away a
+      window deliberately parked against an edge.
+    - They only looked at the primary screen, so a window on a second monitor
+      was never valid - which is the normal case on a multi-head desk.
+
+    Sizes come from the saved geometry, and ``availableGeometry`` is used so the
+    taskbar does not count as usable space.
+    """
+    try:
+        rect = QRect(int(position['x']), int(position['y']),
+                     int(position.get('width') or minimum[0]),
+                     int(position.get('height') or minimum[1]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    for screen in app.screens():
+        overlap = screen.availableGeometry().intersected(rect)
+        if overlap.width() >= minimum[0] and overlap.height() >= minimum[1]:
+            return True
+    return False
 
 
 #This function is called to apply the theme to the launcher
