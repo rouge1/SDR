@@ -190,13 +190,47 @@ class _TextField:
     def __init__(self, size):
         self.size = size
         self.committed = [' '] * size
+        # Positions this message has actually sent. Cleared with the text, so
+        # it always describes the message on display and never the one before.
+        self.written = set()
 
     def put(self, pos, char):
         if 0 <= pos < self.size:
             self.committed[pos] = char
+            self.written.add(pos)
 
     def clear(self):
         self.committed = [' '] * self.size
+        self.written = set()
+
+    def differs(self, pos, chars, minimum=2):
+        """True if this segment contradicts what the message already sent.
+
+        A segment that repeats carries the same characters, so a disagreement
+        means the station has moved on to a different message - which is the
+        only warning some of them give (see the A/B flag note in
+        ``RdsProtocol._decode_group``).
+
+        ``minimum`` is what keeps a corrupted block from being mistaken for
+        one. The (26,16) code maps almost every syndrome to some correction, so
+        a block whose error burst is too long to repair comes back "corrected"
+        and wrong rather than rejected, and drops a stray character into the
+        text - 'Tyler' arriving as 'Eyler', a '-' as '!'. Off air that happens
+        several times a minute, and treating each one as a new message blanks
+        the display and costs four seconds of refill. A real change rewrites
+        most of a segment; a bad block usually lands one character. A segment
+        that disagrees in only one place is written anyway, so what survives of
+        the disagreement is that single character.
+        """
+        n = sum(pos + j in self.written and self.committed[pos + j] != ch
+                for j, ch in enumerate(chars))
+        return n >= minimum
+
+    def range_written(self, start, end):
+        """True if every position in [start, end) came from this message."""
+        if start < 0 or end > self.size or end <= start:
+            return False
+        return all(p in self.written for p in range(start, end))
 
     def text(self):
         """The field as displayable characters, keeping absolute positions.
@@ -359,14 +393,30 @@ class RdsProtocol:
                 buf.clear()
                 self._rt_ab = ab
             addr = b['B'] & 0xF
+            base, chars = None, None
             if not ver_b and 'C' in b and 'D' in b:
-                chars = [(b['C'] >> 8) & 0xFF, b['C'] & 0xFF,
-                         (b['D'] >> 8) & 0xFF, b['D'] & 0xFF]
-                for j, c in enumerate(chars):
-                    buf.put(addr * 4 + j, chr(c))
+                base = addr * 4
+                chars = [chr((b['C'] >> 8) & 0xFF), chr(b['C'] & 0xFF),
+                         chr((b['D'] >> 8) & 0xFF), chr(b['D'] & 0xFF)]
             elif ver_b and 'D' in b:
-                for j, c in enumerate([(b['D'] >> 8) & 0xFF, b['D'] & 0xFF]):
-                    buf.put(addr * 2 + j, chr(c))
+                base = addr * 2
+                chars = [chr((b['D'] >> 8) & 0xFF), chr(b['D'] & 0xFF)]
+            if chars is not None:
+                # Plenty of US stations rotate several messages - a slogan, the
+                # song, an advert - and never toggle the A/B flag between them.
+                # 98.7 does exactly that. With nothing clearing the buffer, each
+                # new message overwrites the last one segment by segment and
+                # what is on display is a splice of the two: "98.7WMZQBest
+                # Country", or a car dealership in the middle of a song title.
+                # The contradiction itself is the announcement.
+                if buf.differs(base, chars):
+                    buf.clear()
+                    if self._rt_show is None or ab == self._rt_show:
+                        # The tags describe the message that carried them, and
+                        # that message is gone.
+                        self.rtplus.clear()
+                for j, ch in enumerate(chars):
+                    buf.put(base + j, ch)
             # Switch which buffer is reported only once the new flag has been
             # seen twice, so one bad bit cannot flash a half-empty page up.
             if self._rt_show is None or ab == self._rt_show:
@@ -398,6 +448,14 @@ class RdsProtocol:
                 continue
             end = start + length + 1
             if end > len(text):
+                continue
+            # The offsets refer to the message being transmitted now. One that
+            # arrives while the next message is still filling in would cut
+            # across both, welding half of each together - "Dan +" from the new
+            # text and "ntry" from the tail of the old "Country". Stations
+            # repeat these groups every second or two, so skipping one costs
+            # nothing and the tag lands as soon as the text beneath it is real.
+            if not self.rt.range_written(start, end):
                 continue
             # Stations do ship RT+ offsets that do not match the RadioText they
             # actually sent - 99.5 tags "Injured? Attorney" two characters late,

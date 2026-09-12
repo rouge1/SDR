@@ -169,6 +169,7 @@ and Qt so it can be run against a recorded capture:
 
 ```sh
 python scripts/test_rds_core.py <capture>   # capture path without .cfile
+python scripts/test_rds_radiotext.py        # RadioText changes - no radio, no capture
 ```
 
 `RdsDemod` mixes the MPX down by the 57 kHz subcarrier and integrates each
@@ -191,6 +192,21 @@ Three things that are easy to get wrong and cost real time here:
   page change clears its target buffer *and writes the same group into it*.
   Clearing without writing loses the first four characters of every page - which
   is exactly what paged paragraphs exposed.
+- **A new message is also detected from its content, because many stations
+  never toggle the flag.** 98.7 rotates a slogan, the song and an advert through
+  RadioText with A/B stuck at 0, so nothing ever cleared the buffer: each message
+  overwrote the last segment by segment, the display showed splices like
+  "98.7WMZQBest Country", and a car-dealer advert turned up inside the song
+  name. A segment that contradicts characters the current message has already
+  sent now starts a new message and drops its RT+ tags. It takes **two**
+  differing characters, not one. The (26,16) code maps nearly every syndrome to
+  *some* correction, so a block whose error burst is too long comes back wrong
+  rather than rejected - 'Tyler' as 'Eyler' - and treating that one stray
+  character as a new message blanked the display several times a minute.
+- **An RT+ tag may only slice characters the current message sent.** Tags that
+  arrived while the next message was still filling in cut across both, welding
+  "Dan +" from the new text to "ntry" from the tail of "Country". Stations repeat
+  the tag group every second or two, so a refused tag lands on the next pass.
 - **Do not average PS or RadioText over time.** US stations scroll messages
   through the 8-character PS field and often alternate two RadioText messages
   without toggling the A/B flag, so averaging blends them into gibberish. The
