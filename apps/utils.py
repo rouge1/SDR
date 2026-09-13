@@ -5,6 +5,44 @@ from PyQt5.QtCore import (QObject, QEvent, QRect, Qt as QtNs,  #type: ignore
                           pyqtSignal)
 
 
+# --- Buffers ----------------------------------------------------------------
+
+#: GNU Radio allocates stream buffers in whole memory pages.
+BUFFER_PAGE = 4096
+
+
+def page_aligned_items(item_size, page=BUFFER_PAGE):
+    """How many items of this size fill a whole number of pages.
+
+    GNU Radio rounds every buffer up to a page boundary, and warns when the
+    size it was asked for is not already there:
+
+        buffer_double_mapped :warning: allocate_buffer: tried to allocate
+        316 items of size 207. Due to alignment requirements 4096 were
+        allocated.
+
+    The ATSC chain trips this four times on every run, because a transport
+    packet is 188 bytes and a Reed-Solomon one is 207 - neither a power of
+    two - so the line is printed at WARN, four times, every time, about
+    something nobody can do anything about and which is not a fault.
+
+    Asking for the aligned count up front silences it without hiding
+    anything: the allocation is identical, since that is what GNU Radio was
+    going to allocate anyway. 207 needs 4096 items, 188 needs 1024.
+    """
+    from math import gcd
+    return page // gcd(int(item_size), page)
+
+
+def align_output_buffer(block, port, item_size):
+    """Ask a block for a page-aligned output buffer. See above."""
+    try:
+        block.set_min_output_buffer(port, page_aligned_items(item_size))
+    except Exception:
+        # Never worth failing a flowgraph over a log line.
+        pass
+
+
 # --- Tuning -----------------------------------------------------------------
 
 #: The resolution every frequency control works in. 0.1 MHz is finer than

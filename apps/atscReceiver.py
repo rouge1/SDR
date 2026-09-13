@@ -36,7 +36,7 @@ from apps.atsc_rx_core import (Afc, SYMBOL_RATE, TsAnalyzer,
                                channels, mer_db, mer_quality, since,
                                tv_channel_items)
 from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
-                        FrequencyChooser)
+                        FrequencyChooser, align_output_buffer)
 
 # Each radio's own rate, chosen from what it will actually accept:
 # SoapyHackRF takes whole megahertz only, and the BB60D's ladder is
@@ -312,6 +312,15 @@ class AtscDemod(gr.hier_block2):
         self.rsd = dtv.atsc_rs_decoder()
         self.der = dtv.atsc_derandomizer()
         self.dep = dtv.atsc_depad()
+
+        # The four blocks whose items are not a power of two: 207 bytes for
+        # a Reed-Solomon packet, 188 for a transport one. Asking for the
+        # page-aligned size is exactly what GNU Radio allocates anyway, and
+        # it stops four WARN lines being printed on every single run.
+        for blk in (self.vit, self.dei):
+            align_output_buffer(blk, 0, 207)
+        for blk in (self.rsd, self.der):
+            align_output_buffer(blk, 0, 188)
 
         self.connect(self, self.tap)
         self.connect(self, self.rotator, self.level, self.pfb, self.fpll,

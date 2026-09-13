@@ -689,6 +689,21 @@ Five things worth knowing before changing it:
   all of them decode a clean signal at 0.000% bad; the differences in the
   *totals* are acquisition time, not quality, which is why the test finds
   where the receiver locked and reports only what came after.
+- **It printed four buffer warnings on every run, and they are fixable.**
+  GNU Radio rounds every stream buffer up to a 4096-byte page and logs a
+  WARN when the size it was asked for was not already there. A transport
+  packet is 188 bytes and a Reed-Solomon one is 207, neither a power of
+  two, so `atsc_viterbi_decoder`, `atsc_deinterleaver`, `atsc_rs_decoder`
+  and `atsc_derandomizer` tripped it every time - four lines about
+  something that is not a fault and that nobody can act on. Asking for the
+  aligned count up front (`align_output_buffer` in `apps/utils.py`; 4096
+  items for 207 bytes, 1024 for 188) silences them while allocating exactly
+  what it was going to allocate anyway, and the decode is unchanged. The
+  *transmitter* never had this - its items are 256 and 1024 bytes. The four
+  that still appear from `scripts/test_atsc_loopback.py` come from
+  `dtv.atsc_rx` inside it, whose blocks are locals and cannot be reached;
+  that is deliberate, since the point of that test is to check our
+  transmitter against GNU Radio's own receiver rather than our own.
 - **Watch pipes to the player and drops bytes rather than blocking.** A
   blocking write into a player that has stalled or been closed would park
   the GNU Radio scheduler thread and take the whole receiver down, and
