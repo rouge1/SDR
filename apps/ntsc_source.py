@@ -28,6 +28,7 @@ consumes them.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -51,10 +52,11 @@ ACTIVE_HEIGHT = 480
 #: 30000/1001, the frame rate everything in NTSC descends from.
 FRAME_RATE = 1.0 / FRAME
 
-#: Extensions worth offering. ffmpeg reads far more than this; the list is
-#: to keep the dialog sensible, not because anything else would fail.
-VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm', '.mpg', '.mpeg',
-                    '.m4v', '.ts', '.wmv', '.flv', '.ogv')
+#: Extensions worth offering, **best first**. ffmpeg reads far more than
+#: this; the list is to keep the dialog sensible, not because anything else
+#: would fail. The order is the preference - see ``video_files``.
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.mov', '.m4v', '.webm', '.avi',
+                    '.mpg', '.mpeg', '.ts', '.wmv', '.flv', '.ogv')
 
 
 def have_ffmpeg():
@@ -62,14 +64,52 @@ def have_ffmpeg():
 
 
 def video_files(directory):
-    """Playable video files in a directory, as (display name, full path)."""
+    """Playable video files in a directory, as (display name, full path).
+
+    **One clip, one entry.** The media folder holds each clip twice - a
+    ``.mp4`` for here and a ``.ts`` of the same picture and sound for the
+    ATSC transmitter, which needs a transport stream. Offering both made the
+    picker forty items long with every title in it twice, spelled
+    identically, and nothing on screen said which was which. So files that
+    share a name are collapsed to one, keeping the extension earliest in
+    ``VIDEO_EXTENSIONS``: the ``.mp4`` is 640x480 with square pixels, which
+    is exactly what the encoder wants, where the ``.ts`` is 704x480 at
+    10:11 and would have to be stretched back.
+    """
+    if not directory or not os.path.isdir(directory):
+        return []
+    best = {}
+    for name in sorted(os.listdir(directory)):
+        stem, ext = os.path.splitext(name)
+        ext = ext.lower()
+        if ext not in VIDEO_EXTENSIONS:
+            continue
+        rank = VIDEO_EXTENSIONS.index(ext)
+        if stem not in best or rank < best[stem][0]:
+            best[stem] = (rank, name)
+    return [(stem.replace('-', ' '), os.path.join(directory, name))
+            for stem, (_rank, name) in sorted(best.items())]
+
+
+#: The instructor's captures are named ``<subject>-946x486-18M0FS.dat``. The
+#: geometry and the sample rate are the same for every one of them, so
+#: repeating it down the picker says nothing and hides the subject.
+_DAT_SUFFIX = re.compile(r'-\d+x\d+-\d+M\d+FS$', re.IGNORECASE)
+
+
+def dat_files(directory):
+    """The ``.dat`` composite captures, as (display name, full path).
+
+    One still frame each, sampled at 18 MS/s - see ``dat_resample_ratio``.
+    """
     if not directory or not os.path.isdir(directory):
         return []
     found = []
     for name in sorted(os.listdir(directory)):
-        if name.lower().endswith(VIDEO_EXTENSIONS):
-            display = os.path.splitext(name)[0].replace('-', ' ')
-            found.append((display, os.path.join(directory, name)))
+        if not name.lower().endswith('.dat'):
+            continue
+        stem = _DAT_SUFFIX.sub('', os.path.splitext(name)[0])
+        found.append((stem.replace('-', ' '), os.path.join(directory, name)))
     return found
 
 

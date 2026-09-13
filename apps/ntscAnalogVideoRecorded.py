@@ -48,8 +48,9 @@ import sip #type: ignore
 from fractions import Fraction
 
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
-from apps.ntsc_source import (TestPattern, VideoFile, dat_resample_ratio,
-                              have_ffmpeg, ntsc_source, video_files)
+from apps.ntsc_source import (TestPattern, VideoFile, dat_files,
+                              dat_resample_ratio, have_ffmpeg, ntsc_source,
+                              video_files)
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
@@ -264,12 +265,16 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_video_selector(self):
-        """Three kinds of source, in one list.
+        """Three kinds of source, in three groups of one list.
 
         This used to offer only ``.dat`` files, which are single still
         frames, so the app could never transmit moving pictures at all. Now
         any video file ffmpeg can read is offered too, and there is a
         built-in pattern so it works with an empty media folder.
+
+        The groups are separated because they behave differently - a clip
+        plays and loops, a ``.dat`` is one frame held on screen - and
+        because the list is long enough that a wall of names is no use.
         """
         self.video_combo = Qt.QComboBox()
         settings = read_settings()
@@ -279,20 +284,25 @@ class ConfigDialog(Qt.QDialog):
         self.video_combo.addItem("Colour bars (built in)", ('pattern', None))
 
         if have_ffmpeg():
-            for display, path in video_files(self.media_dir):
-                self.video_combo.addItem(f"{display}  (video)", ('video', path))
+            clips = video_files(self.media_dir)
+            if clips:
+                self.video_combo.insertSeparator(self.video_combo.count())
+            for display, path in clips:
+                self.video_combo.addItem(display, ('video', path))
         else:
-            self.video_combo.addItem("Video files need ffmpeg, which is not "
-                                     "installed", ('pattern', None))
+            # TVAdemo has no ffmpeg, and a picker that simply showed nothing
+            # would look like an empty media folder.
+            self.video_combo.insertSeparator(self.video_combo.count())
+            self.video_combo.addItem("Video clips need ffmpeg, which is not "
+                                     "installed here", ('pattern', None))
 
         # The instructor's captures: one composite frame each, at 18 MS/s.
-        if self.media_dir and os.path.isdir(self.media_dir):
-            for name in sorted(os.listdir(self.media_dir)):
-                if name.endswith('.dat'):
-                    display = os.path.splitext(name)[0].replace('-', ' ')
-                    self.video_combo.addItem(
-                        f"{display}  (still)",
-                        ('still', os.path.join(self.media_dir, name)))
+        stills = dat_files(self.media_dir)
+        if stills:
+            self.video_combo.insertSeparator(self.video_combo.count())
+        for display, path in stills:
+            self.video_combo.addItem(f"{display}  (still frame)",
+                                     ('still', path))
 
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')

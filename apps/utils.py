@@ -307,13 +307,178 @@ def apply_launcher_theme(widget):
     """
     widget.setStyleSheet(stylesheet)
 
+# --- Dialog layout ----------------------------------------------------------
+
+#: The rhythm every config dialog is laid out on: the gap around the edge,
+#: and the gap between one control and the next.
+DIALOG_MARGIN = 12
+DIALOG_SPACING = 8
+
+
+def _dialog_layout(widget):
+    """The widget's layout, whether or not the method has been shadowed.
+
+    Every ConfigDialog here does ``self.layout = Qt.QVBoxLayout(self)``, which
+    replaces the ``layout()`` method with the layout object. Both spellings
+    have to work.
+    """
+    attr = getattr(widget, 'layout', None)
+    if isinstance(attr, Qt.QLayout):
+        return attr
+    try:
+        return widget.layout()
+    except TypeError:
+        return None
+
+
+#: Widgets that arrange their own insides. Do not reach into these at all:
+#: a combo box's list is a view of its own, and a tool bar and a button box
+#: lay themselves out.
+_SELF_CONTAINED = (Qt.QAbstractScrollArea, Qt.QAbstractItemView,
+                   Qt.QComboBox, Qt.QDialogButtonBox, Qt.QToolBar)
+
+
+def _collect(layout, rows, captions, nested, group=False):
+    """Find the labels and nested layouts under this one.
+
+    A label that leads a ``QHBoxLayout`` is a *row* label - it names the
+    control beside it. A label sitting on its own in a vertical layout is a
+    *caption* - it names the control underneath it.
+
+    Inside a group box only the layouts are collected. Its contents are
+    indented from the dialog's own column by the frame, so pulling its rows
+    into that column would push them back out of the box.
+    """
+    if isinstance(layout, Qt.QHBoxLayout) and not group:
+        widgets = [layout.itemAt(i).widget() for i in range(layout.count())]
+        widgets = [w for w in widgets if w is not None]
+        if len(widgets) > 1 and isinstance(widgets[0], Qt.QLabel):
+            rows.append(widgets[0])
+    vertical = isinstance(layout, Qt.QVBoxLayout)
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        child = item.layout()
+        if child is not None:
+            nested.append(child)
+            _collect(child, rows, captions, nested, group)
+            continue
+        w = item.widget()
+        if w is None or isinstance(w, _SELF_CONTAINED):
+            continue
+        if vertical and i and isinstance(w, Qt.QLabel) and not group:
+            captions.append(w)
+            continue
+        inner = _dialog_layout(w)
+        if inner is not None:
+            if isinstance(w, Qt.QGroupBox):
+                # The box's own layout keeps its margins, or the frame cuts
+                # through the text - but the rows inside it still get
+                # straightened.
+                _collect(inner, rows, captions, nested, group=True)
+                continue
+            # A plain QWidget used only to hold a row - the containers that
+            # exist so an opacity effect has something to apply to - keeps
+            # its layout's default 9 px margin otherwise, and that indents
+            # the row it holds out of line with the rest of the dialog.
+            nested.append(inner)
+            _collect(inner, rows, captions, nested, group)
+
+
+def tidy_dialog(dialog):
+    """Straighten a hand-built dialog. Four fixes, all of them layout.
+
+    The fifteen config dialogs are each assembled by hand out of
+    ``QVBoxLayout`` and ``QHBoxLayout``, and they were all crooked in the
+    same ways - which is what makes this worth doing centrally rather than
+    in fifteen places.
+
+    - **The label in a row sat four or five pixels below the control beside
+      it.** The stylesheet gave every ``QLabel`` a 10 px top margin, to
+      space a caption off whatever was above it. Inside a row that margin
+      pushes the *text* down within the label's own rectangle while the spin
+      box or slider next to it stays centred, so the box reads as sitting
+      high - measured on every row of all fifteen dialogs. The margin is
+      gone from the stylesheet and the gap comes from layout spacing now,
+      which is what layout spacing is for.
+    - **Sliders started at a different x in every row**, because each one
+      began wherever its label's text happened to end: four different
+      positions in one dialog. Every label that leads a row is given the
+      width of the widest of them, so the controls line up in a column. It
+      also stops the slider shifting sideways as a live value in the label
+      changes width - "Power Level: 5%" to "Power Level: 100%" moved it.
+    - **A nested row was indented**, since sub-layouts keep their own
+      default margins - "Sine Frequency" sat ten pixels right of every
+      other label in the same dialog.
+    - **Short dialogs spread their contents out.** A forced 400 px minimum
+      height left the receivers half empty, and a ``QVBoxLayout`` hands the
+      slack to whatever can grow, which is the labels: the gaps between
+      controls came out uneven. A stretch before the button box collects
+      it in one place instead.
+    """
+    if not isinstance(dialog, Qt.QWidget):
+        return                      # apply_dark_theme is also called on a
+                                    # QApplication, which has no layout.
+    top = _dialog_layout(dialog)
+    if top is None:
+        return
+    top.setContentsMargins(DIALOG_MARGIN, DIALOG_MARGIN,
+                           DIALOG_MARGIN, DIALOG_MARGIN)
+    top.setSpacing(DIALOG_SPACING)
+
+    rows, captions, nested = [], [], []
+    _collect(top, rows, captions, nested)
+    for layout in nested:
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(DIALOG_SPACING)
+    if rows:
+        width = max(label.sizeHint().width() for label in rows)
+        for label in rows:
+            label.setMinimumWidth(width)
+            # Fixed, or the column still moves: a label is Preferred by
+            # default, so in a row with a spin box - which is Expanding -
+            # the two share the slack and that row's control starts 26 px
+            # right of every other. Fixed caps the label at its own text,
+            # and the minimum above brings the short ones up to the column.
+            label.setSizePolicy(Qt.QSizePolicy.Fixed,
+                                label.sizePolicy().verticalPolicy())
+    for label in captions:
+        # A caption belongs to the control below it, so give it more room
+        # above than below. This is the grouping the old stylesheet margin
+        # was after - it just applied it to every label, including the ones
+        # in a row, which is what knocked those crooked.
+        label.setContentsMargins(0, DIALOG_SPACING, 0, 0)
+
+    if isinstance(top, Qt.QVBoxLayout):
+        index = top.count()
+        for i in range(top.count()):
+            if isinstance(top.itemAt(i).widget(), Qt.QDialogButtonBox):
+                index = i
+                break
+        top.insertStretch(index, 1)
+
+
+#: The repository's icons, found from this file so that it does not matter
+#: which directory the app was started from.
+ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'icons')
+
+
+def icon_url(name):
+    """An icons/ path in the form a Qt stylesheet url() wants.
+
+    Forward slashes on every platform - a Windows backslash is an escape
+    character to the stylesheet parser, and the rule is dropped silently.
+    """
+    return os.path.join(ICON_DIR, name).replace('\\', '/')
+
+
 #This function is called to apply the theme to the dialog
 def apply_dark_theme(widget):
-    # Set minimum dialog size
+    # A floor on the width only. There used to be one of 400 on the height
+    # too, which made every short dialog too tall - see tidy_dialog.
     if isinstance(widget, Qt.QDialog):
-        widget.setMinimumWidth(350)
-        widget.setMinimumHeight(400)
-    
+        widget.setMinimumWidth(360)
+
     stylesheet = """
     QDialog, QWidget {
         background-color: #2e2e2e;
@@ -321,7 +486,6 @@ def apply_dark_theme(widget):
     }
     QLabel {
         color: #ffffff;
-        margin-top: 10px;  /* Add spacing above labels */
     }
     QPushButton {
         background-color: #4b4b4b;
@@ -345,11 +509,62 @@ def apply_dark_theme(widget):
         border: 2px solid #5c5c5c;
         border-radius: 5px;
         padding: 5px;
-        margin: 5px 0px;  /* Add vertical spacing */
     }
     QComboBox:hover {
         background-color: #656565;
         border: 2px solid #767676;
+    }
+    /* Typed-in controls, matching the combo boxes. Without these they fall
+       through to the plain QWidget rule and come out as flat dark boxes,
+       so two controls doing the same job - pick a number, type a number -
+       looked like they belonged to different applications. */
+    QLineEdit, QAbstractSpinBox {
+        background-color: #4b4b4b;
+        color: #ffffff;
+        border: 2px solid #5c5c5c;
+        border-radius: 5px;
+        padding: 4px;
+        selection-background-color: #767676;
+    }
+    QLineEdit:focus, QAbstractSpinBox:focus {
+        border: 2px solid #8a8a8a;
+    }
+    QLineEdit:disabled, QAbstractSpinBox:disabled {
+        color: #6e6e6e;
+        border: 2px solid #4a4a4a;
+    }
+    /* A spin box that a stylesheet touches at all stops drawing its own
+       arrows - the two buttons come out as empty boxes - and Qt's CSS
+       subset will not draw a triangle out of borders either; it renders
+       the four borders as a rectangle. So the arrows are images. */
+    QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
+        subcontrol-origin: border;
+        background-color: #5c5c5c;
+        border: none;
+        width: 17px;
+    }
+    QAbstractSpinBox::up-button {
+        subcontrol-position: top right;
+        border-top-right-radius: 3px;
+        margin: 2px 2px 0px 0px;
+    }
+    QAbstractSpinBox::down-button {
+        subcontrol-position: bottom right;
+        border-bottom-right-radius: 3px;
+        margin: 0px 2px 2px 0px;
+    }
+    QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {
+        background-color: #767676;
+    }
+    QAbstractSpinBox::up-arrow {
+        image: url(%(up)s);
+        width: 9px;
+        height: 5px;
+    }
+    QAbstractSpinBox::down-arrow {
+        image: url(%(down)s);
+        width: 9px;
+        height: 5px;
     }
     QComboBox QAbstractItemView {
         background-color: #4b4b4b;
@@ -360,7 +575,6 @@ def apply_dark_theme(widget):
     }
     QSlider {
         background-color: transparent;
-        margin: 15px 0px;  /* Add more vertical spacing around sliders */
     }
     QSlider::groove:horizontal {
         background-color: #4b4b4b;
@@ -377,14 +591,17 @@ def apply_dark_theme(widget):
     QSlider::handle:horizontal:hover {
         background-color: #dddddd;
     }
-    QHBoxLayout {
-        margin: 10px 0px;  /* Add spacing around horizontal layouts */
-    }
-    QVBoxLayout {
-        margin: 10px 0px;  /* Add spacing around vertical layouts */
-    }
     """
-    widget.setStyleSheet(stylesheet)
+    # There were QHBoxLayout and QVBoxLayout rules here too. A Qt stylesheet
+    # only ever applies to widgets, so they had never done anything; the
+    # spacing they were meant to give is set by tidy_dialog.
+    #
+    # The arrow paths are absolute and worked out from this file, not from
+    # the working directory, because a stylesheet resolves url() against the
+    # process's cwd and an app can be started from anywhere.
+    widget.setStyleSheet(stylesheet % {'up': icon_url('spin-up.png'),
+                                       'down': icon_url('spin-down.png')})
+    tidy_dialog(widget)
 
 def read_settings():
     """Read settings from window_settings.json and ensure required fields exist"""

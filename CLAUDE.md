@@ -40,7 +40,9 @@ The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block`
 ### Shared Utilities (`apps/utils.py`)
 
 - `apply_launcher_theme(widget)` — dark stylesheet for the main launcher window.
-- `apply_dark_theme(widget)` — dark stylesheet for config dialogs (also sets minimum dialog size).
+- `apply_dark_theme(widget)` — dark stylesheet for config dialogs, and it
+  also straightens the layout — see [how every dialog gets laid
+  out](#how-every-dialog-gets-laid-out).
 - `read_settings()` — reads `config/window_settings.json`, returns dict with `media_directory` and `ip_addresses`.
 
 ### Settings / Persistence
@@ -781,6 +783,28 @@ folder.
 - **The `.dat` captures do not go through it.** They are already composite,
   at 18 MS/s, so they are played by a file source and resampled 5/9 - see
   `dat_resample_ratio`.
+- **One clip, one entry in the picker.** The media folder holds each clip
+  twice - a `.mp4` for here and a `.ts` of the same picture and sound for
+  the ATSC transmitter, which needs a transport stream - so offering every
+  readable file made the video list forty items long with every title in it
+  twice, spelled identically, and nothing on screen saying which was which.
+  `video_files()` collapses files that share a name to one, keeping the
+  extension earliest in `VIDEO_EXTENSIONS`: the `.mp4` is 640x480 with
+  square pixels, which is exactly what the encoder wants, where the `.ts`
+  is 704x480 at 10:11 and would have to be stretched back. The three kinds
+  of source - the built-in pattern, the clips, the `.dat` stills - are
+  separated in the list, because a clip plays and loops where a `.dat` is
+  one frame held on screen. `dat_files()` also drops the
+  `-946x486-18M0FS` from those names: it is the same for every one of them,
+  so it says nothing and hides the subject.
+- **The clips themselves are public domain or CC BY**, and
+  `media/VIDEO-CREDITS.txt` is the record of what each one is, where it came
+  from, which segment was taken and how it was encoded. The Blender films
+  are CC BY, whose terms *require* that credit wherever the clip is shown or
+  passed on. Fourteen clips: seven Prelinger advertising reels (four of them
+  black and white), three NASA (Apollo 11 launch and moonwalk, ISS Earth
+  views), four Blender open movies. All fourteen `.mp4` are exactly 640x480
+  square-pixel 29.97 progressive, so nothing is rescaled on the way in.
 
 - **Generate every sample from absolute time, never from a count per line.** A
   line is 63.5556 us, which is 635.56 samples at 10 MS/s and not a whole
@@ -926,6 +950,69 @@ took the measured colour error from 0.43 to 0.13.
 open movies through the whole chain and back, 0.078-0.088 mean error, the
 black-and-white spots clean and the colour ones looking convincingly like
 period colour television.
+
+### How every dialog gets laid out
+
+Each of the fifteen `ConfigDialog`s is assembled by hand out of
+`QVBoxLayout` and `QHBoxLayout`, and they were all crooked in the same
+ways - which is why `apply_dark_theme` now ends by calling `tidy_dialog`
+rather than fifteen dialogs each being fixed on their own. Four faults, all
+of them visible in a screenshot, all measured across all fifteen:
+
+- **The label in a row sat four or five pixels below the control beside
+  it.** The stylesheet gave every `QLabel` a `margin-top: 10px`, to space a
+  caption off whatever was above it. Inside a row that margin pushes the
+  *text* down within the label's own rectangle while the spin box or slider
+  beside it stays centred, so the box reads as sitting high - which is
+  exactly how it was reported ("the 177 box is higher than the text next to
+  it"). The margin is gone; vertical space comes from layout spacing, which
+  is what layout spacing is for, and a caption gets its extra room above
+  through `setContentsMargins` on the caption alone.
+- **The controls started at a different x in every row**, because each one
+  began wherever its label's text happened to end - four different
+  positions in one dialog. Every label that leads a row is given the width
+  of the widest of them. It has to be `QSizePolicy.Fixed` as well as a
+  minimum width: a label is `Preferred` by default, so in a row with a spin
+  box - which is `Expanding` - the two share the slack and that row's
+  control still starts 26 px right of every other.
+- **A nested row was indented.** Sub-layouts and the plain `QWidget`
+  containers that exist only to carry a `QGraphicsOpacityEffect` keep their
+  own default 9 px margins, so "Sine Frequency" sat ten pixels right of
+  every other label in the same dialog.
+- **Short dialogs spread their contents out.** A forced 400 px minimum
+  height left the receiver dialogs half empty, and a `QVBoxLayout` hands
+  the slack to whatever can grow - which is the labels, so the gaps came
+  out uneven. There is no minimum height now, and a stretch before the
+  button box collects any slack in one place.
+
+Two things about doing it centrally:
+
+- **A group box is entered for its nested layouts but not for its rows.**
+  Its contents are indented from the dialog's column by the frame, so
+  pulling its rows into that column would push them back out of the box.
+  The RDS box in the FM + RDS transmitter is the one that has both.
+- **Anything a stylesheet touches stops drawing its own sub-controls.**
+  Styling `QAbstractSpinBox` so it matches the combo boxes - and without
+  that it falls through to the plain `QWidget` rule and comes out as a flat
+  dark box - leaves the up and down buttons as empty rectangles. Qt's CSS
+  subset will not draw a triangle out of borders either; it renders the
+  four borders as a rectangle. So the arrows are images, `icons/spin-up.png`
+  and `icons/spin-down.png`, referenced through `icon_url()` by absolute
+  path: a stylesheet resolves `url()` against the process's working
+  directory, and forward slashes are required on Windows because a
+  backslash is an escape to the stylesheet parser.
+
+```sh
+python scripts/test_dialog_layout.py                  # all 15, all 4 radios
+python scripts/test_dialog_layout.py --radio vsg
+python scripts/test_dialog_layout.py --save /tmp/shots
+```
+
+opens every dialog on Qt's offscreen platform - no radio, no display - and
+measures the four things above, plus that no combo box lists the same entry
+twice and that nothing is bigger than the 1366x768 laptop. Sixty dialogs in
+about twenty seconds. It patches `read_settings` rather than the settings
+file, because a test must never write into the user's own configuration.
 
 ### Testing the launcher end to end
 
