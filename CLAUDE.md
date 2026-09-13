@@ -185,16 +185,30 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
 | `fmRdsTransmitter.py` | FM broadcast transmitter with RDS | ✅ |
 
-### RDS Receiver (the one receiving app)
+### RDS Receiver
 
 `rdsReceiver.py` tunes an FM broadcast station and decodes the data on its
 57 kHz subcarrier: station ID (PI), program service name, RadioText, program
-type and clock time. Two consequences of being the only receiver:
+type and clock time.
 
 - **It uses the radio chosen in Settings**, like every other app: the HackRF,
-  or a USRP picked from the configured addresses. The VSG60 transmits only, so
-  with it selected the whole dialog is an error pointing at Settings, and
-  closing it launches nothing.
+  a USRP picked from the configured addresses, or the BB60D. The VSG60
+  transmits only, so with it selected the whole dialog is an error pointing
+  at Settings, and closing it launches nothing.
+- **Each radio brings its own sample rate**, because the BB60D's are a
+  ladder with nothing at the 2 MS/s the HackRF path uses. `SAMPLE_RATES`
+  gives it 2.5 MS/s, and the channel filter decimates by 10 rather than 8 —
+  everything after it still runs at the same 250 kHz MPX rate, so nothing
+  else in the chain changes. **Verified live on the BB60D**: 98.7 decoded
+  as PI `0x16F2` confirmed WMZQ, program type Country, stereo pilot locked.
+- **60% is the BB60D's best setting here, and both directions are worse** —
+  measured on that station: 40% decodes nothing at all, 60% gives 80% of
+  blocks good, 80% gives 68% and 100% gives 75%. That is the same shape as
+  the ATSC finding (attenuator open, no RF amplification), and for the same
+  reason: RF gain in a band as crowded as FM overloads the front end with
+  everything *except* the station you want. 80% blocks good is usable but
+  well short of the 96–99% a HackRF gets — the antenna on it is set up for
+  UHF television, not the FM band.
 - **Gains are applied after `tb.start()`** (`main()` calls `tb.apply_gain()`).
   SoapyHackRF silently ignores the `AMP` stage when it is set before the stream
   is running - worth ~14 dB, which is the difference between decoding and not.

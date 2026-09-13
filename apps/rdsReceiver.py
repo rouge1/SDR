@@ -30,9 +30,13 @@ from PyQt5 import Qt, QtCore  # type: ignore
 from apps.rds_core import RdsDemod, RdsProtocol, clock_text
 from apps.utils import apply_dark_theme, read_settings, SPECTRUM_Y_AXIS
 
-SAMP_RATE = 2e6
-MPX_RATE = 250e3          # 2 MS/s / 8
-DECIM = int(SAMP_RATE // MPX_RATE)
+MPX_RATE = 250e3          # everything after the channel filter runs here
+# Each radio's own rate, chosen from what it will actually accept, and each
+# an exact multiple of the MPX rate so the channel filter decimates by a
+# whole number. The BB60D's rates are a ladder - 40/20/10/5/2.5 and on down
+# in halves - with nothing at the 2 MS/s the HackRF path uses, so it takes
+# 2.5 and decimates by 10 instead of 8.
+SAMPLE_RATES = {'hackrf': 2e6, 'usrp': 2e6, 'bb60': 2.5e6}
 LO_OFFSET = 300e3         # keep the station clear of the radio's DC spike
 AUDIO_RATE = 48000
 MAX_DEVIATION = 75e3
@@ -110,8 +114,9 @@ class ConfigDialog(Qt.QDialog):
         message = Qt.QLabel(
             "<b>The Signal Hound VSG60 cannot receive.</b><br><br>"
             "It only transmits, so the RDS Receiver has no radio to listen "
-            "with. Choose the HackRF One or an Ettus USRP in Settings (the "
-            "gear icon), then open the RDS Receiver again.")
+            "with. Choose the HackRF One, an Ettus USRP or the Signal Hound "
+            "BB60D in Settings (the gear icon), then open the RDS Receiver "
+            "again.")
         message.setWordWrap(True)
         message.setAlignment(QtCore.Qt.AlignTop)
         row.addWidget(message, 1)
@@ -122,7 +127,9 @@ class ConfigDialog(Qt.QDialog):
 
     def create_receiver_selector(self):
         if self.radio_type != 'usrp':
-            self.layout.addWidget(Qt.QLabel("Radio: HackRF One (USB)"))
+            label = {'bb60': "Radio: Signal Hound BB60D (USB)"}.get(
+                self.radio_type, "Radio: HackRF One (USB)")
+            self.layout.addWidget(Qt.QLabel(label))
             return
         self.usrp_combo = Qt.QComboBox()
         if self.ipList:
@@ -148,8 +155,13 @@ class ConfigDialog(Qt.QDialog):
         row = Qt.QHBoxLayout()
         self.gain_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.gain_slider.setRange(0, 100)
-        self.gain_slider.setValue(40)
-        self.gain_label = Qt.QLabel("RF Gain: 40%")
+        # A BB60D wants its attenuator open and no RF amplification, which
+        # is 60%; below that its own converter noise dominates and above it
+        # the front end can be overdriven. The HackRF's three stages are a
+        # different animal - see rx_gain_plan.
+        default = 60 if self.radio_type == 'bb60' else 40
+        self.gain_slider.setValue(default)
+        self.gain_label = Qt.QLabel(f"RF Gain: {default}%")
         self.gain_slider.valueChanged.connect(
             lambda v: self.gain_label.setText(f"RF Gain: {v}%"))
         row.addWidget(self.gain_label)
@@ -322,6 +334,7 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
         self.region = values.get('region', 'RBDS')
         self.want_audio = bool(values.get('audio', True))
         self.usrp_ip = values.get('ipXmitAddr', '')
+        self.samp_rate = SAMPLE_RATES.get(self.radio_type, 2e6)
 
         self._build_controls()
         self._build_flowgraph()
@@ -399,26 +412,36 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
     # ----------------------------------------------------------- flowgraph
     def _build_flowgraph(self):
         lo_hz = self.freq_mhz * 1e6 - LO_OFFSET
+        samp_rate = self.samp_rate
         if self.radio_type == 'usrp':
             self.radio_source = uhd.usrp_source(
                 ",".join((f"addr={self.usrp_ip}", '')),
                 uhd.stream_args(cpu_format="fc32", args='',
                                 channels=list(range(0, 1))),
             )
-            self.radio_source.set_samp_rate(SAMP_RATE)
+            self.radio_source.set_samp_rate(samp_rate)
             self.radio_source.set_center_freq(lo_hz, 0)
             self.radio_source.set_antenna("RX2", 0)
+        elif self.radio_type == 'bb60':
+            # gr-soapy cannot drive this device at all - every setter fails
+            # with "setupStream: Invalid format" - so it goes through the
+            # raw SoapySDR wrapper, same as the ATSC receiver.
+            from apps.bb60_source import bb60_source
+            self.radio_source = bb60_source(center_freq=lo_hz,
+                                            sample_rate=samp_rate,
+                                            gain_percent=self.gain_percent)
         else:
             self.radio_source = soapy.source('driver=hackrf', 'fc32', 1, '', '',
                                              [''], [''])
-            self.radio_source.set_sample_rate(0, SAMP_RATE)
+            self.radio_source.set_sample_rate(0, samp_rate)
             self.radio_source.set_frequency(0, lo_hz)
             self.radio_source.set_gain_mode(0, False)
 
         # Shift the station from the LO offset down to DC and decimate to MPX.
         self.channel = filter.freq_xlating_fir_filter_ccf(
-            DECIM, firdes.low_pass(1.0, SAMP_RATE, 100e3, 20e3),
-            LO_OFFSET, SAMP_RATE)
+            int(samp_rate // MPX_RATE),
+            firdes.low_pass(1.0, samp_rate, 100e3, 20e3),
+            LO_OFFSET, samp_rate)
         self.demod = analog.quadrature_demod_cf(MPX_RATE / (2 * np.pi * MAX_DEVIATION))
 
         # Pilot reference: band-pass the 19 kHz tone and lock a PLL to it. Its
@@ -500,6 +523,9 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
                 low, high = 0.0, 76.0
             self.radio_source.set_gain(
                 low + (high - low) * self.gain_percent / 100.0, 0)
+            return
+        if self.radio_type == 'bb60':
+            self.radio_source.set_gain_percent(self.gain_percent)
             return
         # SoapyHackRF silently ignores the AMP stage when it is set before the
         # stream is running, so gains are applied once the flowgraph is going.
