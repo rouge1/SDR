@@ -213,6 +213,73 @@ check("the text is still whole", p.snapshot()['radiotext'], SONG)
 send_rt(p, AD, ab=1)
 check("a real A/B change still switches message", p.snapshot()['radiotext'], AD)
 
+print("\na page that comes round again under its flag is kept, not refilled")
+# A station rotating two messages under A and B - the FM + RDS transmitter
+# does, with typed text and the song. Clearing the page on every return meant
+# refilling it every turn, and on a weak link Now Playing never arrived.
+p = RdsProtocol()
+send_rt(p, SONG)
+send_rt(p, SLOGAN + "\r", ab=1)
+padded = SONG.ljust(64)
+group_2a(p, 0, 0, padded[0:4])
+group_2a(p, 0, 1, padded[4:8])
+check("two groups back under A show the whole song again", p.snapshot()['radiotext'], SONG)
+
+print("\n... but a page whose text has changed is cleared at once")
+p = RdsProtocol()
+send_rt(p, SONG)
+send_rt(p, SLOGAN + "\r", ab=1)
+group_2a(p, 0, 0, AD[0:4])
+group_2a(p, 0, 1, AD[4:8])
+check("no song left behind the advert", p.snapshot()['radiotext'], AD[0:8].rstrip())
+p = RdsProtocol()
+send_rt(p, "1/3 Alpha beta\r")
+send_rt(p, "2/3 Gamma delta\r", ab=1)
+group_2a(p, 0, 0, "3/3 ")
+group_2a(p, 0, 1, "Omeg")
+check("paragraph page 3/3 replaces 1/3, though only one character differs first",
+      p.snapshot()['radiotext'], "3/3 Omeg")
+
+print("\ntags slice the page being sent, not one still on display")
+p = RdsProtocol()
+announce_rtplus(p)
+send_rt(p, SONG, ab=1)
+send_rt(p, SLOGAN + "\r", ab=0)
+group_2a(p, 1, 0, SONG.ljust(64)[0:4])         # the song page is back on air...
+check("the slogan is still on display", p.snapshot()['radiotext'], SLOGAN)
+send_rtplus(p, (4, 11, 9))                      # ...and its tag arrives
+check("the tag slices the song, not the slogan", p.snapshot()['artist'], "Dan + Shay")
+# And it must wait for that page's own characters to be believed. Checked
+# against the page on display instead, a noisy link stored titles like
+# "Stereo Separatimn Test 1) z" from repairs that had not been confirmed.
+p = RdsProtocol()
+announce_rtplus(p)
+send_rt(p, "Live edit typed on the Linux box\r", ab=0)
+group_2a(p, 1, 0, "98.7")                          # the new page, clean...
+group_2a(p, 1, 1, "WMZ&", corrected=('D',))        # ...then a wrong repair
+send_rtplus(p, (1, 0, 7))
+check("a tag over a repair not yet confirmed is refused", p.snapshot()['title'], None)
+group_2a(p, 1, 1, "WMZQ")
+send_rtplus(p, (1, 0, 7))
+check("and taken once that segment arrives clean", p.snapshot()['title'], "98.7WMZQ")
+
+print("\nan unconfirmed character does not outlast its page's turn")
+# A short page stops at its carriage return, so nothing sends the positions
+# past it again. Off air, a wrong repair left "#    @8" after the song line,
+# and with pages kept between turns it stayed on screen until the carriage
+# return itself arrived believed - 20 s of wrong RadioText in six minutes.
+LINE = "Rick Astley Never Gonna Give You Up STEREO\r"
+p = RdsProtocol()
+send_rt(p, LINE, upto=10)                          # all but the segment with the CR
+group_2a(p, 0, 12, " #@8", corrected=('B',))       # a repair that lands past the end
+check("it shows while nothing better has arrived", '#' in p.snapshot()['radiotext'], True)
+send_rt(p, "Live edit typed on the Linux box\r", ab=1, upto=9)
+padded = LINE.ljust(64)
+group_2a(p, 0, 0, padded[0:4])                     # the song comes round again
+group_2a(p, 0, 1, padded[4:8])
+check("but is gone when its page comes round, the believed text kept",
+      p.snapshot()['radiotext'], LINE[:40])
+
 print("\nan error the syndrome cannot see, in one character, is not a new message")
 p = RdsProtocol()
 announce_rtplus(p)
@@ -364,6 +431,58 @@ shown = on_air(enc, switching, 15)
 check("Now Playing shows the old song, nothing, or the new one",
       sorted({np for _, np in shown}), sorted({'Stereo B', '', 'Mono C'} & {np for _, np in shown}))
 check("and the new one arrives", shown[-1][1], 'Mono C')
+
+print("\na weak link: the next song's Now Playing arrives while typed text rotates")
+# While each page was cleared whenever it came round again, the song page was
+# refilled from nothing every turn, and at 88% blocks good the next song's Now
+# Playing never arrived at all - off air at 78% it did not either.
+
+
+def noisy_rotation(seed, bursts_per_block, before_s=40, after_s=120):
+    """Typed text rotating with a song over a noisy link, then Next Track.
+
+    Returns blocks good, seconds until the next song shows as Now Playing
+    (None if it never did), and any title shown that was neither song.
+    """
+    rng = random.Random(seed)
+    enc = RdsEncoder(pi=0x8617, ps='GNURADIO', pty=8)
+    enc.set_now_playing('', FILE_SONG)
+    enc.set_radiotext(TYPED)
+    proto = RdsProtocol()
+
+    def step():
+        bits = enc.next_bits()
+        for blk in range(4):
+            if rng.random() < bursts_per_block:
+                n = rng.randint(1, 10)
+                start = blk * 26 + rng.randint(0, 26 - n)
+                for i in range(n):
+                    if i in (0, n - 1) or rng.random() < 0.5:
+                        bits[start + i] ^= 1
+        proto.feed(bits)
+        return enc.bits_sent / 1187.5
+
+    t = 0.0
+    while t < before_s:
+        t = step()
+    enc.set_now_playing('', NEXT_SONG)
+    t0, arrived, wrong = t, None, set()
+    while t < t0 + after_s:
+        t = step()
+        title = proto.snapshot()['title']
+        if title == NEXT_SONG and arrived is None:
+            arrived = t - t0
+        elif title not in (None, FILE_SONG, NEXT_SONG):
+            wrong.add(title)
+    snap = proto.snapshot()
+    return 100 * snap['blocks_ok'] / snap['blocks_seen'], arrived, sorted(wrong)
+
+
+for seed in range(4):
+    good, arrived, wrong = noisy_rotation(seed, 0.35)
+    when = f"after {arrived:.0f} s" if arrived is not None else "never"
+    check(f"{good:.1f}% blocks good: next song {when}, wrong titles",
+          (arrived is not None and arrived < 60, wrong), (True, []))
 
 print()
 print("RESULT:", "PASS" if not failures else f"FAIL ({', '.join(failures)})")

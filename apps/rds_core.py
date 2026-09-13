@@ -207,9 +207,9 @@ class _TextField:
     that happens several times a minute. Characters from a segment that cannot
     be believed yet (see ``RdsProtocol._believed``) are therefore provisional:
     one fills a position nothing has written yet, and stays until a believed
-    segment replaces it. It never replaces a believed character, nor another
-    provisional one - a repair that came out right must not be overwritten by
-    the next one that came out wrong.
+    segment replaces it or its page comes round again. It never replaces a
+    believed character, nor another provisional one - a repair that came out
+    right must not be overwritten by the next one that came out wrong.
     """
 
     def __init__(self, size):
@@ -235,6 +235,20 @@ class _TextField:
     def clear(self):
         self.committed = [' '] * self.size
         self.written = set()
+        self.provisional = set()
+
+    def drop_provisional(self):
+        """Forget every character no believed segment has confirmed.
+
+        Called when a page comes round again under its flag. A short page stops
+        at its carriage return, so a wrong repair that landed past it is never
+        overwritten: with the page kept from turn to turn, off air that put
+        "#    @8" after the song line until the carriage return itself arrived
+        believed. Believed characters stay - keeping those is why the page is
+        kept at all.
+        """
+        for pos in self.provisional:
+            self.committed[pos] = ' '
         self.provisional = set()
 
     def differs(self, pos, chars, minimum=2):
@@ -457,12 +471,19 @@ class RdsProtocol:
             trusted = self._believed(
                 ('rt', ver_b, b['B'] & 0x1F), tuple(b.get(k) for k in data),
                 corrected.intersection(('B',) + data))
-            if ab != self._rt_ab and trusted:
-                # A new message begins with this group. Clear its buffer and
-                # then write this very group into it - clearing without writing
-                # would discard the first four characters of every page.
-                buf.clear()
+            # The flag this group went out under, once it can be believed. A
+            # page is not cleared just because the flag changed: a station
+            # rotating two messages under A and B comes back to each page with
+            # the same text, and clearing it made the receiver start the page
+            # from nothing on every turn - simulated at 88% blocks good, a new
+            # song's Now Playing never arrived at all. A page whose text has
+            # really changed is still cleared, by the contradiction check below.
+            flag_changed = trusted and ab != self._rt_ab
+            if trusted:
                 self._rt_ab = ab
+            if flag_changed:
+                # Kept, but only what was believed: see drop_provisional.
+                buf.drop_provisional()
             addr = b['B'] & 0xF
             base, chars = None, None
             if not ver_b and 'C' in b and 'D' in b:
@@ -479,8 +500,14 @@ class RdsProtocol:
                 # new message overwrites the last one segment by segment and
                 # what is on display is a splice of the two: "98.7WMZQBest
                 # Country", or a car dealership in the middle of a song title.
-                # The contradiction itself is the announcement.
-                if trusted and buf.differs(base, chars):
+                # The contradiction itself is the announcement. Straight after a
+                # change of flag, one differing character is enough: the flag
+                # says a new message may be starting, as when paragraph page
+                # "3/5" follows "1/5". The page is cleared and then written
+                # with this very group - clearing without writing would lose
+                # the first four characters of every page.
+                if trusted and buf.differs(base, chars,
+                                           minimum=1 if flag_changed else 2):
                     buf.clear()
                     if self._rt_show is None or ab == self._rt_show:
                         self._rt_message += 1     # a new message on display
@@ -523,7 +550,11 @@ class RdsProtocol:
             # artist among them (NRSC-G300-C section 6.10.1).
             self._drop_item()
         self._rtplus_toggle = toggle
-        text = self.rt.text()
+        # The tags describe the page being sent, which can be a group or two
+        # ahead of the page on display: that one only switches once its flag
+        # has been believed twice.
+        page = self.rt_pages[self._rt_ab] if self._rt_ab is not None else self.rt
+        text = page.text()
         tags = (((bits >> 29) & 0x3F, (bits >> 23) & 0x3F, (bits >> 17) & 0x3F),
                 ((bits >> 11) & 0x3F, (bits >> 5) & 0x3F, bits & 0x1F))
         for ctype, start, length in tags:
@@ -538,7 +569,7 @@ class RdsProtocol:
             # text and "ntry" from the tail of the old "Country". Stations
             # repeat these groups every second or two, so skipping one costs
             # nothing and the tag lands as soon as the text beneath it is real.
-            if not self.rt.range_written(start, end):
+            if not page.range_written(start, end):
                 continue
             # Stations do ship RT+ offsets that do not match the RadioText they
             # actually sent - 99.5 tags "Injured? Attorney" two characters late,
@@ -628,8 +659,16 @@ class RdsProtocol:
         # Any recent reading can be the second witness, not only the last one:
         # off air at 93% blocks good garbage clock groups arrived twice in a
         # minute, and each displaced the real reading that came before it.
+        # And the witness must be at least a minute earlier. A group the station
+        # repeats every few seconds - a RadioText segment - has the same blocks
+        # C and D each time, so when its block B is corrected into a 4A the
+        # same way twice, the two readings are identical, and a time that has
+        # not moved at all is inside the slack. Off air at 87% blocks good that
+        # showed "2206-10-30 14:21 (UTC+9)" for 97 s. A station repeating the
+        # same minute's group is confirmed by its next minute instead.
         agrees_earlier = any(
             p_offset == offset
+            and (utc - p_utc).total_seconds() >= 60
             and abs((utc - p_utc).total_seconds() - (at - p_at)) <= 90
             for p_utc, p_offset, p_at in self._clock_readings)
         self._clock_readings = (self._clock_readings + [(utc, offset, at)])[-8:]

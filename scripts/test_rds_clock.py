@@ -175,11 +175,31 @@ check("one reading with a new offset is not enough", shown(p),
 group_4a(p, 180, 2026, 11, 1, 6, 1, -5)
 check("the second switches the clock over", shown(p), "2026-11-01 01:01 (UTC-5)")
 
+print("\nthe same reading twice confirms nothing, because garbage repeats too")
+# Off air at 87% blocks good the receiver showed "2206-10-30 14:21 (UTC+9)" for
+# 97 s. A group the station repeats every few seconds - a RadioText segment -
+# has the same blocks C and D each time, so if its block B is corrected into a
+# 4A the same way twice, the two readings are identical, and a time that has
+# not moved on at all was inside the 90 s of slack.
+p = RdsProtocol()
+group_4a(p, 0, 2206, 10, 30, 5, 21, 9, corrected=('B',))
+group_4a(p, 30, 2206, 10, 30, 5, 21, 9, corrected=('B',))
+check("an identical garbage reading does not confirm the first", shown(p), None)
+group_4a(p, 60, 2026, 9, 13, 2, 12, -4)
+group_4a(p, 120, 2026, 9, 13, 2, 13, -4)
+check("the real clock confirms a minute on", shown(p), "2026-09-12 22:13 (UTC-4)")
+group_4a(p, 150, 2206, 10, 30, 5, 21, 9, corrected=('B',))
+group_4a(p, 160, 2206, 10, 30, 5, 21, 9, corrected=('B',))
+check("and a repeated garbage pair cannot take over the running clock",
+      (shown(p), synced_ago(p)), ("2026-09-12 22:13 (UTC-4)", 40))
+
 print("\na station repeating the same minute's group")
 p = RdsProtocol()
 group_4a(p, 0.0, 2026, 9, 12, 20, 27, -4)
 group_4a(p, 0.5, 2026, 9, 12, 20, 27, -4)
-check("confirms straight away", shown(p), "2026-09-12 16:27 (UTC-4)")
+check("waits for the next minute rather than trust a repeat", shown(p), None)
+group_4a(p, 60, 2026, 9, 12, 20, 28, -4)
+check("which confirms it", shown(p), "2026-09-12 16:28 (UTC-4)")
 
 print("\na station whose clock is wrong but consistent")
 p = RdsProtocol()

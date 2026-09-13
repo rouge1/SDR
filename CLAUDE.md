@@ -202,13 +202,43 @@ Three things that are easy to get wrong and cost real time here:
   every run and with any filter delay. `_pick_tau` measures it by scoring
   candidate offsets on how many valid offset words appear. A wrong value
   produces plenty of bits at exactly the right rate and decodes *nothing*.
-- **RadioText is buffered per A/B flag, not cleared on toggle.** The flag means
-  "new message, clear what you have", but it is a single bit in block B, so a
-  corrupted one would wipe a good message. `RdsProtocol` keeps a buffer for each
-  flag value: a bad bit writes into the page nobody is displaying, and a genuine
-  page change clears its target buffer *and writes the same group into it*.
-  Clearing without writing loses the first four characters of every page - which
-  is exactly what paged paragraphs exposed.
+- **RadioText is buffered per A/B flag, and a page is kept when its flag comes
+  back.** The flag means "new message", but it is a single bit in block B, so a
+  corrupted one would wipe a good message; `RdsProtocol` keeps a buffer for
+  each flag value, and a bad bit writes into the page nobody is displaying. The
+  receiver once also cleared a page whenever its flag returned. A station
+  rotating two messages under A and B - the FM + RDS transmitter does, with
+  typed text and the song - then made it start every page from nothing on
+  every turn: simulated at 88% blocks good, a new song's Now Playing never
+  arrived in two minutes, and off air at 78% it did not either. Now a page is
+  cleared only when a believed segment contradicts its text; straight after a
+  change of flag one differing character is enough, so paragraph page "3/5"
+  still replaces "1/5" at once. In the same simulation the next song now
+  arrives in 24-37 s at 88% and 48-99 s at 84%, never with a wrong title, and
+  `scripts/test_rds_radiotext.py` requires it within a minute at 88%. **Verified
+  off air** at 87-89% blocks good, the transmitter window on the VSG60 against
+  the receiver window on the Windows HackRF, typed text rotating with the song:
+  RadioText exactly right on screen 85% of the time (was 4%, wrong 81%), and
+  after Next Track the new song's Now Playing arrived in 62 s (was never), with
+  no wrong title. A kept page keeps only what was believed, though: when its
+  flag comes back, characters no believed segment has confirmed are dropped
+  (`drop_provisional`). Without that a wrong repair landing past the end of a
+  short page was never overwritten - the transmitter stops each page at its
+  carriage return, so nothing sends those positions again - and off air it left
+  "#    @8" after the song line for 20 s. Simulated, dropping them cut wrong
+  RadioText from 20.4% of the time to 12.9% at 84% blocks good and from 5.7%
+  to 4.4% at 88%, at the price of showing gaps instead (3.1% to 15.0% at 84%):
+  what is on screen is incomplete rather than wrong, and Now Playing arrives no
+  later. Off air again at 89-92% the tail was gone: RadioText wrong 1.5% of the
+  time, and that only the song line still up a turn late rather than anything
+  garbled, with the next song's Now Playing 37 s after Next Track. A cleared
+  page is written with the same group that cleared it - clearing without
+  writing loses the first four characters of every page, which is exactly what
+  paged paragraphs once exposed. RT+ tags slice the page being sent, which can
+  be a group or two ahead of the page on display, and must find every tagged
+  character believed on that same page: checked against the page on display
+  instead, the simulation stored titles like "Stereo Separatimn Test 1) z"
+  from repairs never confirmed.
 - **A new message is also detected from its content, because many stations
   never toggle the flag.** 98.7 rotates a slogan, the song and an advert through
   RadioText with A/B stuck at 0, so nothing ever cleared the buffer: each message
@@ -224,9 +254,10 @@ Three things that are easy to get wrong and cost real time here:
   enough, because a bad block usually changes both of the characters it
   carries. Characters from a block that needed correcting are therefore
   provisional: one fills a position nothing has written yet and stays until a
-  clean block replaces it. It never overwrites a clean character - nor another
-  provisional one, since a repair that came out right would otherwise be
-  replaced by the next that came out wrong - never counts as a contradiction,
+  clean block replaces it or its page comes round again. It never overwrites a
+  clean character - nor another provisional one, since a repair that came out
+  right would otherwise be replaced by the next that came out wrong - never
+  counts as a contradiction,
   and a corrected A/B flag cannot clear a buffer. Measured with encoded error
   bursts at 96.6% blocks good, the text had been wrong on screen nearly two
   thirds of the time and short or blank a fifth of it; afterwards both were
@@ -280,7 +311,17 @@ Three things that are easy to get wrong and cost real time here:
   agreeing groups. The second witness may be any of the last few readings,
   not only the latest: off air at 93% blocks good, garbage clock groups made
   from repaired B blocks arrived twice in one minute, and remembering a single
-  reading kept the clock off the screen for five minutes. Repaired groups are
+  reading kept the clock off the screen for five minutes. Two identical
+  readings cannot confirm each other, though: a group the station repeats every
+  few seconds - a RadioText segment - carries the same blocks C and D each
+  time, so a block B corrected into a 4A the same way twice gives the same
+  time, and a time that has not moved at all sat well inside the 90 s of slack.
+  Off air at 87% blocks good that put "2206-10-30 14:21 (UTC+9)" on screen for
+  97 s, and the same pair could have displaced a running real clock. The second
+  witness must be at least a minute earlier, so a station repeating one
+  minute's group is confirmed by its next minute instead. That costs nothing
+  off air: the clock still appeared 155 s after tuning in, as it did before the
+  rule, and was right at every minute after. Repaired groups are
   still used, because the real ones are repaired too - the 19:53 and 19:54
   groups in that run both had block B repaired and carried the right time.
   A station whose clock is wrong but consistent still shows.
