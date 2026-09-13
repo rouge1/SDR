@@ -41,6 +41,18 @@ from apps.ntsc_encode import (
 SYNC_DISCRIMINANT = (EQUALIZING_WIDTH + SYNC_WIDTH) / 2
 # Stay at sync level longer than this and it is a vertical serration.
 VERTICAL_RUN = 10e-6
+
+# Where to slice sync from vision, as a fraction of the way from sync tip to
+# blanking. **Not the half-way point**, which is -20 IRE - and -20 IRE is
+# exactly how far down a *legal* picture is allowed to swing, so saturated
+# colour sat on that floor put false sync pulses in the middle of the
+# active line. Since lines are numbered by counting pulses, one spurious
+# pulse shifts every line after it and the picture comes out sheared. 0.35
+# of the way up is -26 IRE, which leaves six IRE of daylight.
+SYNC_SLICE = 0.35
+# No sync pulse of any kind is shorter than an equalizing pulse's 2.3 us, so
+# anything much shorter is ringing or noise crossing the slice level.
+SYNC_MIN_WIDTH = 1.5e-6
 # Annex A equation 10 again, as the decoder needs it: the encoder wrote
 # 0.925*Y + 7.5 for luma and 0.925*100*(b-y, r-y) for chroma, in IRE.
 CHROMA_GAIN = SETUP_GAIN * IRE_WHITE            # 92.5
@@ -77,7 +89,7 @@ class NtscDecoder:
 
     def find_pulses(self, x, sync, blank):
         """Start index and width in seconds of every excursion to sync level."""
-        thresh = sync + 0.5 * (blank - sync)
+        thresh = sync + SYNC_SLICE * (blank - sync)
         low = x < thresh
         edges = np.diff(low.astype(np.int8))
         starts = np.flatnonzero(edges == 1) + 1
@@ -86,7 +98,11 @@ class NtscDecoder:
             ends = ends[1:]
         n = min(starts.size, ends.size)
         starts, ends = starts[:n], ends[:n]
-        return starts, (ends - starts) / self.sample_rate
+        widths = (ends - starts) / self.sample_rate
+        # Drop anything too brief to be a sync pulse. Lines are numbered by
+        # counting these, so a single spurious one shears everything after.
+        keep = widths >= SYNC_MIN_WIDTH
+        return starts[keep], widths[keep]
 
     def find_fields(self, starts, widths):
         """Index of the first horizontal sync after each vertical block.

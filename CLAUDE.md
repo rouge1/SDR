@@ -179,7 +179,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `ppmookAudioXmitter.py` | PPM-OOK live audio transmitter | ✅ |
 | `subcarrierRecordedAudio.py` | Subcarrier with recorded audio | ✅ |
 | `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
-| `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ⏳ |
+| `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ✅ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
 | `atscReceiver.py` | ATSC digital TV receiver - decodes the transport stream | ✅ |
 | `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
@@ -736,11 +736,51 @@ they can be checked with no radio at all:
 
 ```sh
 python scripts/test_ntsc_loopback.py       # encoder -> decoder, no radio
+python scripts/test_ntsc_transmit.py       # ... and through the modulator
+python scripts/test_ntsc_transmit.py --video clip.mp4
 ```
 
 All seven colour bars return with a worst error under 0.01, and a full-scale
 grey ramp within 0.008. `docs/S170m-2004.pdf` holds the timing tables (2 and
 3), the levels (table 1) and the encoding equations (annex A).
+
+- **Every sample of a frame is computed at once.** The encoder used to walk
+  the 525 lines in a Python loop, picking each line's samples out with
+  `line_in_frame == L` - a comparison across the whole frame, 525 times over,
+  making the work O(samples x lines). At 10 MS/s that ran at **0.14x real
+  time**, so it could never have fed a radio live however fast the machine.
+  Whole-frame array operations, computing sin/cos only where the subcarrier
+  is actually used, and restricting the vertical-interval arithmetic to the
+  eighteen lines it applies to took it to **1.66x** in colour and 2.89x in
+  monochrome - twelve times quicker, and bit-for-bit identical output at
+  every sample rate tried.
+- **Saturated colour has to be legalised or it reaches down to sync level.**
+  Chroma adds to luma, so 100% saturated bars swing from 131 IRE down past
+  -20, and a receiver then cannot tell picture from sync at all: the decode
+  comes back sheared into diagonal noise. Broadcasters run a legalizer for
+  exactly this; `NtscEncoder(legalize=True)` is one, clamping active video
+  to -20..+120 IRE. It is a no-op on 75% bars, which is why 75% is the
+  standard test signal. Real 1950s material peaks around 0.94-1.01 against
+  the 1.143 ceiling and never touches it.
+
+### NTSC video sources
+
+`apps/ntsc_source.py` turns a *stream* of frames into a continuous signal,
+and settles what video format this project takes: **whatever ffmpeg reads**.
+There is no bespoke format. A video file is decoded by an ffmpeg subprocess,
+scaled to 640x480 and letterboxed if it is not 4:3, looping forever; there
+is also a built-in colour-bar pattern so the app works with an empty media
+folder.
+
+- **Frames are encoded on their own thread.** Encoding a frame takes ~20 ms
+  and a work() call at 10 MS/s covers well under a millisecond, so encoding
+  inside work() would stall the radio for 20 ms in every 33 and underrun it.
+  A three-deep queue between the two keeps the output continuous and paces
+  the encoder for free - it fills, the producer blocks, and frames are
+  pulled at exactly the rate the radio consumes them.
+- **The `.dat` captures do not go through it.** They are already composite,
+  at 18 MS/s, so they are played by a file source and resampled 5/9 - see
+  `dat_resample_ratio`.
 
 - **Generate every sample from absolute time, never from a count per line.** A
   line is 63.5556 us, which is 635.56 samples at 10 MS/s and not a whole
@@ -823,6 +863,69 @@ every time Settings closes:
   receiver is still showing it next time.
 - **The single-face path is the same code.** `create_app_button` is kept as
   a one-face call into `create_tile`, so nothing else had to change.
+
+### NTSC Transmitter
+
+`ntscAnalogVideoRecorded.py` puts composite video on a 6 MHz television
+channel as System M: vestigial-sideband AM for the picture, an FM aural
+carrier 4.5 MHz above the visual one. `cf` is the channel *centre*, as in
+the ATSC apps, which puts the visual carrier 1.25 MHz above the lower edge.
+
+**The RF architecture was already right and needed nothing.** Four other
+things were wrong, and each of them alone stopped it working:
+
+- **It could only send single still frames.** The dialog offered `.dat`
+  files and nothing else, and those are one frame each. It takes any video
+  file ffmpeg reads now, via `apps/ntsc_source.py`.
+- **It played 18 MS/s captures at 10.** The `*-18M0FS.dat` files are
+  composite sampled at 18 MS/s. Played out untouched at the flowgraph's
+  10 MS/s, every timing in them is wrong by 1.8: a line lasts 114.4 us
+  instead of 63.5556, which is a line rate of **8741 Hz where NTSC needs
+  15734.266**. No television could have locked to what this transmitted.
+  They are resampled 5/9 now.
+- **The polarity defaulted to the wrong one.** US television is negative
+  modulation - sync at peak carrier. The flowgraph's two options were
+  labelled "Normal" and "Inverted", which says nothing about which a TV
+  here can show, and the dialog's unticked default selected *positive*. It
+  also drove the carrier to **1.79** against a radio that clips at 1.0.
+  The options now say "Negative (US)" and "Positive", and negative is the
+  default.
+- **The modulation depth was approximate.** It was `1 - 0.9*v` with nothing
+  bounding it. `NtscModulator` maps composite onto the carrier properly:
+  sync 100%, blanking 75%, peak white 12.5%, per FCC 73.682 - and landing
+  blanking on exactly 75% by itself is the check that the composite scale
+  and the RF scale agree. A rail stops the most saturated colour switching
+  the carrier off. The aural carrier came down from 0.8 to 0.316, which is
+  the 10% of peak visual *power* the FCC asks for; it had been 8 dB too
+  loud, stealing headroom from the picture.
+
+Two things worth knowing before changing it:
+
+- **The two-stage video mixer is not a redundant one.** Video is mixed to
+  -1.725 MHz, filtered, then moved the last -25 kHz. The filter does its
+  work in the first frame: a low pass at 2.475 MHz there passes 0.75 MHz
+  below the carrier and 4.2 MHz above, which is exactly the vestigial
+  sideband and the full video bandwidth. Mixing straight to -1.75 would put
+  both edges 25 kHz wrong.
+- **Ringing on sync is worse in negative modulation, and that is normal.**
+  The sync pulse is the peak of the carrier there - the fastest, largest
+  excursion in the signal - so the vestigial filter overshoots about 20% on
+  it. What matters is the level reaching the radio, which after scaling the
+  sum of vision and sound is 0.77 of full scale.
+
+`scripts/test_ntsc_transmit.py` puts a picture through the modulator and
+detects it the way a television does. **Include the Nyquist slope when you
+do that**: a receiver's IF is at half response on the visual carrier, rising
+to full 0.75 MHz above and falling to nothing 0.75 MHz below. Below that,
+both sidebands survive and add; above it only one does. Rectifying without
+the slope gives luma at twice chroma's strength - whites too bright, colours
+washed toward grey - which reads as a broken modulator and is not one. It
+took the measured colour error from 0.43 to 0.13.
+
+**Verified with real material**: 1950s Prelinger advertising and the Blender
+open movies through the whole chain and back, 0.078-0.088 mean error, the
+black-and-white spots clean and the colour ones looking convincingly like
+period colour television.
 
 ### Testing the launcher end to end
 

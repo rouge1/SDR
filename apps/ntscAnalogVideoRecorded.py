@@ -44,9 +44,136 @@ from PyQt5 import Qt, QtCore #type: ignore
 from PyQt5.QtCore import pyqtSlot #type: ignore
 import sip #type: ignore
 
-# Local imports 
+# Local imports
+from fractions import Fraction
+
+from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
+from apps.ntsc_source import (TestPattern, VideoFile, dat_resample_ratio,
+                              have_ffmpeg, ntsc_source, video_files)
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
+                        FrequencyChooser)
+
+# The channel this bench uses, as a default only.
+DEFAULT_CHANNEL = 24            # 533 MHz
+
+# --- System M modulation ----------------------------------------------------
+#
+# US television is *negative* modulation: the sync tip is peak carrier and
+# white is nearly none of it. FCC 73.682 puts sync at 100%, blanking at 75%
+# and peak white at 12.5%.
+#
+# The composite signal arrives with sync at 0.0 and white at 1.0, so
+# carrier = 1 - 0.875*v maps the three straight onto each other - and lands
+# blanking on 0.75 by itself, which is the check that the two scales agree.
+CARRIER_AT_SYNC = 1.0
+CARRIER_AT_WHITE = 0.125
+#: Never let the carrier reach zero. Legal composite peaks at 120 IRE, which
+#: maps to exactly zero, and a transmitter that switches its carrier off has
+#: nothing for a receiver's sync or AGC to hold on to.
+CARRIER_FLOOR = 0.02
+
+#: Aural carrier amplitude against peak visual. FCC 73.682 sets aural power
+#: at 10% of peak visual power, which is this in voltage. It was 0.8 here -
+#: 8 dB too much sound, which steals headroom from the picture.
+AURAL_AMPLITUDE = 0.316
+#: Peak deviation of the aural carrier, and the visual/aural spacing.
+AURAL_DEVIATION = 25e3
+#: Leave headroom: radios take 1.0 as full scale and clip above it.
+BASEBAND_SCALE = 0.85
+
+# --- where the carriers sit -------------------------------------------------
+#
+# All relative to the channel centre, which is what ``cf`` means here and in
+# the ATSC apps. A 6 MHz channel puts the visual carrier 1.25 MHz above its
+# lower edge - so 1.75 MHz below centre - and the aural carrier exactly
+# 4.5 MHz above that.
+VISUAL_CARRIER = -1.75e6
+AURAL_CARRIER = 2.75e6
+AURAL_SPACING = AURAL_CARRIER - VISUAL_CARRIER          # 4.5 MHz exactly
+
+# Video is mixed onto its carrier in two steps with the vestigial-sideband
+# filter between them, which looks like a pointless extra mixer and is not.
+# The filter is a low pass at 2.475 MHz, and it does its work in the frame
+# where the carrier sits at -1.725: it then passes 0.75 MHz below the
+# carrier and 4.2 MHz above, which is the vestigial sideband and the full
+# video bandwidth, exactly as System M specifies. Mixing straight to -1.75
+# first would put both edges 25 kHz wrong.
+VSB_MIX = -1.725e6
+VSB_TRIM = VISUAL_CARRIER - VSB_MIX                     # the last -25 kHz
+VESTIGIAL_BW = 2.475e6
+VESTIGIAL_TRANSITION = 300e3
+
+#: The whole signal is shifted down by this before the radio, so the
+#: radio's own LO leakage at DC lands outside the channel instead of on top
+#: of the colour subcarrier. The radio is then tuned this far above ``cf``.
+LO_OFFSET = 6e6
+
+
+class NtscModulator(gr.hier_block2):
+    """Composite video in, vestigial-sideband RF baseband out.
+
+    Kept as a block of its own so it can be driven with no radio attached -
+    ``scripts/test_ntsc_transmit.py`` runs a picture through it and
+    demodulates the result - and so the carrier arithmetic lives in one
+    place rather than scattered through a flowgraph.
+    """
+
+    def __init__(self, sample_rate, polarity='negative'):
+        gr.hier_block2.__init__(
+            self, "ntsc_modulator",
+            gr.io_signature(1, 1, gr.sizeof_float),
+            gr.io_signature(1, 1, gr.sizeof_gr_complex))
+        self.sample_rate = float(sample_rate)
+
+        span = CARRIER_AT_SYNC - CARRIER_AT_WHITE
+        negative = polarity != 'positive'
+        # Composite (sync 0, white 1) -> carrier amplitude. Negative
+        # modulation is a slope of -0.875 about an offset of 1.0, which puts
+        # sync at 100%, blanking at 75% and white at 12.5% all at once - and
+        # landing blanking on 75% by itself is the check that the composite
+        # scale and the RF scale agree.
+        self.slope = blocks.multiply_const_ff(-span if negative else span)
+        self.offset = blocks.add_const_ff(
+            CARRIER_AT_SYNC if negative else CARRIER_AT_WHITE)
+        # Legal composite reaches 120 IRE, which maps to exactly zero
+        # carrier. The rail stops the most saturated colour switching the
+        # transmitter off, and catches any source that was not legalised.
+        self.rail = analog.rail_ff(CARRIER_FLOOR, CARRIER_AT_SYNC)
+        self.to_complex = blocks.float_to_complex(1)
+        self.zero = blocks.null_source(gr.sizeof_float*1)
+
+        self.mix = blocks.multiply_vcc(1)
+        self.carrier = analog.sig_source_c(self.sample_rate, analog.GR_COS_WAVE,
+                                           VSB_MIX, 1, 0, 0)
+        self.vsb = filter.fft_filter_ccc(
+            1, firdes.low_pass(1, self.sample_rate, VESTIGIAL_BW,
+                               VESTIGIAL_TRANSITION, window.WIN_HAMMING, 6.76), 1)
+        self.trim_mix = blocks.multiply_vcc(1)
+        self.trim = analog.sig_source_c(self.sample_rate, analog.GR_COS_WAVE,
+                                        VSB_TRIM, 1, 0, 0)
+
+        self.connect(self, self.slope, self.offset, self.rail,
+                     (self.to_complex, 0))
+        self.connect(self.zero, (self.to_complex, 1))
+        self.connect(self.to_complex, (self.mix, 0))
+        self.connect(self.carrier, (self.mix, 1))
+        self.connect(self.mix, self.vsb, (self.trim_mix, 0))
+        self.connect(self.trim, (self.trim_mix, 1))
+        self.connect(self.trim_mix, self)
+
+    def set_polarity(self, polarity):
+        """Both halves of the mapping move together.
+
+        Changing only the slope - which the app used to do - leaves the
+        carrier centred on the wrong level and drives it far past full
+        scale. That is how positive modulation reached 1.79 against a radio
+        that clips at 1.0.
+        """
+        span = CARRIER_AT_SYNC - CARRIER_AT_WHITE
+        negative = polarity != 'positive'
+        self.slope.set_k(-span if negative else span)
+        self.offset.set_k(CARRIER_AT_SYNC if negative else CARRIER_AT_WHITE)
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -114,17 +241,14 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
-        self.cf_layout = Qt.QHBoxLayout()
-        self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.cf_slider.setMinimum(50)
-        self.cf_slider.setMaximum(2200)
-        self.cf_slider.setValue(300)
-        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
-        self.cf_slider.valueChanged.connect(
-            lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
-        self.cf_layout.addWidget(self.cf_label)
-        self.cf_layout.addWidget(self.cf_slider)
-        self.layout.addLayout(self.cf_layout)
+        # A television channel, a typed frequency or a slider, all in step -
+        # the same control the ATSC apps use. This was a bare slider in whole
+        # megahertz, which could not reach most frequencies at all.
+        self.cf_chooser = FrequencyChooser(
+            minimum=50.0, maximum=2200.0,
+            value=channel_center_mhz(DEFAULT_CHANNEL),
+            channels=tv_channel_items())
+        self.layout.addWidget(self.cf_chooser)
 
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
@@ -140,56 +264,59 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_video_selector(self):
+        """Three kinds of source, in one list.
+
+        This used to offer only ``.dat`` files, which are single still
+        frames, so the app could never transmit moving pictures at all. Now
+        any video file ffmpeg can read is offered too, and there is a
+        built-in pattern so it works with an empty media folder.
+        """
         self.video_combo = Qt.QComboBox()
-        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
-        # Read settings from window_settings.json
         settings = read_settings()
         self.media_dir = settings.get('media_directory', '')
-        
-        try:
-            if not self.media_dir or not os.path.exists(self.media_dir):
-                raise FileNotFoundError("Error - Setup Media directory in Settings")
-                
-            # Search for .dat files in media directory
-            self.video_files = []
-            for file in os.listdir(self.media_dir):
-                if file.endswith('.dat'):
-                    full_path = os.path.join(self.media_dir, file)
-                    display_name = os.path.splitext(file)[0].replace('-', ' ')
-                    self.video_files.append((display_name, file))
-                    
-            if not self.video_files:
-                raise FileNotFoundError("No video files found in media directory")
-                
-            # Sort video files alphabetically by display name
-            self.video_files.sort()
-            
-            for display_name, filename in self.video_files:
-                full_path = os.path.join(self.media_dir, filename)
-                self.video_combo.addItem(display_name, full_path)
-                
-            # Only enable OK button if we have both IP addresses and video files
-            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
-            ok_button.setGraphicsEffect(None)
-                
-        except Exception as e:
-            self.video_combo.addItem(str(e))
-            self.video_combo.setEnabled(False)
-            # Disable OK button and add opacity effect
-            ok_button.setEnabled(False)
-            opacity_effect = Qt.QGraphicsOpacityEffect()
-            opacity_effect.setOpacity(0.30)
-            ok_button.setGraphicsEffect(opacity_effect)
-                
+
+        # Always first, and always available.
+        self.video_combo.addItem("Colour bars (built in)", ('pattern', None))
+
+        if have_ffmpeg():
+            for display, path in video_files(self.media_dir):
+                self.video_combo.addItem(f"{display}  (video)", ('video', path))
+        else:
+            self.video_combo.addItem("Video files need ffmpeg, which is not "
+                                     "installed", ('pattern', None))
+
+        # The instructor's captures: one composite frame each, at 18 MS/s.
+        if self.media_dir and os.path.isdir(self.media_dir):
+            for name in sorted(os.listdir(self.media_dir)):
+                if name.endswith('.dat'):
+                    display = os.path.splitext(name)[0].replace('-', ' ')
+                    self.video_combo.addItem(
+                        f"{display}  (still)",
+                        ('still', os.path.join(self.media_dir, name)))
+
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')
+                             or bool(self.ipList))
+        ok_button.setGraphicsEffect(None)
+
         self.layout.addWidget(Qt.QLabel("Video Source:"))
         self.layout.addWidget(self.video_combo)
 
     def create_video_invert_control(self):
-        # Video Inversion control
-        self.video_invert = Qt.QCheckBox("Invert Video")
-        self.video_invert.setChecked(False)  # Default to normal
-        self.layout.addWidget(self.video_invert)
+        """Modulation polarity, which was previously wrong by default.
+
+        US television is negative modulation - sync is peak carrier. The
+        old checkbox was unticked by default and that selected *positive*,
+        which is System L (France) and nothing a TV here can show; it also
+        drove the carrier to 1.79 against a radio that clips at 1.0.
+        """
+        self.layout.addWidget(Qt.QLabel("Modulation Polarity:"))
+        self.polarity_combo = Qt.QComboBox()
+        self.polarity_combo.addItem(
+            "Negative - sync at peak carrier (US, System M)", 'negative')
+        self.polarity_combo.addItem(
+            "Positive - inverted (not a US standard)", 'positive')
+        self.layout.addWidget(self.polarity_combo)
 
     def create_audio_controls(self):
         self.audio_combo = Qt.QComboBox()
@@ -222,15 +349,24 @@ class ConfigDialog(Qt.QDialog):
                     config = json.load(f)
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
-                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.cf_chooser.setValue(config.get(
+                    'center_freq', channel_center_mhz(DEFAULT_CHANNEL)))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
-                video_index = config.get('video_index', 0)
-                if video_index < self.video_combo.count():
-                    self.video_combo.setCurrentIndex(video_index)
+                # Match the saved source by path, not by index: the list
+                # changes shape as media comes and goes.
+                saved = config.get('video_source')
+                if saved:
+                    for i in range(self.video_combo.count()):
+                        data = self.video_combo.itemData(i)
+                        if data and data[1] == saved:
+                            self.video_combo.setCurrentIndex(i)
+                            break
                 audio_index = config.get('audio_index', 0)
                 if audio_index < self.audio_combo.count():
                     self.audio_combo.setCurrentIndex(audio_index)
-                self.video_invert.setChecked(config.get('video_invert', False))
+                index = self.polarity_combo.findData(
+                    config.get('polarity', 'negative'))
+                self.polarity_combo.setCurrentIndex(max(index, 0))
             except:
                 # If loading fails, keep default values
                 pass
@@ -239,21 +375,18 @@ class ConfigDialog(Qt.QDialog):
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
-        # Get the filename (not full path) of selected video
-        current_index = self.video_combo.currentIndex()
-        video_filename = None
-        if current_index >= 0 and current_index < len(self.video_files):
-            _, video_filename = self.video_files[current_index]
-        
+        kind, path = self.video_combo.currentData() or ('pattern', None)
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
-            'center_freq': self.cf_slider.value(),
+            'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
-            'video_index': self.video_combo.currentIndex(),
+            'video_kind': kind,
+            'video_source': path,
             'audio_index': self.audio_combo.currentIndex(),
-            'video_invert': self.video_invert.isChecked()
+            'polarity': self.polarity_combo.currentData(),
         }
-        
+
+        os.makedirs(self.config_dir, exist_ok=True)
         with open(self.config_file, 'w') as f:
             json.dump(config, f, indent=4)
 
@@ -269,19 +402,18 @@ class ConfigDialog(Qt.QDialog):
             ipNum = 0
             ipXmitAddr = ''
         
-        # Get full path from current media directory
-        current_video_path = self.video_combo.currentData()
-        
+        kind, path = self.video_combo.currentData() or ('pattern', None)
         return {
             'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
-            'cf': self.cf_slider.value(),
+            'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
-            'videoFileName': current_video_path,
+            'videoKind': kind,
+            'videoFileName': path,
             'audioFileName': self.audio_paths[self.audio_combo.currentIndex()],
-            'videoInvert': -1 if self.video_invert.isChecked() else 1  # Modified to match expected values
+            'polarity': self.polarity_combo.currentData(),
         }
 
 class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
@@ -333,8 +465,10 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         cf = values['cf']
         pwr = values['pwr']
         videoFileName = values['videoFileName']
+        videoKind = values.get('videoKind', 'pattern')
         audioFileName = values['audioFileName']
-        videoInvert = values['videoInvert']
+        polarity = values.get('polarity', 'negative')
+        videoInvert = -1 if polarity == 'negative' else 1
 
         ##################################################
         # Variables
@@ -342,6 +476,8 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.rfPwrDefault = rfPwrDefault = pwr
         self.cfDefault = cfDefault = cf
         self.videoInvert = videoInvert
+        self.polarity = polarity
+        self.videoKind = videoKind
         self.videoFileName = videoFileName
         self.usrpNum = usrpNum = ipNum
         self.signalType = signalType = 'NTSC Video - Recorded'
@@ -357,8 +493,10 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         ##################################################
         # Create the options list
         self._videoInvert_options = [-1, 1]
-        # Create the labels list
-        self._videoInvert_labels = ['Normal', 'Inverted']
+        # Named for what they are. These used to read 'Normal' and
+        # 'Inverted', which said nothing about which one a television here
+        # can actually show - and the dialog's default picked the other one.
+        self._videoInvert_labels = ['Negative (US)', 'Positive']
         # Create the combo box
         # Create the radio buttons
         self._videoInvert_group_box = Qt.QGroupBox("Video Inversion" + ": ")
@@ -458,9 +596,15 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
                 decimation=1,
                 taps=[],
                 fractional_bw=0)
+        # Audio to the flowgraph rate. This was a fixed 625/3, which is right
+        # only for a 48 kHz file - every wav in the media folder happens to
+        # be one, but a 44.1 kHz file would have played 8.8% fast and taken
+        # the aural deviation with it. Worked out from the file instead.
+        audio_ratio = Fraction(int(samp_rate),
+                               int(self.audio_rate(audioFileName))).limit_denominator(10000)
         self.rational_resampler_xxx_1 = filter.rational_resampler_fff(
-                interpolation=625,
-                decimation=3,
+                interpolation=audio_ratio.numerator,
+                decimation=audio_ratio.denominator,
                 taps=[],
                 fractional_bw=0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_fff(
@@ -614,56 +758,78 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(7, 10):
             self.top_grid_layout.setColumnStretch(c, 1)
-        self.filter_fft_low_pass_filter_0 = filter.fft_filter_ccc(1, firdes.low_pass(1, samp_rate, 2.475e6, 300e3, window.WIN_HAMMING, 6.76), 1)
+        # The vestigial-sideband filter, the video mixers and the composite
+        # scaling all moved into NtscModulator; what is left here is the
+        # aural carrier, the sum, and the shift down to the radio.
         self.blocks_wavfile_source_0 = blocks.wavfile_source(audioFileName, True)
-        self.blocks_null_source_0 = blocks.null_source(gr.sizeof_float*1)
         self.blocks_multiply_xx_1 = blocks.multiply_vcc(1)
         self.blocks_multiply_xx_0_0_0 = blocks.multiply_vcc(1)
-        self.blocks_multiply_xx_0_0 = blocks.multiply_vcc(1)
-        self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)
-        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(0.95)
-        self.blocks_multiply_const_vxx_1 = blocks.multiply_const_cc(0.25)
-        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff(videoInvert*0.9)
-        self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
-        self.blocks_file_source_0 = blocks.file_source(gr.sizeof_float*1, videoFileName, True, 0, 0)
-        self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
+        # Everything that follows sums to at most visual peak plus aural, so
+        # scale once, here, rather than with the two unexplained constants
+        # (0.25 then 0.95) that used to sit in the chain.
+        self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(
+            BASEBAND_SCALE / (CARRIER_AT_SYNC + AURAL_AMPLITUDE))
+        self._build_video_source(samp_rate, videoKind, videoFileName)
+        self.modulator = NtscModulator(samp_rate, polarity)
         self.blocks_add_xx_0 = blocks.add_vcc(1)
-        self.blocks_add_const_vxx_0 = blocks.add_const_ff(1)
-        self.analog_sig_source_x_1 = analog.sig_source_c(samp_rate*2, analog.GR_COS_WAVE, -6e6, 1, 0, 0)
-        self.analog_sig_source_x_0_0_0 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, 2.75e6, 0.8, 0, 0)
-        self.analog_sig_source_x_0_0 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, -25e3, 1, 0, 0)
-        self.analog_sig_source_x_0 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, -1.725e6, 1, 0, 0)
-        self.analog_frequency_modulator_fc_0 = analog.frequency_modulator_fc(2*pi*25e3/samp_rate)
+        self.analog_sig_source_x_1 = analog.sig_source_c(samp_rate*2, analog.GR_COS_WAVE, -LO_OFFSET, 1, 0, 0)
+        self.analog_sig_source_x_0_0_0 = analog.sig_source_c(samp_rate, analog.GR_COS_WAVE, AURAL_CARRIER, AURAL_AMPLITUDE, 0, 0)
+        self.analog_frequency_modulator_fc_0 = analog.frequency_modulator_fc(2*pi*AURAL_DEVIATION/samp_rate)
 
 
         ##################################################
         # Connections
         ##################################################
         self.connect((self.analog_frequency_modulator_fc_0, 0), (self.blocks_multiply_xx_0_0_0, 0))
-        self.connect((self.analog_sig_source_x_0, 0), (self.blocks_multiply_xx_0, 1))
-        self.connect((self.analog_sig_source_x_0_0, 0), (self.blocks_multiply_xx_0_0, 1))
         self.connect((self.analog_sig_source_x_0_0_0, 0), (self.blocks_multiply_xx_0_0_0, 1))
         self.connect((self.analog_sig_source_x_1, 0), (self.blocks_multiply_xx_1, 1))
-        self.connect((self.blocks_add_const_vxx_0, 0), (self.blocks_float_to_complex_0, 0))
-        self.connect((self.blocks_add_xx_0, 0), (self.blocks_multiply_const_vxx_1, 0))
-        self.connect((self.blocks_file_source_0, 0), (self.blocks_multiply_const_vxx_0, 0))
-        self.connect((self.blocks_float_to_complex_0, 0), (self.blocks_multiply_xx_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.blocks_add_const_vxx_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_0, 0), (self.rational_resampler_xxx_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.blocks_multiply_const_vxx_2, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.qtgui_const_sink_x_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_1, 0), (self.qtgui_freq_sink_x_0, 0))
-        self.connect((self.blocks_multiply_const_vxx_2, 0), (self.rational_resampler_xxx_2, 0))
-        self.connect((self.blocks_multiply_xx_0, 0), (self.filter_fft_low_pass_filter_0, 0))
-        self.connect((self.blocks_multiply_xx_0_0, 0), (self.blocks_add_xx_0, 0))
+        self.connect((self.video_source, 0), (self.modulator, 0))
+        self.connect((self.modulator, 0), (self.blocks_add_xx_0, 0))
         self.connect((self.blocks_multiply_xx_0_0_0, 0), (self.blocks_add_xx_0, 1))
+        self.connect((self.video_source, 0), (self.rational_resampler_xxx_0, 0))
+        self.connect((self.blocks_add_xx_0, 0), (self.blocks_multiply_const_vxx_2, 0))
+        self.connect((self.blocks_add_xx_0, 0), (self.qtgui_const_sink_x_0, 0))
+        self.connect((self.blocks_add_xx_0, 0), (self.qtgui_freq_sink_x_0, 0))
+        self.connect((self.blocks_multiply_const_vxx_2, 0), (self.rational_resampler_xxx_2, 0))
         self.connect((self.blocks_multiply_xx_1, 0), (self.radio_sink, 0))
-        self.connect((self.blocks_null_source_0, 0), (self.blocks_float_to_complex_0, 1))
         self.connect((self.blocks_wavfile_source_0, 0), (self.rational_resampler_xxx_1, 0))
-        self.connect((self.filter_fft_low_pass_filter_0, 0), (self.blocks_multiply_xx_0_0, 0))
         self.connect((self.rational_resampler_xxx_0, 0), (self.qtgui_time_sink_x_0, 0))
         self.connect((self.rational_resampler_xxx_1, 0), (self.analog_frequency_modulator_fc_0, 0))
         self.connect((self.rational_resampler_xxx_2, 0), (self.blocks_multiply_xx_1, 0))
+
+    def _build_video_source(self, samp_rate, kind, path):
+        """Whichever kind of source was chosen, ending in composite floats.
+
+        Two quite different paths meet here. A video file or the built-in
+        pattern is *encoded* to composite at the flowgraph's own rate. A
+        ``.dat`` capture already is composite - but at 18 MS/s, and playing
+        it at any other rate without resampling makes every timing in it
+        wrong by that ratio: at 10 MS/s a line lasts 114.4 us instead of
+        63.5556, a line rate of 8741 Hz where NTSC needs 15734.266. That is
+        what this app used to put on the air, and no television could have
+        locked to it.
+        """
+        if kind == 'still' and path:
+            self.blocks_file_source_0 = blocks.file_source(
+                gr.sizeof_float*1, path, True, 0, 0)
+            self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
+            interp, decim = dat_resample_ratio(samp_rate)
+            self.dat_resampler = filter.rational_resampler_fff(
+                interpolation=interp, decimation=decim, taps=[], fractional_bw=0)
+            self.connect(self.blocks_file_source_0, self.dat_resampler)
+            self.video_source = self.dat_resampler
+            self.sourceDescription = os.path.basename(path) + " (still)"
+            return
+
+        if kind == 'video' and path:
+            frames = VideoFile(path)
+        else:
+            frames = TestPattern()
+        # A Python block, so it must be kept referenced or the scheduler
+        # segfaults with no Python frame in the traceback.
+        self.ntsc_frames = ntsc_source(frames, samp_rate)
+        self.video_source = self.ntsc_frames
+        self.sourceDescription = frames.description
 
 
     def closeEvent(self, event):
@@ -692,16 +858,37 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         return self.videoInvert
 
     def set_videoInvert(self, videoInvert):
+        """Switch modulation polarity while running.
+
+        Both halves of the mapping have to move together: the slope and the
+        offset. Changing only the slope - which is what this did - leaves
+        the carrier centred on the wrong level and drives it far past full
+        scale, which is how positive modulation used to reach 1.79.
+        """
         self.videoInvert = videoInvert
+        self.polarity = 'negative' if videoInvert < 0 else 'positive'
         self._videoInvert_callback(self.videoInvert)
-        self.blocks_multiply_const_vxx_0.set_k(self.videoInvert*0.9)
+        self.modulator.set_polarity(self.polarity)
+
+    @staticmethod
+    def audio_rate(path, default=48000):
+        """The wav file's own sample rate, so the resampler can match it."""
+        try:
+            import wave
+            with wave.open(path, 'rb') as w:
+                return w.getframerate()
+        except Exception:
+            return default
 
     def get_videoFileName(self):
         return self.videoFileName
 
     def set_videoFileName(self, videoFileName):
         self.videoFileName = videoFileName
-        self.blocks_file_source_0.open(self.videoFileName, True)
+        # Only a still has a file source behind it; a video or the built-in
+        # pattern is generated, and swapping those means rebuilding.
+        if hasattr(self, 'blocks_file_source_0'):
+            self.blocks_file_source_0.open(self.videoFileName, True)
 
     def get_usrpNum(self):
         return self.usrpNum
@@ -721,13 +908,17 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         return self.samp_rate
 
     def set_samp_rate(self, samp_rate):
+        """Only the radio's rate is really changeable while running.
+
+        The video source and the modulator are both built around the rate
+        they were constructed with - the encoder generates every sample
+        from absolute time at that rate - so changing it properly means
+        rebuilding, which nothing here does.
+        """
         self.samp_rate = samp_rate
-        self.analog_frequency_modulator_fc_0.set_sensitivity(2*pi*25e3/self.samp_rate)
-        self.analog_sig_source_x_0.set_sampling_freq(self.samp_rate)
-        self.analog_sig_source_x_0_0.set_sampling_freq(self.samp_rate)
+        self.analog_frequency_modulator_fc_0.set_sensitivity(2*pi*AURAL_DEVIATION/self.samp_rate)
         self.analog_sig_source_x_0_0_0.set_sampling_freq(self.samp_rate)
         self.analog_sig_source_x_1.set_sampling_freq(self.samp_rate*2)
-        self.filter_fft_low_pass_filter_0.set_taps(firdes.low_pass(1, self.samp_rate, 2.475e6, 300e3, window.WIN_HAMMING, 6.76))
         self.qtgui_freq_sink_x_0.set_frequency_range(0, self.samp_rate)
         if self.radio_type == 'usrp':
             self.radio_sink.set_samp_rate(self.samp_rate*2)
