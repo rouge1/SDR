@@ -10,14 +10,24 @@ exercised exactly as a person would.
 
     python scripts/test_launcher_gui.py "RDS Receiver"
     python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
+    python scripts/test_launcher_gui.py "ATSC Video Receiver"
+
+An app on the back of a flip tile - the RDS receiver, the ATSC receiver -
+is reached by asking for it by name like any other: the tile is turned over
+before the launcher starts, through the same saved setting the badge
+writes, and turned back afterwards. Clicking the badge in pixels would test
+the animation rather than the app, and would mean finding a 32-pixel circle
+in a screenshot.
 
 WARNING: the transmitter really transmits. Point it at an empty channel.
 
 Needs xdotool (``apt install xdotool``) and a display.
 """
 import argparse
+import ast
+import contextlib
+import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -27,6 +37,7 @@ from PIL import Image
 from scipy import ndimage  # type: ignore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETTINGS = os.path.join(ROOT, 'config', 'window_settings.json')
 LAUNCHER_TITLE = 'GNU Radio Applications Launcher'
 # xdotool reports the frame geometry; the close button sits this far inside it.
 CLOSE_DX, CLOSE_DY = 33, 30
@@ -105,19 +116,100 @@ def button_grid(shot, rect):
     return [[(wx + cx, wy + cy) for cy, cx in row] for row in rows]
 
 
+def launcher_literal(name):
+    """Read a module-level literal out of the launcher without importing it.
+
+    Constructing the launcher opens a window, and this test exists to drive
+    the one ``start_app.sh`` starts - so its tables are read with ``ast``
+    instead. That also copes with shapes a regular expression reads wrongly,
+    such as a flip tile's nested list of faces.
+    """
+    src = open(os.path.join(ROOT, 'gnuradio_launcher.py')).read()
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, 'id', None) == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise RuntimeError(f"no {name} in gnuradio_launcher.py")
+
+
+RADIO_DIRECTIONS = launcher_literal('RADIO_DIRECTIONS')
+
+
 def registered_apps():
-    """Read label -> (row, col) out of the launcher's own registrations.
+    """Read the launcher's own tile table: label -> where and which side.
 
     Reading the source beats hard-coding the layout: the grid is the thing
     under test, and a button that moves should move the click with it.
     """
-    src = open(os.path.join(ROOT, 'gnuradio_launcher.py')).read()
+    tiles = launcher_literal('APP_TILES')
+
+    # Screenshot blobs come back packed left to right with no idea which
+    # grid column each one is, so a tile's position among the tiles *that
+    # row actually has* is what the click needs - not its column number.
+    # Row 2 now ends at column 3, and before this it did not.
+    occupied = {}
+    for row, col, _faces in tiles:
+        occupied.setdefault(row, []).append(col)
+    for cols in occupied.values():
+        cols.sort()
+
     found = {}
-    for m in re.finditer(r'^\s*self\.create_app_button\(\s*"([^"]+)"\s*,'
-                         r'\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*grid\s*,\s*(\d+)\s*,'
-                         r'\s*(\d+)', src, re.M):
-        found[m.group(1)] = (int(m.group(2)), int(m.group(3)))
+    for row, col, faces in tiles:
+        key = faces[0][1]                 # the first module names the tile
+        for index, face in enumerate(faces):
+            label, module, _icon, direction = face
+            found[label] = {'row': row, 'col': col, 'face': index, 'key': key,
+                            'faces': len(faces), 'module': module,
+                            'direction': direction,
+                            'nth': occupied[row].index(col)}
     return found
+
+
+def selected_radio():
+    """The radio Settings names, and the directions it can go."""
+    try:
+        with open(SETTINGS) as f:
+            radio = json.load(f).get('radio_type', 'hackrf')
+    except Exception:
+        radio = 'hackrf'
+    return radio, RADIO_DIRECTIONS.get(radio, {'tx', 'rx'})
+
+
+@contextlib.contextmanager
+def tile_showing(key, face):
+    """Turn a flip tile to the wanted side for the duration of the test.
+
+    This writes the same ``tile_faces`` setting the badge writes, so the
+    launcher comes up already showing the app under test. Only that one key
+    is put back afterwards: the launcher saves its window position into the
+    same file while the test runs, and restoring the whole file wholesale
+    would throw that away.
+    """
+    try:
+        with open(SETTINGS) as f:
+            original = json.load(f).get('tile_faces', {}).get(key)
+    except Exception:
+        original = None
+
+    def write(value):
+        settings = {}
+        if os.path.exists(SETTINGS):
+            with open(SETTINGS) as f:
+                settings = json.load(f)
+        faces = settings.setdefault('tile_faces', {})
+        if value is None:
+            faces.pop(key, None)
+        else:
+            faces[key] = value
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        with open(SETTINGS, 'w') as f:
+            json.dump(settings, f, indent=4)
+
+    write(face)
+    try:
+        yield
+    finally:
+        write(original)
 
 
 def click(x, y):
@@ -143,13 +235,33 @@ def main():
         print(f"no button labelled {args.app!r}. Registered: "
               f"{', '.join(sorted(apps))}")
         return 2
-    row, col = apps[args.app]
+    tile = apps[args.app]
+    row, col = tile['row'], tile['nth']
+
+    # The grid dims - and the launcher refuses to run - anything the
+    # selected radio cannot do, so say that here rather than let the test
+    # fail later looking like a broken button.
+    radio, directions = selected_radio()
+    if tile['direction'] not in directions:
+        print(f"FAIL: {args.app!r} needs a radio that can "
+              f"{ {'tx': 'transmit', 'rx': 'receive'}[tile['direction']] }, "
+              f"and Settings has {radio!r}. Change radio_type in "
+              f"config/window_settings.json first.")
+        return 2
 
     if windows(LAUNCHER_TITLE):
         print("FAIL: a launcher is already running - close it first "
               "(it holds the radio, which blocks the app under test)")
         return 1
 
+    if tile['faces'] > 1:
+        print(f"{args.app!r} is face {tile['face'] + 1} of {tile['faces']} on "
+              f"the {tile['key']} tile - turning it over first")
+    with tile_showing(tile['key'], tile['face']):
+        return run(args, row, col)
+
+
+def run(args, row, col):
     print("starting ./start_app.sh")
     proc = subprocess.Popen([os.path.join(ROOT, 'start_app.sh')], cwd=ROOT,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -163,7 +275,9 @@ def main():
         grid = button_grid(shot, geometry(wid))
         counts = ', '.join(str(len(r)) for r in grid)
         print(f"  found {sum(len(r) for r in grid)} buttons (rows: {counts})")
-        # The launcher's grid rows start at 1; row 0 holds the title.
+        # The launcher's grid rows start at 1; row 0 holds the title. The
+        # column here is the tile's position within its row, which is not
+        # its grid column once a row has a gap in it.
         x, y = grid[row - 1][col]
 
         print(f"clicking {args.app!r} at {x},{y}")

@@ -57,11 +57,19 @@ Per-app configs are saved separately as `config/<module_name>_config.json`.
 
 ### USRP / Hardware
 
-Three radio backends are supported, selected via `radio_type` in settings:
+Four radio backends are supported, selected via `radio_type` in settings.
+Two of them go one way only, and **the launcher grid arranges itself around
+whichever is chosen** — see [flip tiles](#the-launcher-grid-and-tiles-that-flip).
+Pick the VSG60 and every tile turns to its transmitting side; pick the BB60D
+and they all turn to receive, with the transmit-only tiles dimmed out. This
+replaced a dialog that fired after the click, and before that an app that
+opened and then reported "no HackRF found" — which sends people to check a
+cable that is not the problem.
 
 - **HackRF One** — USB SDR via SoapySDR (`soapy.sink('driver=hackrf', ...)`). No IP address needed; OK button always enabled. Gain set via `set_gain(0, 'VGA', value)` (0–47 dB) and `set_gain(0, 'AMP', 0)`.
 - **Ettus USRP** — Network SDR via UHD (`gnuradio-uhd`). IP addresses configured in the settings gear dialog; OK button disabled when none are set. Gain set via `set_gain(value, 0)`.
-- **Signal Hound VSG60** — USB vector signal generator (VID:PID `2817:0008`). No SoapySDR module and no stock GNU Radio block exists, so `apps/vsg_sink.py` wraps the vendor C API (`libvsg_api.so`) with ctypes as a `gr.sync_block`. No IP address needed; OK button always enabled. Level set via `set_level(dBm)` — a *calibrated absolute* output power, not a relative gain index.
+- **Signal Hound VSG60** — USB vector signal generator (VID:PID `2817:0008`). Transmit only. No SoapySDR module and no stock GNU Radio block exists, so `apps/vsg_sink.py` wraps the vendor C API (`libvsg_api.so`) with ctypes as a `gr.sync_block`. No IP address needed; OK button always enabled. Level set via `set_level(dBm)` — a *calibrated absolute* output power, not a relative gain index.
+- **Signal Hound BB60D** — USB spectrum analyser (VID:PID `2817:0007`). Receive only. It *is* a SoapySDR device, but not one `gr-soapy` can drive, so `apps/bb60_source.py` wraps the raw SoapySDR Python binding as a `gr.sync_block` — see [the BB60D section](#signal-hound-bb60d-as-a-receiver) for why, and for the three things about it that are not like the other radios.
 
 #### VSG60 notes
 
@@ -173,6 +181,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ⏳ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
+| `atscReceiver.py` | ATSC digital TV receiver - decodes the transport stream | ✅ |
 | `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
 | `fmRdsTransmitter.py` | FM broadcast transmitter with RDS | ✅ |
 
@@ -582,9 +591,16 @@ Four things cost real time getting there, none of them in the app:
   back as noise while the spectrum looked perfect. Correcting the carrier
   alone changed nothing: the same 13.3 ppm scales the **symbol clock**, and
   correcting that took the decode from nothing to 81% of packets. The VSG60,
-  being an instrument, lands within 158 Hz and needs neither correction - a
-  live broadcast measured 200 Hz out, which is exactly why a capture of a real
-  station decoded first time and ours did not.
+  being an instrument, needs neither correction, which is exactly why a
+  capture of a real station decoded first time and ours did not.
+- **The couple of hundred hertz everything reads is the BB60D's, not the
+  transmitter's.** The VSG60 measured 158 and later 205 Hz off through this
+  receiver, which looked like the VSG's own error until a *live broadcaster*
+  on RF 36 read +194 Hz through the same path. Two unrelated transmitters
+  cannot agree to within 11 Hz by accident: about 0.4 ppm of it is the
+  BB60D's own reference. It makes no difference to decoding - at baseband
+  the AFC cannot tell the two apart and corrects the sum, which is all that
+  matters - but do not quote 200 Hz as a transmitter's accuracy.
 - **A spectrum average hides a transmitter that is off half the time.** Asked
   to modulate 8VSB at 12 MS/s, the Windows laptop's HackRF was silent 45% of
   the time in gaps up to 10.9 ms, while its spectrum looked flat across the
@@ -592,6 +608,82 @@ Four things cost real time getting there, none of them in the app:
   time-domain envelope showed it. Rendering the baseband on a fast machine and
   letting the slow one play the file back cured it completely (0.000% of time
   below threshold).
+
+### ATSC Receiver
+
+`atscReceiver.py` is the other end of `atscXmitter.py`, and shares its tile
+in the launcher - the badge in the corner turns one into the other. It tunes
+a 6 MHz television channel, demodulates 8VSB, recovers the MPEG-2 transport
+stream and says what it found. It does not decode video itself: **Watch**
+hands the recovered stream to `ffplay` (or `mpv`, or `vlc`) and **Record**
+writes it into the media folder, where `atscXmitter` can pick it up and
+transmit it again.
+
+```sh
+python scripts/test_atsc_receiver.py <stream.ts>            # no radio
+python scripts/test_atsc_receiver.py <stream.ts> --ppm 20   # a worse crystal
+```
+
+The arithmetic lives in `apps/atsc_rx_core.py`, free of GNU Radio and Qt
+like the RDS and NTSC pairs, so the pilot measurement, the AFC, MER and the
+transport-stream parsing can all be checked with no radio at all.
+
+**Verified off air**, the VSG60 transmitting from TVAdemo into the BB60D
+here on RF channel 24 (533 MHz) at −9.5 dBm, decoded live and in real time:
+**0.00% bad packets sustained over 25 seconds**, 12,900 packets/s (which is
+19.392658 Mbps exactly), pilot 205 Hz off — most of which is the receiver's
+own reference, not the VSG's — MER 22.0–22.6 dB, no BB60D overflows. The program was read out of its own PAT and PMT as MPEG-2
+video on PID 0x0100 with AC-3 audio on 0x0101, the recording came back
+through ffprobe as 704×480 at 29.97 fps, and a frame piped to a player
+showed the test pattern with its timecode and frame counter legible.
+
+Five things worth knowing before changing it:
+
+- **The chain is built out of `gr-dtv`'s blocks rather than by calling
+  `dtv.atsc_rx`.** Same blocks, same order - but the hierarchical block
+  makes them locals and throws away the two things a receiver app needs.
+  One is the resampler, which is half of the AFC. The other is the
+  telemetry: `atsc_rs_decoder` counts packets, unrecoverable packets and
+  bytes corrected, which is what separates a weak signal from a mistuned
+  one, and the equalizer's soft symbols give MER.
+- **AFC is two corrections from one measurement, and half of it is worth
+  nothing.** One crystal drives a transmitter's baseband clock and its
+  local oscillator, so an error of a few parts per million moves the
+  carrier *and* stretches the symbol rate. Measured at baseband the pilot
+  shifts by `d*(f_rf + PILOT_OFFSET)` - the carrier carries it up, and the
+  stretched baseband carries it back down by `d` times its own 2.69 MHz -
+  which is the frequency `afc_correction` takes the ppm figure against.
+  `test_atsc_receiver.py` injects 13.3 ppm, the figure a HackRF measured on
+  this bench, and pins the result down: uncorrected **99.90% bad and never
+  locks**, carrier corrected alone **99.91% bad and never locks**, both
+  together **0.00% bad, locked in 0.65 s** - identical to a link that never
+  broke. The VSG60, being an instrument, needs neither correction.
+- **MER reads optimistically and must never be quoted against the cliff.**
+  Slicing each symbol to its nearest 8VSB level is the same thing as
+  assuming every symbol was decided correctly, so once noise pushes symbols
+  past the halfway point the error to the *wrong* level gets measured
+  instead. Against known noise it is right to 0.1 dB down to 22 dB, then
+  reads 19.0 for a true 18, 17.7 for a true 15, 16.6 for a true 12 - it
+  bottoms out near 16, which is *below* A/53's 15.2 dB threshold of
+  visibility. So it cannot see the cliff at all. Read it as how open the
+  eye is; read the bad-packet rate for whether the picture is intact. The
+  app deliberately says no more than "Breaking up - N% of packets lost".
+- **`sps` is the one knob that sets how much work the receiver does.** The
+  arbitrary resampler carrying the radio's rate to the symbol clock *is*
+  the bottleneck - measured, everything from the equalizer onward is free
+  beside it - and it costs `(2*8+1)*sps` taps per output sample. At 12 MS/s
+  on the 8-core bench: 1.5 runs at 1.16× real time for 24.0 dB MER, 1.2 at
+  1.42× for 23.5 dB, 1.1 at 1.57× for 21.4 dB. It is 1.2. In steady state
+  all of them decode a clean signal at 0.000% bad; the differences in the
+  *totals* are acquisition time, not quality, which is why the test finds
+  where the receiver locked and reports only what came after.
+- **Watch pipes to the player and drops bytes rather than blocking.** A
+  blocking write into a player that has stalled or been closed would park
+  the GNU Radio scheduler thread and take the whole receiver down, and
+  there is no way to apply backpressure to the air. So the pipe is
+  non-blocking, the backlog is capped, and what is discarded is discarded
+  in whole 188-byte packets so the player resyncs on the next sync byte
+  instead of hunting.
 
 ### NTSC composite video
 
@@ -634,6 +726,63 @@ The encoder's output has the same geometry as the instructor's captures: at
 each, sync tip 0.034, white 0.877). Those are the only known-good composite
 video in the repo and are worth keeping as a reference.
 
+### The launcher grid, and tiles that flip
+
+Every tile is declared in `APP_TILES` at the top of `gnuradio_launcher.py`
+as `(row, column, [face, ...])`, where a face is
+`(label, module, icon, direction)` and direction is `'tx'` or `'rx'`.
+A tile with more than one face is a **flip tile**: a badge in its corner
+turns it over, and the icon and the caption both change with it. That is
+how the two ends of one standard share a square - the ATSC transmitter and
+receiver, the FM + RDS transmitter and the RDS receiver - instead of
+sitting apart as though they were unrelated apps. NTSC and AM video are
+single-faced for now and gain a second face when they have receivers.
+
+**The grid follows the radio.** `RADIO_DIRECTIONS` says which way each of
+the four can go, and `apply_radio_directions()` runs on startup and again
+every time Settings closes:
+
+| Radio | What the grid does |
+|-------|--------------------|
+| HackRF One, Ettus USRP | both directions - the two pairs stay flippable |
+| Signal Hound VSG60 | every tile turns to transmit; badges disappear |
+| Signal Hound BB60D | every tile turns to receive; the ten transmit-only tiles dim out |
+
+- **A dimmed tile says why.** Its tooltip names the direction it needs and
+  the radio that cannot do it ("AM Sine Generator needs a radio that can
+  transmit. The Signal Hound BB60D cannot."). A greyed square that explains
+  itself beats an app that opens and then fails on a device it was never
+  going to be able to use. `launch_application` still checks, as a
+  backstop, but reads the direction off `APP_TILES` rather than keeping a
+  second list in step with it.
+- **A turn the radio forces is not remembered.** `tile_faces` records what
+  the *user* chose with the badge; capability turns pass `remember=False`.
+  So flip ATSC to receive on a HackRF, switch to the VSG and watch it turn
+  to transmit, switch back - and it returns to receive. Saving the forced
+  turn instead would quietly destroy the preference every time the radio
+  changed.
+- **Dimming is painted, not an effect.** The caption already carries a
+  `QGraphicsOpacityEffect` for the fade, and effects do not nest
+  predictably, so `_draw` sets the painter's opacity instead.
+
+- **The turn is drawn, not faked with a swap.** `FlipTile` animates a
+  `flip_phase` property from 0 to 1 and squeezes the icon horizontally by
+  `cos` of it, through zero width and back out, changing face at the moment
+  it is edge on - which is exactly when none of it is visible. The caption
+  fades on the same curve rather than being squeezed, because squeezed text
+  reads as a rendering fault.
+- **The property is `flip_phase`, not `flip`.** `flip()` is the method that
+  starts a turn; naming the `pyqtProperty` the same thing replaces the
+  method with the property object and the badge stops working.
+- **The icon box is sized for every face, not the first.** Two icons with
+  different aspect ratios otherwise clip the second one - and a box that
+  resized mid-turn would shove the caption around while the tile moved.
+- **Which side is up lives in `window_settings.json`** under `tile_faces`,
+  keyed by the tile's first module name, so a tile left showing the
+  receiver is still showing it next time.
+- **The single-face path is the same code.** `create_app_button` is kept as
+  a one-face call into `create_tile`, so nothing else had to change.
+
 ### Testing the launcher end to end
 
 The `scripts/test_*.py` above all bypass the GUI. `scripts/test_launcher_gui.py`
@@ -645,6 +794,7 @@ X input through xdotool (`apt install xdotool`):
 ```sh
 python scripts/test_launcher_gui.py "RDS Receiver"
 python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
+python scripts/test_launcher_gui.py "ATSC Video Receiver"
 ```
 
 - **Close any running launcher first.** A launcher process keeps a USB handle
@@ -655,8 +805,27 @@ python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
   run just hangs. The script refuses to start if it finds one.
 - **Button coordinates are found, not computed.** High-DPI scaling moves the
   grid, so `button_grid()` locates the icons as bright blobs in a screenshot
-  and `registered_apps()` reads label -> (row, col) out of the launcher's own
-  `create_app_button` calls. A button that moves takes the click with it.
+  and `registered_apps()` reads the launcher's own `APP_TILES` table. A
+  button that moves takes the click with it.
+- **That table is parsed with `ast`, not a regex and not an import.** A flip
+  tile's faces are a nested list, which is the shape a regex reads wrongly;
+  and importing the launcher opens a window, when the whole point is to
+  drive the one `start_app.sh` starts. `RADIO_DIRECTIONS` comes out the
+  same way, so the test knows which apps the selected radio can run and
+  says so up front rather than failing later like a broken button.
+- **A blob's position in its row is not its grid column.** Row 2 ends at
+  column 3 now that the RDS receiver has moved onto the transmitter's tile,
+  and screenshot blobs come back packed left to right knowing nothing about
+  gaps. `registered_apps()` works out each tile's position among the tiles
+  its row actually has.
+- **An app on the back of a flip tile is reached through the saved
+  setting**, not by clicking the badge: `tile_showing()` writes the same
+  `tile_faces` entry the badge writes, so the launcher comes up already
+  showing the app under test, and puts it back afterwards. Clicking the
+  badge would test the animation rather than the app, and would mean
+  finding a 32-pixel circle in a screenshot. Only that one key is restored,
+  because the launcher saves its window position into the same file while
+  the test runs.
 - Screenshots are grabbed with Qt rather than scrot/import/maim, none of which
   are guaranteed present, while PyQt5 is already a hard dependency.
 - `Return` activates the dialog's default button, which is OK - cheaper than
@@ -671,17 +840,52 @@ system one at `/usr/local/lib/SoapySDR/modules0.8/libSignalHoundBB60.so`, so
 `SOAPY_SDR_PLUGIN_PATH` must point there - and while `soapy.source(...)`
 constructs fine, *every* gr-soapy setter (`set_frequency`, `set_gain`,
 `set_sample_rate`) then fails with `setupStream: Invalid format ''`. Its sample
-rates are also 40/20/10/5/2.5 MSps with nothing near the 2 MS/s the HackRF path
-uses, so 2.5 MSps (decimate by 10) is the one to use.
+rates are also a ladder - 40/20/10/5/2.5 MSps and on down in halves - with
+nothing near the 2 MS/s the HackRF path uses, so 2.5 MSps (decimate by 10) is
+the one to use there. At 10 MSps the analog filter is 8 MHz, which is what
+makes it usable for a 6 MHz television channel.
 
-What does work today is recording with raw SoapySDR and decoding offline -
-`/data/python/bluey-ox-walker/bin/record_iq.py` on the **system** Python already
-does this (`--driver SignalHoundBB60`), and its output is complex float32, which
-`scripts/test_rds_core.py` reads directly given a JSON sidecar. Note that module
-wants `setupStream` called *before* any configuration.
+`apps/bb60_source.py` drives it live, wrapping the **raw** SoapySDR Python
+binding as a `gr.sync_block` in the spirit of `apps/vsg_sink.py`. Measured
+streaming 10 MS/s into the ATSC receiver in real time with zero overflows.
+Four things about this device that are not like the others:
 
-Driving it live from the launcher would mean a small source block wrapping raw
-SoapySDR, in the spirit of `apps/vsg_sink.py`.
+- **`setupStream` comes before configuration, not after.** Set the rate or
+  the frequency on a device whose stream has not been set up and the module
+  reports the format as empty and nothing works afterwards.
+  `/data/python/bluey-ox-walker/bin/record_iq.py` on the **system** Python
+  has always done it in this order.
+- **It is opened by driver name alone**, `driver=SignalHoundBB60`. The very
+  arguments `enumerate()` hands back are refused: driver plus serial with
+  `Device::make() no match`, and the whole dict with `device_id is not a
+  number`.
+- **The conda binding loads the system module quite happily** once
+  `SOAPY_SDR_PLUGIN_PATH` points at it - both are ABI 0.8.
+  `ensure_plugin_path()` finds and sets it.
+- **`enumerate()` returns `SoapySDRKwargs`, which has no `.get`** - a SWIG
+  map proxy, not a dict. Reading it like one raises `AttributeError`, and
+  behind a broad `except` that looks *exactly* like no device being plugged
+  in. That cost an afternoon; `find_devices()` now converts first and
+  prints anything that goes wrong.
+
+Gain is two elements, `ATT` (−30…0 dB) and `RF` (0…20 dB), presented as one
+0–100 % slider: the attenuator comes out first, because attenuation costs
+noise figure outright, and only then does RF gain go in. So 0 % is −30 dB,
+60 % is 0 dB and 100 % is +20 dB.
+
+**Use the RF gain even on a signal that already looks big enough.** Below
+about 60 % the ADC's own noise sets the floor, not the air: a station on RF
+36 read −74.8 dBFS at 60 % with empty channels at −73 to −80, which looks
+like no margin at all, and at 100 % the station stayed at −75 while the
+empty channels dropped to −85. The 20 dB of RF gain did not make the signal
+bigger, it got it clear of the converter — turning an apparent 0 dB SNR into
+a measured 10 dB. (Still under A/53's 15.2 dB cliff, so it correctly did not
+decode; that one is the antenna.)
+
+Recording with raw SoapySDR and decoding offline still works too, and is
+still the right thing for anything that does not need to be live -
+`record_iq.py --driver SignalHoundBB60` writes complex float32, which
+`scripts/test_rds_core.py` reads directly given a JSON sidecar.
 
 **Verified off-air, HackRF transmitting into the BB60D** at 102.1 MHz and 78 %
 power: the signal read 63.6 dB above the noise floor and decoded 912/912 blocks
@@ -732,7 +936,8 @@ which still moves about 8 MB/s.
   `vsg_sink` at it, so nothing needs Sceptre. The udev rule is already in
   place and the device node comes up mode 0666.
 - **Prefer it for transmitting anything that must be timed accurately.** Its
-  VSG puts the ATSC pilot within 158 Hz of where the standard says (0.3 ppm);
+  VSG puts the ATSC pilot within 200 Hz of where the standard says, and most
+  of even that is the BB60D measuring it (see the ATSC transmitter notes);
   a HackRF managed 7063 Hz, and that one number was the difference between
   nothing decoding and 99.7% of packets decoding.
 
@@ -807,7 +1012,11 @@ go looking for it there.
 
 1. Create `apps/<module_name>.py` implementing `ConfigDialog` and `main()`.
 2. Add an icon to `icons/`.
-3. Register with `self.create_app_button(...)` in `gnuradio_launcher.py`.
+3. Add a row to `APP_TILES` in `gnuradio_launcher.py`, saying whether the
+   app transmits or receives. To give an existing app a second side instead
+   of a square of its own - a receiver for a transmitter, say - add a face
+   to that tile's list rather than a row. The direction is all the grid
+   needs to dim it, flip it and refuse it on the wrong radio.
 
 ## Environment
 

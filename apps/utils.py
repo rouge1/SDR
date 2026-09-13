@@ -126,6 +126,16 @@ def apply_launcher_theme(widget):
         background-color: #3d3d3d;
         border: 2px solid #4e4e4e;
     }
+    /* A tile the selected radio cannot run: still there, plainly not
+       available, and its tooltip says which way the radio goes. */
+    QPushButton:disabled {
+        background-color: #383838;
+        color: #6e6e6e;
+        border: 2px dashed #4a4a4a;
+    }
+    QLabel:disabled {
+        color: #6e6e6e;
+    }
     QMessageBox {
         background-color: #2e2e2e;
         color: #ffffff;

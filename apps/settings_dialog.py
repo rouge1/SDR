@@ -68,7 +68,13 @@ class SettingsDialog(QDialog):
         self.radio_hw_combo = QComboBox()
         self.radio_hw_combo.addItem("HackRF One (USB)", "hackrf")
         self.radio_hw_combo.addItem("Ettus USRP (Network)", "usrp")
-        self.radio_hw_combo.addItem("Signal Hound VSG60 (USB)", "vsg")
+        # The two Signal Hound instruments are one-way: the VSG60 only
+        # transmits and the BB60D only receives, so choosing one of them
+        # makes the apps in the other direction say so and launch nothing.
+        self.radio_hw_combo.addItem("Signal Hound VSG60 (USB, transmit only)",
+                                    "vsg")
+        self.radio_hw_combo.addItem("Signal Hound BB60D (USB, receive only)",
+                                    "bb60")
         current_radio = self.settings.get('radio_type', 'hackrf')
         radio_index = self.radio_hw_combo.findData(current_radio)
         self.radio_hw_combo.setCurrentIndex(radio_index if radio_index >= 0 else 0)
