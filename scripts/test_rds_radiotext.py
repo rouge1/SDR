@@ -34,6 +34,14 @@ def group_2a(proto, ab, addr, chars, corrected=()):
                         corrected=frozenset(corrected))
 
 
+def group_0a(proto, addr, chars, corrected=()):
+    """One PS segment: two characters at ``addr`` * 2."""
+    b = (0 << 12) | (0 << 11) | (0 << 10) | (PTY << 5) | addr
+    d = (ord(chars[0]) << 8) | ord(chars[1])
+    proto._decode_group({'A': 0x16F2, 'B': b, 'C': 0xE0E0, 'D': d},
+                        corrected=frozenset(corrected))
+
+
 def send_rt(proto, text, ab=0, upto=None):
     """Send ``text`` as RadioText segments, optionally stopping part way."""
     padded = text.ljust(64)[:64]
@@ -43,19 +51,25 @@ def send_rt(proto, text, ab=0, upto=None):
         group_2a(proto, ab, addr, padded[addr * 4:addr * 4 + 4])
 
 
+def send_ps(proto, text):
+    for addr in range(4):
+        group_0a(proto, addr, text.ljust(8)[addr * 2:addr * 2 + 2])
+
+
 def announce_rtplus(proto):
     """3A group naming 12A as the carrier of RadioText+."""
     b = (3 << 12) | (0 << 11) | (0 << 10) | (PTY << 5) | (12 << 1) | 0
     proto._decode_group({'A': 0x16F2, 'B': b, 'C': 0, 'D': RTPLUS_AID})
 
 
-def send_rtplus(proto, tag1, tag2=(0, 0, 0)):
+def send_rtplus(proto, tag1, tag2=(0, 0, 0), corrected=()):
     """12A group carrying up to two (content type, start, length-1) tags."""
     bits = ((tag1[0] << 29) | (tag1[1] << 23) | (tag1[2] << 17)
             | (tag2[0] << 11) | (tag2[1] << 5) | tag2[2])
     b = (12 << 12) | (0 << 11) | (0 << 10) | (PTY << 5) | ((bits >> 32) & 0x1F)
     proto._decode_group({'A': 0x16F2, 'B': b,
-                         'C': (bits >> 16) & 0xFFFF, 'D': bits & 0xFFFF})
+                         'C': (bits >> 16) & 0xFFFF, 'D': bits & 0xFFFF},
+                        corrected=frozenset(corrected))
 
 
 AD = "Make It Malloy Malloy.com1000s of vehicles to choose - 98.7WMZQ"
@@ -103,6 +117,17 @@ check("advert tagged as title", p.snapshot()['title'],
 send_rt(p, SLOGAN + "\r")
 check("tag dropped with its message", p.snapshot()['title'], None)
 
+print("\nRT+ tags go when the page on display switches")
+p = RdsProtocol()
+announce_rtplus(p)
+send_rt(p, SONG)
+send_rtplus(p, (4, 11, 9))
+check("tag in place", p.snapshot()['artist'], "Dan + Shay")
+# Next Track and Send Text both toggle the A/B flag. Off air the old song stayed
+# as Now Playing for a minute, and text sent without tags never lost it.
+send_rt(p, SLOGAN + "\r", ab=1)
+check("a new page under the other flag drops it", p.snapshot()['artist'], None)
+
 print("\na tag may not slice text the new message has not sent yet")
 p = RdsProtocol()
 announce_rtplus(p)
@@ -116,6 +141,15 @@ check("tag held back while the text is partial", p.snapshot()['artist'], None)
 send_rt(p, SONG)
 send_rtplus(p, (4, 11, 9))
 check("tag applied once the text is real", p.snapshot()['artist'], "Dan + Shay")
+
+print("\na repaired tag group is used only once it repeats")
+p = RdsProtocol()
+announce_rtplus(p)
+send_rt(p, SONG)
+send_rtplus(p, (4, 11, 9), corrected=('C',))
+check("once is not enough", p.snapshot()['artist'], None)
+send_rtplus(p, (4, 11, 9), corrected=('C',))
+check("the same repair twice is", p.snapshot()['artist'], "Dan + Shay")
 
 print("\na block the code corrected wrongly cannot touch clean text")
 p = RdsProtocol()
@@ -131,13 +165,32 @@ check("so does its tag", p.snapshot()['artist'], "Dan + Shay")
 group_2a(p, 0, 2, " - D")
 check("the next clean pass changes nothing", p.snapshot()['radiotext'], SONG)
 
-print("\na corrected block cannot announce a new message either")
+print("\na single repaired reception cannot announce a new message")
 p = RdsProtocol()
 send_rt(p, SONG)
 group_2a(p, 0, 0, AD[0:4], corrected=('C',))
 check("the song stays", p.snapshot()['radiotext'], SONG)
 send_rt(p, AD)
 check("the advert arriving clean replaces it", p.snapshot()['radiotext'], AD)
+
+print("\n... but the same repair twice can, since wrong repairs do not repeat")
+p = RdsProtocol()
+send_rt(p, SONG)
+group_2a(p, 0, 0, AD[0:4], corrected=('C',))
+group_2a(p, 0, 0, AD[0:4], corrected=('C',))
+check("the advert begins", p.snapshot()['radiotext'], AD[0:4])
+
+print("\na wrong first repair is put right by two that agree")
+p = RdsProtocol()
+send_rt(p, SONG, upto=2)                          # "98.7WMZQ" arrives clean
+group_2a(p, 0, 2, " -&+", corrected=('D',))       # " - D" first comes out wrong
+check("it shows until something better arrives", p.snapshot()['radiotext'],
+      "98.7WMZQ -&+")
+group_2a(p, 0, 2, " - D", corrected=('D',))
+check("one right repair does not replace it", p.snapshot()['radiotext'],
+      "98.7WMZQ -&+")
+group_2a(p, 0, 2, " - D", corrected=('D',))
+check("a second that agrees does", p.snapshot()['radiotext'], "98.7WMZQ - D")
 
 print("\na corrupted A/B flag does not blank the display")
 p = RdsProtocol()
@@ -176,22 +229,35 @@ send_rt(p, SONG)
 check("text survives repetition", p.snapshot()['radiotext'], SONG)
 check("tag survives repetition", p.snapshot()['artist'], "Dan + Shay")
 
+print("\nPS takes the same care")
+p = RdsProtocol()
+send_ps(p, "98.7WMZQ")
+# Off air PS flashed a wrong value 135 times in four minutes at 93% blocks good.
+group_0a(p, 1, "&+", corrected=('D',))
+check("a wrong repair does not flash up", p.snapshot()['ps'], "98.7WMZQ")
+send_ps(p, "WMZQ FM ")
+check("a change arriving clean goes straight through", p.snapshot()['ps'], "WMZQ FM ")
+group_0a(p, 0, "Ti", corrected=('D',))
+group_0a(p, 0, "Ti", corrected=('D',))
+check("so does one repaired the same way twice", p.snapshot()['ps'], "TiZQ FM ")
+
 
 def bursty(seed, bursts_per_block, seconds=120):
-    """Encode RadioText, add error bursts to the bits, and watch the display.
+    """Encode RDS, add error bursts to the bits, and watch the display.
 
     Returns the blocks-good percentage and how many groups, once every
-    position had been received and the text read right, left it on display
-    wrong or short. Waiting for every position matters: padding that has not
-    arrived yet already reads as the right space, and its first reception can
-    be a wrongly corrected block like any other.
+    position had been received and the field read right, left RadioText or PS
+    on display wrong or short. Waiting for every position matters: padding
+    that has not arrived yet already reads as the right space, and its first
+    reception can be a wrongly corrected block like any other.
     """
     rng = random.Random(seed)
     enc = RdsEncoder(pi=0x16F2, ps='98.7WMZQ', pty=PTY)
     enc.set_now_playing('Dan + Shay', 'Say So')
-    want = enc.snapshot()['radiotext']
+    want_rt, want_ps = enc.snapshot()['radiotext'], enc.snapshot()['ps']
     proto = RdsProtocol()
-    filled, bad = False, 0
+    filled = {'rt': False, 'ps': False}
+    bad = {'rt': 0, 'ps': 0}
     for _ in range(int(seconds * 1187.5 / 104)):
         bits = enc.next_bits()
         for blk in range(4):
@@ -204,13 +270,15 @@ def bursty(seed, bursts_per_block, seconds=120):
                     if i in (0, n - 1) or rng.random() < 0.5:
                         bits[start + i] ^= 1
         proto.feed(bits)
-        text = proto.snapshot()['radiotext']
-        if filled:
-            bad += text != want
-        received = proto.rt.written | proto.rt.provisional
-        filled = filled or (text == want and len(received) == 64)
+        snap = proto.snapshot()
+        for key, text, want, field in (('rt', snap['radiotext'], want_rt, proto.rt),
+                                       ('ps', snap['ps'], want_ps, proto.ps)):
+            if filled[key]:
+                bad[key] += text != want
+            received = field.written | field.provisional
+            filled[key] = filled[key] or (text == want and len(received) == field.size)
     snap = proto.snapshot()
-    return 100 * snap['blocks_ok'] / snap['blocks_seen'], bad
+    return 100 * snap['blocks_ok'] / snap['blocks_seen'], bad['rt'], bad['ps']
 
 
 print("\na marginal signal: error bursts in the bitstream itself")
@@ -218,9 +286,9 @@ print("\na marginal signal: error bursts in the bitstream itself")
 # blocks good) kept the text wrong on display nearly two thirds of the time,
 # and short or blank a fifth of it.
 for seed in range(3):
-    good, bad = bursty(seed, 0.10)
-    check(f"{good:.1f}% blocks good, groups leaving the text wrong or short",
-          bad, 0)
+    good, bad_rt, bad_ps = bursty(seed, 0.10)
+    check(f"{good:.1f}% blocks good, groups leaving RadioText and PS wrong",
+          (bad_rt, bad_ps), (0, 0))
 
 print()
 print("RESULT:", "PASS" if not failures else f"FAIL ({', '.join(failures)})")

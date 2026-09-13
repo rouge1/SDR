@@ -204,17 +204,18 @@ class _TextField:
     a repair is no proof. The (26,16) code maps almost every syndrome to *some*
     correction, so a block whose error burst is too long comes back "corrected"
     and wrong rather than rejected: 'Tyler' as 'Eyler', a space as '&'. Off air
-    that happens several times a minute. Characters from a block that needed
-    correcting are therefore provisional: one fills a position nothing has
-    written yet, and stays until a clean block replaces it. It never replaces a
-    clean character, nor another provisional one - a repair that came out
-    right must not be overwritten by the next one that came out wrong.
+    that happens several times a minute. Characters from a segment that cannot
+    be believed yet (see ``RdsProtocol._believed``) are therefore provisional:
+    one fills a position nothing has written yet, and stays until a believed
+    segment replaces it. It never replaces a believed character, nor another
+    provisional one - a repair that came out right must not be overwritten by
+    the next one that came out wrong.
     """
 
     def __init__(self, size):
         self.size = size
         self.committed = [' '] * size
-        # Positions this message has sent in blocks that needed no correction.
+        # Positions this message has sent in segments that could be believed.
         # Cleared with the text, so it always describes the message on display
         # and never the one before.
         self.written = set()
@@ -316,8 +317,9 @@ class RdsProtocol:
         # that behaves the same live as when replaying a capture flat out.
         self.bits_in = 0
         self._group_s = 0.0         # stream second the group in hand began
-        self._clock_pending = None  # the last clock reading, trusted or not
+        self._clock_readings = []   # recent clock readings, trusted or not
         self._clock_sync = None     # (UTC, offset hours, stream second) synced
+        self._last_repair = {}      # segment -> its last repaired reception
 
     # -- bit plumbing ------------------------------------------------------
     def feed(self, bits):
@@ -416,16 +418,25 @@ class RdsProtocol:
             self.oda_aids[b['D']] = carrier
             if b['D'] == RTPLUS_AID:
                 self._rtplus_group = carrier
-        if self._rtplus_group == (gtype, ver_b) and 'C' in b and 'D' in b:
+        if (self._rtplus_group == (gtype, ver_b) and 'C' in b and 'D' in b
+                and self._believed(('rtplus', gtype, ver_b),
+                                   (b['B'] & 0x1F, b['C'], b['D']),
+                                   corrected.intersection(('B', 'C', 'D')))):
+            # A tag group repaired wrongly would slice the wrong words out of
+            # RadioText and show them as Now Playing.
             self._parse_rtplus(b)
 
         if gtype == 0:
             self.ta = (b['B'] >> 4) & 1
             if 'D' in b:
                 addr = b['B'] & 0x3
-                self.ps.put(addr * 2, chr((b['D'] >> 8) & 0xFF))
-                self.ps.put(addr * 2 + 1, chr(b['D'] & 0xFF))
-                if addr == 3:
+                # The same care as RadioText: taking every repair as it came,
+                # PS flashed a wrong value 135 times in four minutes off air.
+                trusted = self._believed(('ps', addr), b['D'],
+                                         corrected.intersection(('B', 'D')))
+                self.ps.put(addr * 2, chr((b['D'] >> 8) & 0xFF), trusted)
+                self.ps.put(addr * 2 + 1, chr(b['D'] & 0xFF), trusted)
+                if addr == 3 and trusted:
                     text = self.ps.text().strip()
                     if text:
                         self.ps_history[text] += 1
@@ -436,11 +447,13 @@ class RdsProtocol:
             # require the new value twice before believing it.
             ab = (b['B'] >> 4) & 1
             buf = self.rt_pages[ab]
-            # A group only gets a say in what message is on air if every block
-            # it uses arrived intact: a repaired block may well be wrong, and
-            # that includes the flag and the segment address in block B.
-            trusted = not corrected.intersection(
-                ('B', 'D') if ver_b else ('B', 'C', 'D'))
+            # A group only gets a say in what message is on air if it can be
+            # believed (see _believed) - and that covers the flag and the
+            # segment address in block B as much as the characters.
+            data = ('D',) if ver_b else ('C', 'D')
+            trusted = self._believed(
+                ('rt', ver_b, b['B'] & 0x1F), tuple(b.get(k) for k in data),
+                corrected.intersection(('B',) + data))
             if ab != self._rt_ab and trusted:
                 # A new message begins with this group. Clear its buffer and
                 # then write this very group into it - clearing without writing
@@ -473,7 +486,7 @@ class RdsProtocol:
                 for j, ch in enumerate(chars):
                     buf.put(base + j, ch, trusted)
             # Switch which buffer is reported only once the new flag has been
-            # seen twice in clean groups, so one bad bit cannot flash a
+            # seen twice in believed groups, so one bad bit cannot flash a
             # half-empty page up.
             if not trusted:
                 pass
@@ -483,6 +496,10 @@ class RdsProtocol:
             elif ab == self._rt_show_pending:
                 self._rt_show = ab
                 self._rt_show_pending = None
+                # The tags described the page that has just left the screen.
+                # Kept, a new song showed the old one as Now Playing for a
+                # minute off air, and text sent without tags never lost them.
+                self.rtplus.clear()
             else:
                 self._rt_show_pending = ab
             if self._rt_show is not None:
@@ -528,6 +545,24 @@ class RdsProtocol:
             if value and starts_clean and ends_clean:
                 self.rtplus[RTPLUS_CLASSES.get(ctype, f"class{ctype}")] = value
 
+    def _believed(self, key, value, repaired):
+        """Whether a segment of text can be taken at its word.
+
+        One whose blocks all arrived intact, yes. One that needed error
+        correction only if it came out exactly as the last repaired reception
+        of the same segment did. Off air at 93% blocks good about six repairs
+        in seven were right, yet two thirds of RadioText groups carried at
+        least one, so refusing every repair left gaps and stale text on screen
+        for most of a minute. A wrong repair almost never comes out the same
+        way twice.
+        """
+        if not repaired:
+            self._last_repair.pop(key, None)
+            return True
+        agrees = self._last_repair.get(key) == value
+        self._last_repair[key] = value
+        return agrees
+
     def _decode_clock(self, b):
         """Group 4A clock time, shown only once a second reading agrees with it.
 
@@ -539,8 +574,8 @@ class RdsProtocol:
         for a station with no clock. The same 12 minutes held one 1B and one
         12B, types that station never sends, so such groups do get through.
 
-        A first reading is accepted only when the next one carries the same
-        offset and a time that has moved on by as much as the bitstream has.
+        A first reading is accepted only once another recent one carries the
+        same offset and a time that has moved on by as much as the bitstream.
         From then on a reading is a sync, the way a car radio treats one: the
         clock runs on by stream time, so a lost group costs nothing, and a
         single reading that agrees with the running clock re-syncs it. A
@@ -571,12 +606,15 @@ class RdsProtocol:
         running = self._clock_at(at)
         agrees_running = (running is not None and running[1] == offset
                           and abs((utc - running[0]).total_seconds()) <= 90)
-        previous = self._clock_pending
-        self._clock_pending = (utc, offset, at)
-        agrees_previous = (
-            previous is not None and previous[1] == offset
-            and abs((utc - previous[0]).total_seconds() - (at - previous[2])) <= 90)
-        if agrees_running or agrees_previous:
+        # Any recent reading can be the second witness, not only the last one:
+        # off air at 93% blocks good garbage clock groups arrived twice in a
+        # minute, and each displaced the real reading that came before it.
+        agrees_earlier = any(
+            p_offset == offset
+            and abs((utc - p_utc).total_seconds() - (at - p_at)) <= 90
+            for p_utc, p_offset, p_at in self._clock_readings)
+        self._clock_readings = (self._clock_readings + [(utc, offset, at)])[-8:]
+        if agrees_running or agrees_earlier:
             self._clock_sync = (utc, offset, at)
 
     def _clock_at(self, at):

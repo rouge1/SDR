@@ -91,6 +91,17 @@ Three radio backends are supported, selected via `radio_type` in settings:
   siblings there (a bundled libc, libstdc++, libudev) would be picked up ahead
   of the system ones and mixed into the host runtime.
 - **A second open aborts the process.** The vendor library enforces single-client access with C `assert()`, which calls `abort()` — `vsgOpenDevice` on a device another process holds raises SIGABRT and core-dumps before Python sees anything, and can leave the unit needing a USB reset. It is uncatchable, and `vsgGetDeviceList` still lists a held device, so discovery cannot detect the condition either. `vsg_sink` therefore keeps an advisory PID lock at `config/.vsg60.lock`: `_acquire_lock()` runs before the open and raises a normal `RuntimeError` instead, `in_use()` lets the launcher show a dialog, and a lock whose PID is dead is treated as stale and cleared. This only sees users that go through this module — an external Signal Hound application holding the device is invisible to it.
+- **Locking a running flowgraph closes the VSG unless it is held open.** GNU
+  Radio calls `stop()` and then `start()` on every block when a flowgraph is
+  locked and unlocked, which is how the FM + RDS transmitter's Next Track swaps
+  its audio chain. `stop()` closes the device, since it is also the only notice
+  of a real shutdown, and the sink once had no `start()`: after Next Track the
+  VSG stayed closed, `work()` reported done, and the whole broadcast ended with
+  no error - a receiver just saw the station stop. `start()` now reopens it,
+  but opening a VSG60 takes 4.7 s (measured), whereas `vsgAbort` takes 0.1 s
+  and the open device accepts samples again straight after. So a rebuild wraps
+  its `lock()`/`unlock()` in `sink.held_open()`, inside which `stop()` leaves
+  the device open; the reopen in `start()` is only the fallback.
 
 ### Output Power
 
@@ -219,6 +230,24 @@ Three things that are easy to get wrong and cost real time here:
   requires never. Off air, the VSG60 into the Windows laptop's HackRF at 96-97%
   blocks good: 114 wrong or blank displays in five minutes before, none in six
   and a half after.
+- **But a repair that comes out the same twice is believed.** Refusing every
+  repair was too strict on a weaker link: at 93% blocks good about six repairs
+  in seven were right, yet two thirds of RadioText groups carried at least
+  one, so the text after Next Track sat with gaps for 54 s, and Now Playing,
+  which waits for every tagged character, took 58 s. `_believed()` accepts a
+  segment whose repair matches the last repaired reception of that same
+  segment, since a wrong repair almost never comes out the same way twice. PS
+  goes through it too - taking every repair as it came, PS had flashed a wrong
+  value 135 times in four minutes - and so do RT+ tag groups. The receiver
+  also drops RT+ tags when the page on display switches with the A/B flag:
+  Next Track and Send Text both toggle it, and the kept tags showed the old
+  song as Now Playing for a minute, or never cleared at all. **Verified off
+  air**, the transmitter window on the VSG60 against the receiver window on the
+  Windows HackRF, on a link that fell to 80-90% blocks good: PS wrong 0% of the
+  time (was 24%, 135 flickers), Now Playing cleared 1.3 s after Send Text (was
+  never), and the Station Clock turned over within a second of every minute
+  (was never shown). What remains is the link itself: after Next Track, at
+  80%, RadioText and Now Playing still took 44-47 s to arrive whole.
 - **An RT+ tag may only slice characters the current message sent.** Tags that
   arrived while the next message was still filling in cut across both, welding
   "Dan +" from the new text to "ntry" from the tail of "Country". Stations repeat
@@ -229,7 +258,7 @@ Three things that are easy to get wrong and cost real time here:
   "2168-10-28 01:27 (UTC-9)" for it. A block B that the code corrects wrongly
   turns any group into a 4A - those same 12 minutes held one 1B and one 12B,
   types the station never sends - and its C and D then decode as a date. The
-  first reading is therefore believed only once the next 4A carries the same
+  first reading is therefore believed only once another 4A carries the same
   offset and a time that has moved on by as much as the bitstream has
   (`bits_in` at 1187.5 bit/s, so replaying a capture flat out behaves the
   same). From then on the clock runs by itself on that stream time: a lost
@@ -237,7 +266,13 @@ Three things that are easy to get wrong and cost real time here:
   and the window says how long ago that was. Before this, a lost group left
   the display a minute or more behind. Garbage that disagrees is ignored, while
   a genuine change - the offset moving when daylight saving ends - takes two
-  agreeing groups. A station whose clock is wrong but consistent still shows.
+  agreeing groups. The second witness may be any of the last few readings,
+  not only the latest: off air at 93% blocks good, garbage clock groups made
+  from repaired B blocks arrived twice in one minute, and remembering a single
+  reading kept the clock off the screen for five minutes. Repaired groups are
+  still used, because the real ones are repaired too - the 19:53 and 19:54
+  groups in that run both had block B repaired and carried the right time.
+  A station whose clock is wrong but consistent still shows.
   It is shown as local time: the group carries UTC hours and minutes with the
   offset beside them, so printing those fields next to "(UTC-4)", as the
   receiver once did, reads four

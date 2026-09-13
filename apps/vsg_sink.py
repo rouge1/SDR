@@ -16,6 +16,7 @@ Hardware limits (measured on firmware 6, API 1.0.3):
     level        -120 .. +10 dBm   (calibrated absolute output power)
 """
 
+import contextlib
 import ctypes
 import glob
 import os
@@ -292,16 +293,31 @@ class vsg_sink(gr.sync_block):
 
         self._lib = _load_library()
         self._device = ctypes.c_int(-1)
-        self._closed = False
+        self._closed = True
+        self._holds_lock = False
+        self._hold = 0                  # held_open() depth
         self._lock = threading.RLock()
+        self._serial = int(serial) if serial else None
+        # What the device should be set to. Kept while it is closed, so a
+        # reopen programs it exactly as it was.
+        self._center_freq = float(center_freq)
+        self._sample_rate = float(sample_rate)
+        self._level_dbm = float(level_dbm)
+        self._open()
 
+        print("Signal Hound VSG %d: %.6f MHz, %.4f MS/s, %.1f dBm"
+              % (self._serial, self._center_freq / 1e6,
+                 self._sample_rate / 1e6, self._level_dbm))
+
+    def _open(self):
+        """Claim the device, open it and program the settings held here."""
         # Must happen before the open: a second open would abort the process.
         _acquire_lock()
         self._holds_lock = True
         try:
-            if serial:
+            if self._serial:
                 status = self._lib.vsgOpenDeviceBySerial(
-                    ctypes.byref(self._device), int(serial))
+                    ctypes.byref(self._device), int(self._serial))
             else:
                 status = self._lib.vsgOpenDevice(ctypes.byref(self._device))
             if status < 0:
@@ -311,28 +327,33 @@ class vsg_sink(gr.sync_block):
             _release_lock()
             self._holds_lock = False
             raise
+        self._closed = False
 
         sn = ctypes.c_int(0)
         self._lib.vsgGetSerialNumber(self._device, ctypes.byref(sn))
         self._serial = sn.value
 
-        self._center_freq = 0.0
-        self._sample_rate = 0.0
-        self._level_dbm = LEVEL_MIN_DBM
-
         # Bring the level up only after frequency and rate are programmed, so
         # the first thing emitted is the intended signal.
+        level_dbm = self._level_dbm
         self.set_level(LEVEL_MIN_DBM)
-        self.set_sample_rate(0, sample_rate)
-        self.set_frequency(0, center_freq)
+        self.set_sample_rate(0, self._sample_rate)
+        self.set_frequency(0, self._center_freq)
         self.set_level(level_dbm)
         self._lib.vsgSetRFOutputState(self._device, 1)
 
-        print("Signal Hound VSG %d: %.6f MHz, %.4f MS/s, %.1f dBm"
-              % (self._serial, self._center_freq / 1e6,
-                 self._sample_rate / 1e6, self._level_dbm))
-
     # --- streaming -------------------------------------------------------
+    def start(self):
+        # GNU Radio calls stop() and then start() on every block whenever a
+        # running flowgraph is locked and unlocked, which is how the FM + RDS
+        # transmitter's Next Track swaps its audio chain. stop() must close the
+        # device, as it is also the only notice of a real shutdown, so reopen
+        # it here. Without this the VSG stayed closed after Next Track, work()
+        # reported done, and the whole broadcast ended with no error at all.
+        if self._closed:
+            self._open()
+        return True
+
     def work(self, input_items, output_items):
         if self._closed:
             return -1
@@ -353,8 +374,29 @@ class vsg_sink(gr.sync_block):
         return len(samples)
 
     def stop(self):
+        if self._hold:
+            # A lock() inside held_open(): the work thread has already left the
+            # driver, so keep the device open and streaming resumes the moment
+            # start() runs.
+            return True
         self._shutdown()
         return True
+
+    @contextlib.contextmanager
+    def held_open(self):
+        """Keep the device open across a flowgraph lock() and unlock().
+
+        Reopening a VSG60 takes 4.7 s, measured - that much dead air, and the
+        caller of unlock() frozen for all of it - while the open device takes
+        samples again straight away. Wrap a rebuild of a running flowgraph in
+        this. A stop() outside it still closes the device and frees it, which
+        the launcher relies on to open it again later in the same process.
+        """
+        self._hold += 1
+        try:
+            yield
+        finally:
+            self._hold -= 1
 
     def _shutdown(self):
         if self._closed:
@@ -388,6 +430,7 @@ class vsg_sink(gr.sync_block):
         freq_hz = float(min(max(freq_hz, FREQ_MIN_HZ), FREQ_MAX_HZ))
         with self._lock:
             if self._closed:
+                self._center_freq = freq_hz       # applied on reopen
                 return
             status = self._lib.vsgSetFrequency(self._device, ctypes.c_double(freq_hz))
             if status < 0:
@@ -402,6 +445,7 @@ class vsg_sink(gr.sync_block):
         rate = float(min(max(rate, RATE_MIN), RATE_MAX))
         with self._lock:
             if self._closed:
+                self._sample_rate = rate          # applied on reopen
                 return
             status = self._lib.vsgSetSampleRate(self._device, ctypes.c_double(rate))
             if status < 0:
@@ -418,6 +462,7 @@ class vsg_sink(gr.sync_block):
         level_dbm = float(min(max(level_dbm, LEVEL_MIN_DBM), LEVEL_MAX_DBM))
         with self._lock:
             if self._closed:
+                self._level_dbm = level_dbm       # applied on reopen
                 return
             status = self._lib.vsgSetLevel(self._device, ctypes.c_double(level_dbm))
             if status < 0:

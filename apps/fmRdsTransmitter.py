@@ -10,6 +10,7 @@
 # Test it with the RDS Receiver app (or a car radio): everything this sends is
 # something apps/rds_core.py can read back.
 
+import contextlib
 import glob
 import json
 import os
@@ -660,11 +661,15 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.audio_choice = path
         # Rebuild rather than swap one block: the next track may be stereo
         # where this one was mono, which is a different chain entirely.
-        self.lock()
-        self.disconnect_all()
-        self._build_audio()
-        self._connect_all()
-        self.unlock()
+        # lock() stops every block and unlock() starts them again; a VSG60
+        # held open through that resumes at once instead of reopening for 4.7 s.
+        hold = getattr(self.radio_sink, 'held_open', contextlib.nullcontext)
+        with hold():
+            self.lock()
+            self.disconnect_all()
+            self._build_audio()
+            self._connect_all()
+            self.unlock()
         self._update_track_label()
         if self.track_in_rt:
             self.encoder.set_now_playing('', track_name(path))

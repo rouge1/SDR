@@ -3,7 +3,7 @@
 
 98.7 sends no clock at all, yet the receiver once showed "2168-10-28 01:27
 (UTC-9)": one corrupted group decoded as a group 4A. A clock group is now a
-sync, the way a car radio treats it: the first is believed only once a second
+sync, the way a car radio treats it: the first is believed only once another
 agrees, and between groups the clock runs on by itself. The first half feeds
 hand-built groups straight to the protocol layer, with the bit count set by hand
 as the passage of time - no radio, no capture.
@@ -28,8 +28,12 @@ EDT = timezone(timedelta(hours=-4))
 EST = timezone(timedelta(hours=-5))
 
 
-def group_4a(proto, seconds, year, month, day, hour, minute, offset_hours):
-    """Deliver one clock group (UTC fields) as if ``seconds`` into the stream."""
+def group_4a(proto, seconds, year, month, day, hour, minute, offset_hours,
+             corrected=()):
+    """Deliver one clock group (UTC fields) as if ``seconds`` into the stream.
+
+    ``corrected`` names the blocks that needed error correction on the way in.
+    """
     leap = 1 if month <= 2 else 0
     mjd = (14956 + day + int((year - 1900 - leap) * 365.25)
            + int((month + 1 + leap * 12) * 30.6001))
@@ -38,7 +42,8 @@ def group_4a(proto, seconds, year, month, day, hour, minute, offset_hours):
     c = ((mjd & 0x7FFF) << 1) | (hour >> 4)
     d = ((hour & 0xF) << 12) | (minute << 6) | ((offset_hours < 0) << 5) | (half_hours & 0x1F)
     advance(proto, seconds)
-    proto._decode_group({'A': 0x16F2, 'B': b, 'C': c, 'D': d})
+    proto._decode_group({'A': 0x16F2, 'B': b, 'C': c, 'D': d},
+                        corrected=frozenset(corrected))
 
 
 def advance(proto, seconds):
@@ -107,19 +112,34 @@ group_4a(p, 120, 2026, 9, 12, 20, 29, -4)
 check("a real reading agreeing with the running clock syncs at once",
       (shown(p), synced_ago(p)), ("2026-09-12 16:29 (UTC-4)", 0))
 
-print("\nbefore the first sync, garbage breaks a pair")
+print("\nbefore the first sync, garbage between two readings does not break the pair")
+# Off air at 93% blocks good, two garbage clock groups arrived in one minute.
+# Remembering only the last reading, the clock never appeared in five minutes.
 p = RdsProtocol()
 group_4a(p, 0, 2026, 9, 12, 20, 27, -4)
 group_4a(p, 30, 2168, 10, 28, 1, 27, -9)
+check("a reading and a garbage group show nothing", shown(p), None)
 group_4a(p, 60, 2026, 9, 12, 20, 28, -4)
-check("a real reading cannot pair with the garbage", shown(p), None)
-group_4a(p, 120, 2026, 9, 12, 20, 29, -4)
-check("the one after that confirms", shown(p), "2026-09-12 16:29 (UTC-4)")
+check("the next real reading pairs with the one before the garbage", shown(p),
+      "2026-09-12 16:28 (UTC-4)")
+
+print("\nwhat a 93% link delivered off air: repairs everywhere, garbage between")
+# The 19:52 group had block C repaired, a garbage 4A from a repaired block B
+# came next, and the 19:53 and 19:54 groups both had block B repaired yet
+# carried the right time - so refusing repaired groups would have thrown the
+# real ones away along with the garbage.
+p = RdsProtocol()
+group_4a(p, 0, 2026, 9, 12, 23, 52, -4, corrected=('C',))
+group_4a(p, 20, 2206, 10, 30, 4, 37, 7.5, corrected=('A', 'B'))
+group_4a(p, 60, 2026, 9, 12, 23, 53, -4, corrected=('B',))
+check("synced at 19:53", shown(p), "2026-09-12 19:53 (UTC-4)")
+group_4a(p, 120, 2026, 9, 12, 23, 54, -4, corrected=('B', 'C'))
+check("and on at 19:54", (shown(p), synced_ago(p)), ("2026-09-12 19:54 (UTC-4)", 0))
 
 print("\nimpossible offsets are rejected outright")
-group_4a(p, 140, 2026, 9, 12, 20, 29, -13)
+group_4a(p, 140, 2026, 9, 12, 23, 54, -13)
 check("a 13-hour offset changes nothing",
-      (shown(p), synced_ago(p)), ("2026-09-12 16:29 (UTC-4)", 20))
+      (shown(p), synced_ago(p)), ("2026-09-12 19:54 (UTC-4)", 20))
 
 print("\nthe clock runs on between groups, the way a car radio's does")
 p = RdsProtocol()
