@@ -120,6 +120,7 @@ class RdsEncoder:
         self._seq_index = 0
         self._ps_seg = 0
         self._rt_seg = 0
+        self._rt_sent = -1                # furthest segment of the text sent
         self._pages = []            # RadioText pages in rotation: (text, tags)
         self._page_i = 0
         self._page_repeats = 1
@@ -203,11 +204,17 @@ class RdsEncoder:
         # A carriage return ends a short page, so receivers do not leave the
         # tail of a longer previous page on screen.
         self._rt = _chars(page + '\r' if len(page) < 64 else page, 64)
+        self._rt_sent = -1
 
     def _set_rt_locked(self, text, tags=None):
         text = text[:64]
         self._pages = []            # a single message ends any rotation
         self._rt = _chars(text, 64)
+        # Start the new text from its first segment. Carrying on mid-pass sent
+        # padding first, identical to the old message's, so a receiver saw no
+        # change at all while tags for the new text were already arriving.
+        self._rt_seg = 0
+        self._rt_sent = -1
         # Tags must be offsets into this very string. Any others would slice
         # it at the wrong points and advertise half a word as the title -
         # exactly the fault a local station ships.
@@ -294,6 +301,9 @@ class RdsEncoder:
         d = (ord(self._rt[seg * 4 + 2]) << 8) | ord(self._rt[seg * 4 + 3])
         group = [make_block(self.pi, 'A'), make_block(b, 'B'),
                  make_block(c, 'C'), make_block(d, 'D')]
+        # How far into this text has gone out - noted before a page change
+        # below starts the count again for the next page.
+        self._rt_sent = max(self._rt_sent, seg)
         if self._rt_seg == 0 and self._pages:
             # A whole page has just gone out; move on once it has been sent
             # the requested number of times, toggling A/B so receivers clear.
@@ -312,10 +322,15 @@ class RdsEncoder:
                 make_block(0x0000, 'C'), make_block(RTPLUS_AID, 'D')]
 
     def _group_12a(self):
-        # While the song's own line is on air the tags point into it. While a
-        # typed message takes its turn they are empty, and the unchanged item
-        # toggle tells receivers to keep the song they already have.
-        (t1, s1, l1), (t2, s2, l2) = self._rtplus or ((0, 0, 0), (0, 0, 0))
+        # While the song's own line is on air the tags point into it - but only
+        # once every segment they point into has gone out, so no receiver
+        # meets a tag before the text it slices. While a typed message takes
+        # its turn the tags are empty, and the unchanged item toggle tells
+        # receivers to keep the song they already have.
+        tags = self._rtplus
+        if tags and any(c and (s + l) // 4 > self._rt_sent for c, s, l in tags):
+            tags = None
+        (t1, s1, l1), (t2, s2, l2) = tags or ((0, 0, 0), (0, 0, 0))
         running = 1
         toggle = self._item_toggle & 1
         bits = ((toggle & 1) << 36 | (running & 1) << 35

@@ -444,7 +444,15 @@ Things worth knowing before changing it:
   and a typed message stays through Next Track. Sending the song's own line,
   or nothing, goes back to the song alone. Pages shorter than 64 characters
   stop at their carriage return instead of sending padding, so each turn gets
-  across sooner.
+  across sooner. An RT+ tag goes out only once every segment it points into
+  has gone out, starting from the first segment of the new text: Next Track
+  part way through a pass once sent padding first, identical in the old and
+  new lines, and a receiver that had seen nothing change sliced "Stereo" out of
+  "Stereo B" with the new song's tag - caught by the Next Track test on the
+  slower Windows laptop, and now reproduced on purpose in
+  `test_rds_radiotext.py`. Waiting for the whole 64-character line instead
+  cost 3.4 s per song, and on that laptop, which ran the test flowgraph at
+  about 70% of real time, Now Playing never arrived at all.
 - **Messages longer than RadioText are paged.** `set_paragraph()` splits text on
   word boundaries into 64-character pages, sends each one complete, then toggles
   the A/B flag so receivers clear before the next. Pages advance on segments

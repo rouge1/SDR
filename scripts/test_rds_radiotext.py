@@ -348,6 +348,23 @@ shown = on_air(enc, listening, 20)
 check("clearing the typed text leaves the song alone",
       ({rt for rt, _ in shown[-40:]}, shown[-1][1]), ({NEXT_SONG}, NEXT_SONG))
 
+print("\na new song's tags never slice the last song's text")
+# Seen on the Windows laptop: Next Track part way through a pass of the old
+# line. The new line's first segments to go out were padding, the same in both,
+# so nothing on screen changed - and the new tag, "title is characters 0-5",
+# sliced "Stereo" out of "Stereo B".
+enc = RdsEncoder(pi=0x8617, ps='GNURADIO', pty=8)
+enc.set_now_playing('', 'Stereo B')
+switching = RdsProtocol()
+on_air(enc, switching, 8)
+while enc._rt_seg != 8:
+    switching.feed(enc.next_bits())
+enc.set_now_playing('', 'Mono C')
+shown = on_air(enc, switching, 15)
+check("Now Playing shows the old song, nothing, or the new one",
+      sorted({np for _, np in shown}), sorted({'Stereo B', '', 'Mono C'} & {np for _, np in shown}))
+check("and the new one arrives", shown[-1][1], 'Mono C')
+
 print()
 print("RESULT:", "PASS" if not failures else f"FAIL ({', '.join(failures)})")
 raise SystemExit(1 if failures else 0)
