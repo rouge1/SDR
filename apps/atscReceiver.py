@@ -447,13 +447,13 @@ class ConfigDialog(Qt.QDialog):
         row = Qt.QHBoxLayout()
         self.gain_slider = Qt.QSlider(QtCore.Qt.Horizontal)
         self.gain_slider.setRange(0, 100)
-        # The two radios want opposite ends of the slider. On a BB60D
-        # anything below about 60% is where its own converter noise sets
-        # the floor rather than the air - measured, 20 dB of RF gain
-        # dropped the noise floor 10 dB relative to a station - so it
-        # starts high. A HackRF at that setting would be into compression,
-        # and 8VSB peaks 8.7 dB above its rms.
-        default = 85 if self.radio_type == 'bb60' else 55
+        # 60% on a BB60D is its attenuator fully open with no RF
+        # amplification: measured, that is within 2 dB of the best
+        # signal-to-noise the device can reach, and the last 20 dB of RF
+        # buys only those 2 dB while being what overdrives the converter on
+        # a strong local signal. A HackRF wants its own middle, since 8VSB
+        # peaks 8.7 dB above its rms and compression closes the eye.
+        default = 60 if self.radio_type == 'bb60' else 55
         self.gain_slider.setValue(default)
         self.gain_label = Qt.QLabel(f"RF Gain: {default}%")
         self.gain_slider.valueChanged.connect(
@@ -613,6 +613,7 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         self._last_snapshot = None
         self._last_rs = None
         self._last_time = None
+        self._seen_overflows = 0
 
         self._build_controls()
         self._build_flowgraph()
@@ -624,6 +625,12 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         self.status_timer.start(500)
 
     # ------------------------------------------------------------------ UI
+    #
+    # The window is four bands: everything you can change, what the radio
+    # and the stream are doing, the spectrum, and a line for whatever just
+    # happened. Only the spectrum stretches - the first arrangement let the
+    # control rows share the slack and a third of the window was empty.
+
     def _build_controls(self):
         row = Qt.QHBoxLayout()
         row.addWidget(Qt.QLabel("Channel:"))
@@ -667,35 +674,30 @@ class atscReceiver(gr.top_block, Qt.QWidget):
             "decoder cold while the spectrum still looks perfect.")
         self.afc_check.toggled.connect(self.set_afc_enabled)
         row.addWidget(self.afc_check)
-        row.addStretch()
 
-        holder = Qt.QWidget()
-        holder.setLayout(row)
-        self.top_grid_layout.addWidget(holder, 0, 0, 1, 10)
-
-        actions = Qt.QHBoxLayout()
+        # The buttons go on the right of the same row, where there was a
+        # band of empty window before, rather than on a row of their own.
+        row.addStretch(1)
         self.watch_btn = Qt.QPushButton("Watch")
         self.watch_btn.setToolTip(
             "Hand the recovered transport stream to a media player.")
         self.watch_btn.clicked.connect(self.toggle_watch)
-        actions.addWidget(self.watch_btn)
+        row.addWidget(self.watch_btn)
 
         self.record_btn = Qt.QPushButton("Record")
         self.record_btn.setToolTip(
             "Write the recovered transport stream into the media folder, "
             "where the ATSC Transmitter can pick it up again.")
         self.record_btn.clicked.connect(self.toggle_record)
-        actions.addWidget(self.record_btn)
+        row.addWidget(self.record_btn)
 
         self.clear_btn = Qt.QPushButton("Clear Statistics")
         self.clear_btn.clicked.connect(self.clear_stats)
-        actions.addWidget(self.clear_btn)
+        row.addWidget(self.clear_btn)
 
-        self.action_note = Qt.QLabel("")
-        actions.addWidget(self.action_note, 1)
         holder = Qt.QWidget()
-        holder.setLayout(actions)
-        self.top_grid_layout.addWidget(holder, 1, 0, 1, 10)
+        holder.setLayout(row)
+        self.top_grid_layout.addWidget(holder, 0, 0, 1, 10)
 
     def _build_readout(self):
         big = Qt.QFont()
@@ -706,24 +708,30 @@ class atscReceiver(gr.top_block, Qt.QWidget):
 
         self.lbl = {}
 
-        def field(grid, key, caption, row, col, font=None, span=1):
+        def field(grid, key, caption, row, col, font=None, span=1, wrap=False):
             grid.addWidget(Qt.QLabel(f"<b>{caption}</b>"), row, col * 2)
             value = Qt.QLabel("-")
             if font:
                 value.setFont(font)
             value.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-            value.setWordWrap(True)
+            # Wrapping is off by default: a short value that wraps stacks
+            # onto two lines and shoves the whole box about as the numbers
+            # change. Only the genuinely long fields get it.
+            value.setWordWrap(wrap)
             grid.addWidget(value, row, col * 2 + 1, 1, span)
             self.lbl[key] = value
 
         signal = Qt.QGroupBox("Signal")
         sg = Qt.QGridLayout()
         signal.setLayout(sg)
-        field(sg, 'lock', "Status", 0, 0, big, span=3)
+        field(sg, 'lock', "Status", 0, 0, big, span=3, wrap=True)
         field(sg, 'mer', "Signal Quality", 1, 0)
         field(sg, 'level', "Input Level", 1, 1)
-        field(sg, 'pilot', "Pilot", 2, 0, span=3)
-        self.top_grid_layout.addWidget(signal, 2, 0, 1, 5)
+        field(sg, 'pilot', "Pilot", 2, 0, span=3, wrap=True)
+        sg.setColumnStretch(1, 1)
+        sg.setColumnStretch(3, 1)
+        sg.setHorizontalSpacing(12)
+        self.top_grid_layout.addWidget(signal, 1, 0, 1, 4)
 
         stream = Qt.QGroupBox("Transport Stream")
         tg = Qt.QGridLayout()
@@ -731,9 +739,26 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         field(tg, 'packets', "Packet Rate", 0, 0)
         field(tg, 'bad', "Bad Packets", 0, 1)
         field(tg, 'corrected', "Correction", 1, 0)
-        field(tg, 'flagged', "Flagged / Discontinuity", 1, 1)
-        field(tg, 'programs', "Programs", 2, 0, mono, span=3)
-        self.top_grid_layout.addWidget(stream, 2, 5, 1, 5)
+        field(tg, 'flagged', "Errors / Discont.", 1, 1)
+        field(tg, 'programs', "Programs", 2, 0, mono, span=3, wrap=True)
+        tg.setColumnStretch(1, 1)
+        tg.setColumnStretch(3, 1)
+        tg.setHorizontalSpacing(12)
+        # Six columns to the Signal box's four: it carries more text, and
+        # splitting the width evenly wrapped every value onto two lines.
+        self.top_grid_layout.addWidget(stream, 1, 4, 1, 6)
+
+        # A line at the foot for whatever just happened - a player started,
+        # a recording saved, packets dropped.
+        self.action_note = Qt.QLabel("")
+        self.action_note.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.top_grid_layout.addWidget(self.action_note, 9, 0, 1, 10)
+
+        # Only the spectrum grows. Left to themselves the control rows
+        # shared the slack and a third of the window was empty.
+        for row in (0, 1, 9):
+            self.top_grid_layout.setRowStretch(row, 0)
+        self.top_grid_layout.setRowStretch(2, 1)
 
     def _build_spectrum(self):
         self.spectrum = qtgui.freq_sink_c(
@@ -744,6 +769,12 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         self.spectrum.set_y_axis(*SPECTRUM_Y_AXIS)
         self.spectrum.set_y_label('Relative Gain', 'dB')
         self.spectrum.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
+        # Fixed, like the other RF plots, and for the same reason after all:
+        # autoscale fits the axis from the lowest bin up, and a BB60D's
+        # decimation filter skirts fall to -210 dB just outside the 8 MHz
+        # it passes. Tried it - the axis became 120 dB tall with the
+        # haystack and its pilot squashed into the top fifth, which is
+        # exactly what the numerical-zero bins do to a transmitter's plot.
         self.spectrum.enable_autoscale(False)
         self.spectrum.enable_grid(True)
         self.spectrum.set_fft_average(0.2)
@@ -751,7 +782,7 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         self.spectrum.enable_control_panel(False)
         self.spectrum.disable_legend()
         widget = sip.wrapinstance(self.spectrum.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(widget, 3, 0, 6, 10)
+        self.top_grid_layout.addWidget(widget, 2, 0, 7, 10)
         self.connect(self.radio_source, self.spectrum)
 
     # ----------------------------------------------------------- flowgraph
@@ -941,21 +972,27 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         rate = packets / elapsed
         self.lbl['packets'].setText(
             f"{rate:,.0f}/s  ({rate * TS_PACKET * 8 / 1e6:.2f} Mbps)"
-            if rate else "nothing decoding")
+            if rate else "-")
         bad_pct = 100.0 * bad / packets if packets else 0.0
         self.lbl['bad'].setText(
             f"{bad} of {packets}  ({bad_pct:.2f}%)" if packets else "-")
+        # Out of 10: that is what Reed-Solomon can fix in a 188-byte packet,
+        # so the ratio says how much margin is left rather than just a rate.
         self.lbl['corrected'].setText(
-            f"{corrected / packets:.2f} bytes/packet" if packets else "-")
+            f"{corrected / packets:.2f} of 10 bytes" if packets else "-")
+        # The caption already reads "Flagged / Discontinuity", so the value
+        # does not need to say it again - and spelled out it wrapped onto
+        # two lines and shoved the box about.
         self.lbl['flagged'].setText(
-            f"{window['errors']} flagged, {window['discontinuities']} "
-            f"discontinuities")
+            f"{window['errors']} / {window['discontinuities']}")
 
         programs = self.ts.programs()
         self.lbl['programs'].setText("\n".join(programs) if programs
                                      else "no PAT yet")
 
-        self.lbl['lock'].setText(self._status_text(packets, bad_pct))
+        text, colour = self._status(packets, bad_pct)
+        self.lbl['lock'].setText(text)
+        self.lbl['lock'].setStyleSheet(f"color: {colour};")
 
         if self.ts.player_alive():
             dropped = self.ts.dropped
@@ -969,31 +1006,51 @@ class atscReceiver(gr.top_block, Qt.QWidget):
             self.watch_btn.setText("Watch")
             self.action_note.setText("")
 
-    def _status_text(self, packets, bad_pct):
-        """One line saying what is actually wrong, when something is.
+    #: Readable on the light Qt default and on a dark desktop theme alike.
+    GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
+
+    def _status(self, packets, bad_pct):
+        """What is actually happening, and a colour for how bad it is.
 
         The failure modes look alike from the spectrum, so each gets named:
-        no signal, a clock error the AFC is not correcting, a signal too
-        weak to decode, and a working picture.
+        the converter overdriven, no signal at all, a clock error the AFC
+        is not correcting, a signal too weak to decode, and a picture.
         """
+        # An overdriven converter is invisible in the samples - they arrive
+        # filtered and decimated - so it can only come from the driver, and
+        # it looks exactly like a weak signal if it is not called out.
+        if self._adc_overflows():
+            return ("Input overloaded - turn the RF gain down", self.BAD)
         if not packets:
             if not self.afc.locked:
-                return "No signal"
+                return ("No signal", self.BAD)
             if not self.afc_enabled and abs(self.afc.error_hz) > 500:
-                return "Pilot found, not decoding - try switching AFC on"
-            # The pilot is a narrow carrier and shows up 40 dB out of the
-            # noise on a signal far too weak to decode, so this is the
-            # normal reading for a distant station, not a fault.
-            return ("Pilot found, not decoding - too weak? "
-                    "Try more gain or a better antenna")
+                return ("Pilot found, not decoding - try switching AFC on",
+                        self.WARN)
+            # The pilot is a narrow carrier and shows 40 dB out of the noise
+            # on a signal far too weak to decode, so this is the normal
+            # reading for a distant station, not a fault.
+            return ("Pilot found, not decoding - too weak? Try a better "
+                    "antenna", self.WARN)
         # Deliberately no "N dB from the cliff": MER is decision-directed
         # and stops telling the truth around 16 dB, which is below where
         # the cliff is. The loss rate is the honest measure of margin.
         if bad_pct > 20:
-            return f"Breaking up - {bad_pct:.0f}% of packets lost"
+            return (f"Breaking up - {bad_pct:.0f}% of packets lost", self.BAD)
         if bad_pct > 0.5:
-            return f"Marginal - {bad_pct:.1f}% of packets lost"
-        return "Locked - clean stream"
+            return (f"Marginal - {bad_pct:.1f}% of packets lost", self.WARN)
+        return ("Locked - clean stream", self.GOOD)
+
+    def _adc_overflows(self):
+        """New converter overflows since the last look, if the radio counts
+        them. Only the BB60D does; the others return nothing."""
+        counter = getattr(self.radio_source, 'adc_overflows', None)
+        if counter is None:
+            return 0
+        total = counter()
+        fresh = total - self._seen_overflows
+        self._seen_overflows = total
+        return fresh
 
     def closeEvent(self, event):
         self.settings = Qt.QSettings("GNU Radio", "atscReceiver")

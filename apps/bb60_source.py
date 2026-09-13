@@ -48,6 +48,52 @@ SAMPLE_RATES = [40e6, 20e6, 10e6, 5e6, 2.5e6, 1.25e6, 625e3, 312.5e3]
 GAIN_STAGES = [('ATT', -30.0, 0.0), ('RF', 0.0, 20.0)]
 GAIN_SPAN = sum(high - low for _, low, high in GAIN_STAGES)   # 50 dB
 
+# Messages the vendor module prints on every ordinary retune. They are
+# logged at ERROR, which they are not - the frequency reads back correctly
+# afterwards - and they scroll a terminal several lines per second.
+_EXPECTED_CHATTER = ('ConfigureIQCenter', 'ConfigureIO', 'Using format',
+                     'set decimation', 'deprecrated')
+_overflows = [0]
+_last_message = ['']
+
+
+def _log_handler(level, text):
+    """Count real problems, drop the noise, pass anything else on.
+
+    The ADC overflowing is the one message that matters and the only sign
+    of it: the samples that come back are filtered and decimated, so a
+    front end being driven into the converter does *not* show up as
+    clipping in what the flowgraph sees. Without this it is an ERROR line
+    in a terminal nobody is looking at.
+    """
+    message = str(text).strip()
+    if 'overflow' in message.lower():
+        _overflows[0] += 1
+        _last_message[0] = message
+        return
+    if any(k in message for k in _EXPECTED_CHATTER):
+        return
+    print(f"BB60: {message}", file=sys.stderr)
+
+
+def install_log_handler():
+    try:
+        import SoapySDR  # type: ignore
+        SoapySDR.registerLogHandler(_log_handler)
+        return True
+    except Exception:
+        return False
+
+
+def overflow_count():
+    """How many times the converter has been overdriven since reset."""
+    return _overflows[0]
+
+
+def reset_overflows():
+    _overflows[0] = 0
+    _last_message[0] = ''
+
 _MODULE_DIRS = [
     '/usr/local/lib/SoapySDR/modules0.8',
     '/usr/lib/x86_64-linux-gnu/SoapySDR/modules0.8',
@@ -80,7 +126,32 @@ def ensure_plugin_path():
 
 
 def gain_plan(percent):
-    """Map 0-100% onto the attenuator and the RF stage, in that order."""
+    """Map 0-100% onto the attenuator and the RF stage, in that order.
+
+    **The level falls as this rises, and that is correct.** Measured on a
+    real broadcaster against an empty channel, which is the only way to see
+    it - raw level says the opposite:
+
+    ======  ====  ==========  ==========
+    ATT     RF    level       SNR
+    ======  ====  ==========  ==========
+    -30     0     -56.5 dBFS   -0.1 dB
+    -20     0     -61.4 dBFS    0.0 dB
+    -10     0     -69.9 dBFS    1.2 dB
+      0     0     -74.0 dBFS    4.7 dB
+      0    20     -74.5 dBFS    6.6 dB
+    ======  ====  ==========  ==========
+
+    Winding the attenuator stage negative adds 18 dB of level and *all* of
+    it is noise. So the slider opens the attenuator toward 0 first and only
+    then adds RF, which makes it monotone in signal-to-noise even though
+    the input level meter goes the other way.
+
+    The last 20 dB of RF is worth under 2 dB of SNR and is front-end
+    amplification, which is what overdrives the converter on a strong local
+    signal - so a high setting is the first thing to wind back if
+    ``overflow_count()`` starts climbing, and it costs almost nothing.
+    """
     percent = min(max(float(percent), 0.0), 100.0)
     budget = percent / 100.0 * GAIN_SPAN
     plan = {}
@@ -161,6 +232,8 @@ class bb60_source(gr.sync_block):
 
     def start(self):
         ensure_plugin_path()
+        install_log_handler()
+        reset_overflows()
         import SoapySDR  # type: ignore
         from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CF32  # type: ignore
 
@@ -250,6 +323,11 @@ class bb60_source(gr.sync_block):
                                       timeoutUs=self.TIMEOUT_US)
         if status.ret > 0:
             return status.ret
-        if status.ret == -4:               # SOAPY_SDR_OVERFLOW
+        if status.ret == -4:               # SOAPY_SDR_OVERFLOW - samples lost
             self.overflows += 1
         return 0
+
+    def adc_overflows(self):
+        """Times the converter has been overdriven - a gain problem, not a
+        dropped-sample one, and invisible in the samples themselves."""
+        return overflow_count()

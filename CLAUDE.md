@@ -885,14 +885,40 @@ Gain is two elements, `ATT` (−30…0 dB) and `RF` (0…20 dB), presented as on
 noise figure outright, and only then does RF gain go in. So 0 % is −30 dB,
 60 % is 0 dB and 100 % is +20 dB.
 
-**Use the RF gain even on a signal that already looks big enough.** Below
-about 60 % the ADC's own noise sets the floor, not the air: a station on RF
-36 read −74.8 dBFS at 60 % with empty channels at −73 to −80, which looks
-like no margin at all, and at 100 % the station stayed at −75 while the
-empty channels dropped to −85. The 20 dB of RF gain did not make the signal
-bigger, it got it clear of the converter — turning an apparent 0 dB SNR into
-a measured 10 dB. (Still under A/53's 15.2 dB cliff, so it correctly did not
-decode; that one is the antenna.)
+**The input level falls as the slider rises, and that is correct.** Measured
+against a live broadcaster on RF 36 with an empty channel for reference,
+because raw level says the opposite of the truth:
+
+| ATT | RF | level | SNR |
+|-----|----|-------|-----|
+| −30 | 0 | −56.5 dBFS | **−0.1 dB** |
+| −20 | 0 | −61.4 dBFS | 0.0 dB |
+| −10 | 0 | −69.9 dBFS | 1.2 dB |
+| 0 | 0 | −74.0 dBFS | 4.7 dB |
+| 0 | 20 | −74.5 dBFS | **6.6 dB** |
+
+Winding the attenuator stage negative adds 18 dB of level and *all* of it is
+noise. So `gain_plan` opens the attenuator toward 0 first and only then adds
+RF, which makes the slider monotone in signal-to-noise even though the level
+meter goes the other way. **An earlier note here claimed the opposite** — 
+that 20 dB of RF gain "got the signal clear of the converter" and turned
+0 dB SNR into 10 dB. That was reading level instead of SNR, and it was
+wrong; the table above is the measurement.
+
+**The last 20 dB of RF is what overdrives the converter.** It is worth under
+2 dB of SNR and it is front-end amplification, so on a strong local signal
+it overflows the ADC — which is what an 85 % default did the first time the
+receiver was run against the bench transmitter. The default is 60 % (the
+attenuator open, no RF), within 2 dB of the best this device can do.
+
+**An overdriven converter is invisible in the samples.** They arrive
+filtered and decimated, so nothing clips; the only sign is the driver
+logging `GetIQ: ADC overflow`. `bb60_source` therefore installs a SoapySDR
+log handler that counts those, and the receiver shows "Input overloaded —
+turn the RF gain down" instead of it scrolling past in a terminal. The same
+handler drops the module's `ConfigureIQCenter` / `ConfigureIO` / `Using
+format` chatter, which is logged at ERROR, is harmless, and otherwise
+prints several lines per retune.
 
 Recording with raw SoapySDR and decoding offline still works too, and is
 still the right thing for anything that does not need to be live -

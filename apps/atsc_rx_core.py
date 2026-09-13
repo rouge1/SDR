@@ -265,11 +265,16 @@ def mer_quality(mer):
     """A word for an MER reading, honest about where it stops meaning much."""
     if mer <= 0:
         return ''
-    if mer >= 22:
+    # Pitched against what this receiver actually reads, not against the
+    # theoretical cliff: a software loopback with no noise at all tops out
+    # near 24 dB, and off air a link running at 0.00% bad packets reads
+    # 19.5-22.5. Calling that "closing" alarms people about a perfect
+    # picture, which an earlier version of this did.
+    if mer >= 21:
         return 'eye wide open'
-    if mer >= 19:
-        return 'eye closing'
-    return (f'at the floor - the slicer cannot see past about '
+    if mer >= 18:
+        return 'eye open'
+    return (f'near the floor - the slicer cannot see past about '
             f'{MER_FLOOR_DB:.0f} dB')
 
 
