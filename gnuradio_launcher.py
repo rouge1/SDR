@@ -93,7 +93,8 @@ APP_TILES = [
     (3, 0, [("ATSC Video Transmitter", "atscXmitter", "atscXmit.jpg", "tx"),
             ("ATSC Video Receiver", "atscReceiver", "atsc.jpg", "rx")]),
     (3, 1, [("NTSC Analog Video", "ntscAnalogVideoRecorded",
-             "ntsc.jpg", "tx")]),
+             "ntsc.jpg", "tx"),
+            ("NTSC Video Receiver", "ntscReceiver", "ntscRx.jpg", "rx")]),
     (3, 2, [("AM Video Transmitter", "amVideoRecordedXmitter",
              "amVideo.jpg", "tx")]),
 ]

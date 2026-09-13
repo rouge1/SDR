@@ -1,0 +1,906 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# SPDX-License-Identifier: GPL-3.0
+#
+# NTSC Receiver - tunes a 6 MHz television channel, detects the vestigial
+# sideband the way a television does, and decodes the composite video back
+# into pictures. The receiving half of ``ntscAnalogVideoRecorded``; the two
+# share a tile in the launcher.
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+
+import numpy as np  # type: ignore
+try:                 # PyQt5 ships sip inside the package; some builds also
+    import sip       # expose it at the top level.
+except ImportError:  # pragma: no cover - depends on the PyQt5 build
+    from PyQt5 import sip  # type: ignore
+from gnuradio import analog, blocks, filter, gr, qtgui, soapy, uhd  # type: ignore
+from gnuradio.fft import window  # type: ignore
+from PyQt5 import Qt, QtCore  # type: ignore
+
+from apps.atsc_rx_core import channel_center_mhz, channel_for_center, tv_channel_items
+from apps.ntsc_decode import NtscDecoder, SYNC_DISCRIMINANT
+from apps.ntsc_encode import FH, FRAME, IRE_SYNC
+# The two ends of the link must agree about where the carriers sit, so the
+# receiver takes those numbers from the transmitter rather than repeating
+# them. Importing the app module is cheap - it only defines things.
+from apps.ntscAnalogVideoRecorded import (CARRIER_AT_SYNC, CARRIER_AT_WHITE,
+                                          LO_OFFSET, VISUAL_CARRIER)
+from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
+                        FrequencyChooser)
+
+# 20 MS/s, not 10. A 6 MHz channel will not fit either side of DC at 10, so
+# the radio's own LO leakage would land inside the picture; at 20 the whole
+# channel sits 6 MHz off DC with the sound carrier still inside the band.
+# The composite is decimated back to 10 MS/s before the decoder, which is
+# where the expensive work is.
+SAMPLE_RATES = {'hackrf': 20e6, 'usrp': 20e6, 'bb60': 20e6}
+COMPOSITE_DECIM = 2
+DEFAULT_CHANNEL = 24            # 533 MHz, the channel this bench uses
+
+ACTIVE_WIDTH = 640
+ACTIVE_LINES = 240              # per field; a frame is twice this
+
+#: How far the vestigial sideband reaches either side of the visual carrier,
+#: and so how wide a receiver's Nyquist slope must be.
+VESTIGIAL_SLOPE = 0.75e6
+#: Where the picture band ends, measured from the visual carrier: the
+#: vestige below, the full video bandwidth above.
+VIDEO_BAND_LOW = -1.25e6
+VIDEO_BAND_HIGH = 4.2e6
+BAND_EDGE = 0.3e6
+NYQUIST_TAPS = 257
+
+
+def nyquist_slope_taps(sample_rate, ntaps=NYQUIST_TAPS):
+    """The filter a television's IF applies, doing two jobs at once.
+
+    **The slope.** Below 0.75 MHz from the visual carrier both sidebands
+    survive and add; above it only one does. Rectify without compensating
+    and luma comes back twice as strong as chroma - whites too bright,
+    colours washed toward grey. It reads like a broken transmitter and is
+    not one; measured, putting the slope in took the colour error from 0.43
+    to 0.13. The response is half at the carrier, rising to one 0.75 MHz
+    above and falling to nothing 0.75 MHz below, so it is asymmetric and
+    the taps are complex - ``firdes`` has no shape like it.
+
+    **And the channel.** This is also what keeps the *sound* out of the
+    picture detector, and leaving that out cost a whole off-air test. The
+    aural carrier sits 4.5 MHz above the visual one at nearly a third of
+    its amplitude, and a detector fed both produces no recognisable sync at
+    all. It never showed up in software, because the modulator under test
+    carries only vision - the sound is added after it, on the way to the
+    radio. A real set uses a SAW filter with a sound trap for exactly this.
+    """
+    freqs = np.fft.fftfreq(ntaps, 1.0 / sample_rate)
+    response = np.clip(0.5 + freqs / (2 * VESTIGIAL_SLOPE), 0.0, 1.0)
+    # Raised-cosine edges rather than a brick wall, which would ring.
+    low = np.clip((freqs - VIDEO_BAND_LOW) / BAND_EDGE + 0.5, 0.0, 1.0)
+    high = np.clip((VIDEO_BAND_HIGH - freqs) / BAND_EDGE + 0.5, 0.0, 1.0)
+    response *= 0.5 * (1 - np.cos(np.pi * low))
+    response *= 0.5 * (1 - np.cos(np.pi * high))
+    taps = np.fft.ifft(response)
+    taps = np.roll(taps, ntaps // 2) * np.hamming(ntaps)
+    return taps.astype(np.complex64)
+
+
+class NtscDemod(gr.hier_block2):
+    """Complex baseband on a television channel in, composite video out.
+
+    Shift the visual carrier to DC, apply the Nyquist slope, rectify, and
+    turn the carrier amplitude back into a composite signal. Negative
+    modulation means the envelope is upside down - sync is peak carrier -
+    so the last step inverts it; the decoder finds its own levels from
+    there, which is why no AGC is needed for the picture.
+    """
+
+    def __init__(self, sample_rate, center_offset=LO_OFFSET,
+                 decimation=COMPOSITE_DECIM):
+        gr.hier_block2.__init__(
+            self, "ntsc_demod",
+            gr.io_signature(1, 1, gr.sizeof_gr_complex),
+            gr.io_signature(1, 1, gr.sizeof_float))
+        self.sample_rate = float(sample_rate)
+        self.composite_rate = self.sample_rate / decimation
+
+        # The radio is tuned ``center_offset`` above the channel centre, so
+        # the visual carrier sits this far from DC.
+        carrier_at = VISUAL_CARRIER - center_offset
+        self.rotator = blocks.rotator_cc(
+            -2 * np.pi * carrier_at / self.sample_rate)
+        self.slope = filter.fft_filter_ccc(
+            1, nyquist_slope_taps(self.sample_rate).tolist(), 1)
+        # **Synchronous detection, not a rectifier.** Envelope detection is
+        # what a 1950s set did and it works, but rectifying a vestigial
+        # sideband signal leaves quadrature distortion: measured, the colour
+        # error is 0.139 that way against 0.120 locking to the carrier
+        # first. The PLL earns its place twice over, because it also tracks
+        # whatever the two radios' local oscillators disagree by - the same
+        # job the AFC does in the ATSC receiver, for free.
+        self.pll = analog.pll_carriertracking_cc(0.002, 0.05, -0.05)
+        self.detector = blocks.complex_to_real(1)
+        # Negative modulation: peak carrier is sync, so flip it. The scale
+        # is arbitrary - NtscDecoder reads sync and blanking off whatever it
+        # is given - which is what saves this from needing an AGC.
+        self.invert = blocks.multiply_const_ff(-1.0)
+        self.decimate = filter.fir_filter_fff(
+            decimation,
+            filter.firdes.low_pass(1.0, self.sample_rate, 4.5e6, 1.0e6))
+
+        self.connect(self, self.rotator, self.slope, self.pll, self.detector,
+                     self.invert, self.decimate, self)
+
+    def set_center_offset(self, center_offset):
+        self.rotator.set_phase_inc(
+            -2 * np.pi * (VISUAL_CARRIER - center_offset) / self.sample_rate)
+
+
+class ntsc_frame_sink(gr.sync_block):
+    """Composite video in, decoded pictures out - on its own thread.
+
+    Decoding a frame takes about 26 ms and a work() call covers well under
+    a millisecond, so decoding inside work() would stall the radio. Samples
+    are gathered into a buffer and handed to a worker; if the worker is
+    still busy the buffer is dropped, which is the right thing for a live
+    receiver - a dropped frame costs nothing, falling behind costs
+    everything.
+    """
+
+    #: Enough signal that a whole frame is in there wherever it starts.
+    #:
+    #: A buffer lands at an arbitrary point, so the first vertical block in
+    #: it can be anywhere up to half a frame in, and the picture then needs
+    #: a full frame after that. 1.3 was not enough - about one buffer in
+    #: three ran out part way down and the bottom quarter of the picture
+    #: came back black.
+    BUFFER_FRAMES = 1.7
+
+    def __init__(self, sample_rate, width=ACTIVE_WIDTH,
+                 active_lines=ACTIVE_LINES):
+        gr.sync_block.__init__(self, name='ntsc_frame_sink',
+                               in_sig=[np.float32], out_sig=None)
+        self.sample_rate = float(sample_rate)
+        self.decoder = NtscDecoder(self.sample_rate, width, active_lines)
+        self._need = int(self.BUFFER_FRAMES * FRAME * self.sample_rate)
+        self._buf = np.empty(self._need, dtype=np.float32)
+        self._fill = 0
+        self._pending = None
+        self._wake = threading.Event()
+        self._running = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+
+        self.frame = None            # most recent picture, RGB 0..1
+        self.frames_decoded = 0
+        self.frames_dropped = 0
+        self.failures = 0
+        self.status = {}
+        self._player = None
+        self._pending_bytes = bytearray()
+
+    # -- lifecycle -------------------------------------------------------
+
+    def start(self):
+        self._running.set()
+        self._thread = threading.Thread(target=self._decode_loop, daemon=True,
+                                        name='ntsc-decode')
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self._running.clear()
+        self._wake.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self.stop_player()
+        return True
+
+    # -- streaming -------------------------------------------------------
+
+    def work(self, input_items, output_items):
+        data = input_items[0]
+        taken = 0
+        while taken < len(data):
+            room = self._need - self._fill
+            chunk = min(room, len(data) - taken)
+            self._buf[self._fill:self._fill + chunk] = data[taken:taken + chunk]
+            self._fill += chunk
+            taken += chunk
+            if self._fill >= self._need:
+                with self._lock:
+                    if self._pending is None:
+                        self._pending = self._buf.copy()
+                        self._wake.set()
+                    else:
+                        self.frames_dropped += 1
+                self._fill = 0
+        return len(data)
+
+    def _decode_loop(self):
+        while self._running.is_set():
+            self._wake.wait(0.2)
+            self._wake.clear()
+            with self._lock:
+                buf, self._pending = self._pending, None
+            if buf is None:
+                continue
+            try:
+                self._decode(buf.astype(np.float64))
+            except Exception:
+                # A capture with no sync in it raises; that is a weak signal,
+                # not a bug, and the readout says so.
+                self.failures += 1
+
+    def _decode(self, x):
+        decoder = self.decoder
+        sync, blank = decoder.levels(x)
+        starts, widths = decoder.find_pulses(x, sync, blank)
+        status = {'sync': sync, 'blank': blank, 'pulses': starts.size}
+
+        # The spacing of the full-width sync pulses is the line rate, and
+        # how far it is from 15734.266 Hz is the transmitter's clock error -
+        # the same thing the ATSC receiver reads off the pilot.
+        horizontal = starts[widths > SYNC_DISCRIMINANT]
+        status['line_rate'] = 0.0
+        if horizontal.size > 20:
+            gaps = np.diff(horizontal)
+            # Average, not median. A line is 635.556 samples at 10 MS/s and
+            # a pulse index is a whole number, so the gaps are a mixture of
+            # 635 and 636 and the *median* is whichever is commoner - which
+            # reads 15723.3 Hz or 15748.0 Hz and never the 15734.266 that is
+            # actually there. Averaging recovers the fraction.
+            # Within 10% of a line, so the half-line spacing of the vertical
+            # block's broad pulses cannot drag the average down - which read
+            # 15866 Hz when the window was wider.
+            nominal = self.sample_rate / FH
+            one_line = gaps[(gaps > 0.9 * nominal) & (gaps < 1.1 * nominal)]
+            if one_line.size > 10:
+                period = float(one_line.mean()) / self.sample_rate
+                status['line_rate'] = 1.0 / period if period > 0 else 0.0
+
+        frame = decoder.decode_frame(x, color=True)
+        self.frame = frame
+        self.frames_decoded += 1
+        status['locked'] = True
+        self.status = status
+        self._to_player(frame)
+
+    # -- handing the picture to a player ---------------------------------
+
+    def start_player(self, argv):
+        self.stop_player()
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        os.set_blocking(proc.stdin.fileno(), False)
+        self._player = proc
+        self._pending_bytes = bytearray()
+        return proc
+
+    def stop_player(self):
+        proc, self._player = self._player, None
+        if proc is None:
+            return
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+
+    def player_alive(self):
+        return self._player is not None and self._player.poll() is None
+
+    def _to_player(self, frame):
+        """Raw RGB down a non-blocking pipe, dropping rather than stalling.
+
+        NTSC has no container to hand over the way ATSC has a transport
+        stream, so what goes to the player is the pictures themselves.
+        """
+        proc = self._player
+        if proc is None:
+            return
+        self._pending_bytes += (np.clip(frame, 0, 1) * 255).astype(
+            np.uint8).tobytes()
+        try:
+            written = os.write(proc.stdin.fileno(), self._pending_bytes)
+            del self._pending_bytes[:written]
+        except BlockingIOError:
+            # One frame of slack; a player that has stalled gets the newest
+            # picture next time rather than a backlog of stale ones.
+            if len(self._pending_bytes) > 3 * frame.size:
+                self._pending_bytes = bytearray()
+        except (OSError, ValueError, AttributeError):
+            self.stop_player()
+
+
+def find_player(width=ACTIVE_WIDTH, height=2 * ACTIVE_LINES):
+    """A player that will take raw RGB frames on stdin, or None."""
+    size = f"{width}x{height}"
+    if shutil.which('ffplay'):
+        return ['ffplay', '-hide_banner', '-loglevel', 'error',
+                '-f', 'rawvideo', '-pixel_format', 'rgb24',
+                '-video_size', size, '-framerate', f"{1.0 / FRAME:.4f}",
+                '-window_title', 'NTSC Video', '-i', 'pipe:0']
+    if shutil.which('mpv'):
+        return ['mpv', '--title=NTSC Video', '--demuxer=rawvideo',
+                f'--demuxer-rawvideo-w={width}',
+                f'--demuxer-rawvideo-h={height}',
+                '--demuxer-rawvideo-mp-format=rgb24', '-']
+    return None
+
+
+# --------------------------------------------------------------------------
+# Configuration dialog
+# --------------------------------------------------------------------------
+
+class ConfigDialog(Qt.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("NTSC Receiver Configuration")
+        self.layout = Qt.QVBoxLayout(self)
+        self.config_dir = "config"
+        self.config_file = os.path.join(self.config_dir,
+                                        "ntscReceiver_config.json")
+
+        settings = read_settings()
+        self.ipList = settings.get('ip_addresses', [])
+        self.radio_type = settings.get('radio_type', 'hackrf')
+        if self.radio_type == 'vsg':
+            self.create_cannot_receive()
+            apply_dark_theme(self)
+            return
+
+        self.button_box = Qt.QDialogButtonBox(
+            Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+
+        self.create_receiver_selector()
+        self.create_channel_control()
+        self.create_gain_control()
+
+        self.layout.addWidget(self.button_box)
+        self.load_config()
+        self.update_ok_state()
+        apply_dark_theme(self)
+
+    def create_cannot_receive(self):
+        self.setWindowTitle("NTSC Receiver")
+        row = Qt.QHBoxLayout()
+        icon = Qt.QLabel()
+        icon.setPixmap(self.style().standardIcon(
+            Qt.QStyle.SP_MessageBoxWarning).pixmap(48, 48))
+        icon.setAlignment(QtCore.Qt.AlignTop)
+        row.addWidget(icon)
+        message = Qt.QLabel(
+            "<b>The Signal Hound VSG60 cannot receive.</b><br><br>"
+            "It only transmits, so the NTSC Receiver has no radio to listen "
+            "with. Choose the HackRF One, an Ettus USRP or the Signal Hound "
+            "BB60D in Settings (the gear icon), then open it again.")
+        message.setWordWrap(True)
+        message.setAlignment(QtCore.Qt.AlignTop)
+        row.addWidget(message, 1)
+        self.layout.addLayout(row)
+        close = Qt.QDialogButtonBox(Qt.QDialogButtonBox.Close)
+        close.rejected.connect(self.reject)
+        self.layout.addWidget(close)
+
+    def create_receiver_selector(self):
+        if self.radio_type != 'usrp':
+            label = {'bb60': "Radio: Signal Hound BB60D (USB)"}.get(
+                self.radio_type, "Radio: HackRF One (USB)")
+            self.layout.addWidget(Qt.QLabel(label))
+            return
+        self.usrp_combo = Qt.QComboBox()
+        if self.ipList:
+            for i, ip in enumerate(self.ipList):
+                self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})", ip.strip())
+        else:
+            self.usrp_combo.addItem("IP addr missing - Go to Settings")
+        self.layout.addWidget(Qt.QLabel("Select USRP:"))
+        self.layout.addWidget(self.usrp_combo)
+
+    def create_channel_control(self):
+        self.cf_chooser = FrequencyChooser(
+            minimum=50.0, maximum=2200.0,
+            value=channel_center_mhz(DEFAULT_CHANNEL),
+            channels=tv_channel_items())
+        self.layout.addWidget(self.cf_chooser)
+
+    def create_gain_control(self):
+        row = Qt.QHBoxLayout()
+        self.gain_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.gain_slider.setRange(0, 100)
+        default = 60 if self.radio_type == 'bb60' else 55
+        self.gain_slider.setValue(default)
+        self.gain_label = Qt.QLabel(f"RF Gain: {default}%")
+        self.gain_slider.valueChanged.connect(
+            lambda v: self.gain_label.setText(f"RF Gain: {v}%"))
+        row.addWidget(self.gain_label)
+        row.addWidget(self.gain_slider)
+        self.layout.addLayout(row)
+
+    def update_ok_state(self):
+        ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        enabled = self.radio_type != 'usrp' or bool(self.ipList)
+        ok.setEnabled(enabled)
+        if enabled:
+            ok.setGraphicsEffect(None)
+        else:
+            dim = Qt.QGraphicsOpacityEffect()
+            dim.setOpacity(0.30)
+            ok.setGraphicsEffect(dim)
+
+    def load_config(self):
+        if not os.path.exists(self.config_file):
+            os.makedirs(self.config_dir, exist_ok=True)
+            return
+        try:
+            with open(self.config_file) as f:
+                config = json.load(f)
+        except Exception as exc:
+            print(f"NTSC receiver: could not read saved config: {exc}",
+                  file=sys.stderr)
+            return
+        restore = [
+            ('center_mhz', lambda v: self.cf_chooser.setValue(float(v))),
+            ('gain_percent', lambda v: self.gain_slider.setValue(int(v))),
+        ]
+        if hasattr(self, 'usrp_combo'):
+            restore.append(
+                ('usrp_index', lambda v: self.usrp_combo.setCurrentIndex(int(v))))
+        for key, apply in restore:
+            if key in config:
+                try:
+                    apply(config[key])
+                except Exception as exc:
+                    print(f"NTSC receiver: ignoring saved {key!r}: {exc}",
+                          file=sys.stderr)
+
+    def save_config(self):
+        config = {
+            'radio_type': self.radio_type,
+            'center_mhz': self.cf_chooser.value(),
+            'gain_percent': self.gain_slider.value(),
+        }
+        if hasattr(self, 'usrp_combo'):
+            config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
+        os.makedirs(self.config_dir, exist_ok=True)
+        with open(self.config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+
+    def accept(self):
+        self.save_config()
+        super().accept()
+
+    def get_values(self):
+        usrp = hasattr(self, 'usrp_combo') and bool(self.ipList)
+        return {
+            'radio_type': self.radio_type,
+            'ipXmitAddr': (self.usrp_combo.currentData() or '') if usrp else '',
+            'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
+            'center_mhz': self.cf_chooser.value(),
+            'gain_percent': self.gain_slider.value(),
+        }
+
+
+# --------------------------------------------------------------------------
+# The receiver
+# --------------------------------------------------------------------------
+
+def rx_gain_plan(percent, radio_type):
+    """The HackRF's three receive stages, as in the other receivers."""
+    percent = min(max(float(percent), 0.0), 100.0)
+    if radio_type != 'hackrf':
+        return {}
+    amp = 14.0 if percent >= 25 else 0.0
+    total = percent / 100.0 * 88.0
+    lna = min(40.0, round(total * 0.45 / 8.0) * 8.0)
+    vga = min(62.0, max(0.0, round((total - lna) / 2.0) * 2.0))
+    return {'AMP': amp, 'LNA': lna, 'VGA': vga}
+
+
+class ntscReceiver(gr.top_block, Qt.QWidget):
+    GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
+
+    def __init__(self, config_values=None):
+        gr.top_block.__init__(self, "NTSC Receiver", catch_exceptions=True)
+        Qt.QWidget.__init__(self)
+        self.setWindowTitle("NTSC Receiver")
+        qtgui.util.check_set_qss()
+        try:
+            self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
+        except BaseException as exc:
+            print(f"Qt GUI: Could not set Icon: {exc}", file=sys.stderr)
+
+        self.top_scroll_layout = Qt.QVBoxLayout()
+        self.setLayout(self.top_scroll_layout)
+        self.top_scroll = Qt.QScrollArea()
+        self.top_scroll.setFrameStyle(Qt.QFrame.NoFrame)
+        self.top_scroll_layout.addWidget(self.top_scroll)
+        self.top_scroll.setWidgetResizable(True)
+        self.top_widget = Qt.QWidget()
+        self.top_scroll.setWidget(self.top_widget)
+        self.top_layout = Qt.QVBoxLayout(self.top_widget)
+        self.top_grid_layout = Qt.QGridLayout()
+        self.top_layout.addLayout(self.top_grid_layout)
+
+        self.settings = Qt.QSettings("GNU Radio", "ntscReceiver")
+        try:
+            geometry = self.settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        except BaseException as exc:
+            print(f"Qt GUI: Could not restore geometry: {exc}", file=sys.stderr)
+
+        if config_values is None:
+            dialog = ConfigDialog()
+            if not dialog.exec_():
+                sys.exit(0)
+            values = dialog.get_values()
+        else:
+            values = config_values
+
+        self.radio_type = values.get('radio_type', 'hackrf')
+        self.center_mhz = float(values.get('center_mhz',
+                                           channel_center_mhz(DEFAULT_CHANNEL)))
+        self.gain_percent = float(values.get('gain_percent', 60))
+        self.usrp_ip = values.get('ipXmitAddr', '')
+        self.samp_rate = SAMPLE_RATES.get(self.radio_type, 20e6)
+        self._last_decoded = 0
+        self._last_time = None
+
+        self._build_controls()
+        self._build_flowgraph()
+        self._build_readout()
+        self._build_spectrum()
+
+        self.status_timer = Qt.QTimer(self)
+        self.status_timer.timeout.connect(self.refresh)
+        self.status_timer.start(500)
+
+    # ------------------------------------------------------------------ UI
+    def _build_controls(self):
+        row = Qt.QHBoxLayout()
+        row.addWidget(Qt.QLabel("Channel:"))
+        self.channel_combo = Qt.QComboBox()
+        for n, centre in [(n, c) for n, c, _ in tv_channel_items()]:
+            self.channel_combo.addItem(f"{n} ({centre:g})", n)
+        index = self.channel_combo.findData(channel_for_center(self.center_mhz))
+        if index >= 0:
+            self.channel_combo.setCurrentIndex(index)
+        self.channel_combo.currentIndexChanged.connect(
+            lambda _: self.set_center(channel_center_mhz(
+                self.channel_combo.currentData())))
+        row.addWidget(self.channel_combo)
+
+        row.addWidget(Qt.QLabel("MHz:"))
+        self.freq_spin = Qt.QDoubleSpinBox()
+        self.freq_spin.setDecimals(3)
+        self.freq_spin.setSingleStep(0.1)
+        self.freq_spin.setRange(50.0, 2200.0)
+        self.freq_spin.setValue(self.center_mhz)
+        self.freq_spin.valueChanged.connect(self.set_center)
+        row.addWidget(self.freq_spin)
+
+        row.addSpacing(15)
+        row.addWidget(Qt.QLabel("RF Gain:"))
+        self.gain_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+        self.gain_slider.setRange(0, 100)
+        self.gain_slider.setValue(int(self.gain_percent))
+        self.gain_slider.setMinimumWidth(120)
+        self.gain_slider.valueChanged.connect(self.set_gain)
+        row.addWidget(self.gain_slider)
+        self.gain_value = Qt.QLabel(f"{int(self.gain_percent)}%")
+        row.addWidget(self.gain_value)
+
+        row.addStretch(1)
+        self.watch_btn = Qt.QPushButton("Watch")
+        self.watch_btn.setToolTip(
+            "Hand the decoded pictures to a media player. NTSC has no "
+            "transport stream to pass on, so what goes across is raw frames.")
+        self.watch_btn.clicked.connect(self.toggle_watch)
+        row.addWidget(self.watch_btn)
+        self.clear_btn = Qt.QPushButton("Clear Statistics")
+        self.clear_btn.clicked.connect(self.clear_stats)
+        row.addWidget(self.clear_btn)
+
+        holder = Qt.QWidget()
+        holder.setLayout(row)
+        self.top_grid_layout.addWidget(holder, 0, 0, 1, 10)
+
+    def _build_readout(self):
+        big = Qt.QFont()
+        big.setPointSize(15)
+        big.setBold(True)
+        self.lbl = {}
+
+        def field(grid, key, caption, row, col, font=None, span=1):
+            grid.addWidget(Qt.QLabel(f"<b>{caption}</b>"), row, col * 2)
+            value = Qt.QLabel("-")
+            if font:
+                value.setFont(font)
+            value.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            grid.addWidget(value, row, col * 2 + 1, 1, span)
+            self.lbl[key] = value
+
+        signal = Qt.QGroupBox("Signal")
+        sg = Qt.QGridLayout()
+        signal.setLayout(sg)
+        field(sg, 'lock', "Status", 0, 0, big, span=3)
+        field(sg, 'level', "Input Level", 1, 0)
+        field(sg, 'levels', "Sync / Blanking", 1, 1)
+        sg.setColumnStretch(1, 1)
+        sg.setColumnStretch(3, 1)
+        sg.setHorizontalSpacing(12)
+        self.top_grid_layout.addWidget(signal, 1, 0, 1, 4)
+
+        picture = Qt.QGroupBox("Picture")
+        pg = Qt.QGridLayout()
+        picture.setLayout(pg)
+        field(pg, 'line_rate', "Line Rate", 0, 0)
+        field(pg, 'frames', "Frames Decoded", 0, 1)
+        field(pg, 'dropped', "Dropped / Failed", 1, 0)
+        field(pg, 'colour', "Colour", 1, 1)
+        pg.setColumnStretch(1, 1)
+        pg.setColumnStretch(3, 1)
+        pg.setHorizontalSpacing(12)
+        self.top_grid_layout.addWidget(picture, 1, 4, 1, 6)
+
+        self.action_note = Qt.QLabel("")
+        self.top_grid_layout.addWidget(self.action_note, 9, 0, 1, 10)
+        for r in (0, 1, 9):
+            self.top_grid_layout.setRowStretch(r, 0)
+        self.top_grid_layout.setRowStretch(2, 1)
+
+    def _build_spectrum(self):
+        self.spectrum = qtgui.freq_sink_c(
+            2048, window.WIN_BLACKMAN_hARRIS,
+            self.center_mhz * 1e6 + LO_OFFSET, self.samp_rate,
+            'Received Channel - visual carrier 1.75 MHz below channel centre, '
+            'sound 4.5 MHz above it', 1, None)
+        self.spectrum.set_update_time(0.10)
+        self.spectrum.set_y_axis(*SPECTRUM_Y_AXIS)
+        self.spectrum.set_y_label('Relative Gain', 'dB')
+        self.spectrum.set_trigger_mode(qtgui.TRIG_MODE_FREE, 0.0, 0, "")
+        self.spectrum.enable_autoscale(False)
+        self.spectrum.enable_grid(True)
+        self.spectrum.set_fft_average(0.2)
+        self.spectrum.enable_axis_labels(True)
+        self.spectrum.enable_control_panel(False)
+        self.spectrum.disable_legend()
+        widget = sip.wrapinstance(self.spectrum.qwidget(), Qt.QWidget)
+        self.top_grid_layout.addWidget(widget, 2, 0, 7, 10)
+        self.connect(self.radio_source, self.spectrum)
+
+    # ----------------------------------------------------------- flowgraph
+    def _build_flowgraph(self):
+        tuned = self.center_mhz * 1e6 + LO_OFFSET
+        if self.radio_type == 'usrp':
+            self.radio_source = uhd.usrp_source(
+                ",".join((f"addr={self.usrp_ip}", '')),
+                uhd.stream_args(cpu_format="fc32", args='',
+                                channels=list(range(0, 1))),
+            )
+            self.radio_source.set_samp_rate(self.samp_rate)
+            self.radio_source.set_center_freq(tuned, 0)
+            self.radio_source.set_antenna("RX2", 0)
+        elif self.radio_type == 'bb60':
+            from apps.bb60_source import bb60_source
+            self.radio_source = bb60_source(center_freq=tuned,
+                                            sample_rate=self.samp_rate,
+                                            gain_percent=self.gain_percent)
+        else:
+            self.radio_source = soapy.source('driver=hackrf', 'fc32', 1, '', '',
+                                             [''], [''])
+            self.radio_source.set_sample_rate(0, self.samp_rate)
+            self.radio_source.set_frequency(0, tuned)
+            self.radio_source.set_gain_mode(0, False)
+
+        self.demod = NtscDemod(self.samp_rate)
+        self.frames = ntsc_frame_sink(self.demod.composite_rate)
+        self.level_probe = blocks.probe_signal_f()
+        # 0.0001 was so slow the reading flickered between the signal and
+        # the noise floor from one refresh to the next.
+        self.rms = blocks.rms_cf(0.01)
+        self.connect(self.radio_source, self.demod, self.frames)
+        self.connect(self.radio_source, self.rms, self.level_probe)
+
+    # ------------------------------------------------------------ controls
+    def apply_gain(self):
+        if self.radio_type == 'usrp':
+            try:
+                rng = self.radio_source.get_gain_range()
+                low, high = float(rng.start()), float(rng.stop())
+            except Exception:
+                low, high = 0.0, 76.0
+            self.radio_source.set_gain(
+                low + (high - low) * self.gain_percent / 100.0, 0)
+            return
+        if self.radio_type == 'bb60':
+            self.radio_source.set_gain_percent(self.gain_percent)
+            return
+        for name, value in rx_gain_plan(self.gain_percent, 'hackrf').items():
+            self.radio_source.set_gain(0, name, value)
+
+    def set_gain(self, percent):
+        self.gain_percent = float(percent)
+        self.gain_value.setText(f"{int(percent)}%")
+        self.apply_gain()
+
+    def set_center(self, mhz):
+        mhz = float(mhz)
+        if abs(mhz - self.center_mhz) < 1e-6:
+            return
+        self.center_mhz = mhz
+        tuned = mhz * 1e6 + LO_OFFSET
+        if self.radio_type == 'usrp':
+            self.radio_source.set_center_freq(tuned, 0)
+        elif self.radio_type == 'bb60':
+            self.radio_source.set_center_freq(tuned)
+        else:
+            self.radio_source.set_frequency(0, tuned)
+        self.spectrum.set_frequency_range(tuned, self.samp_rate)
+        for widget, value in ((self.freq_spin, mhz),
+                              (self.channel_combo, channel_for_center(mhz))):
+            widget.blockSignals(True)
+            if widget is self.freq_spin:
+                widget.setValue(value)
+            elif value is not None:
+                index = widget.findData(value)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+            widget.blockSignals(False)
+        self.clear_stats()
+
+    def clear_stats(self):
+        self.frames.frames_decoded = 0
+        self.frames.frames_dropped = 0
+        self.frames.failures = 0
+        self._last_decoded = 0
+        self._last_time = None
+
+    def toggle_watch(self):
+        if self.frames.player_alive():
+            self.frames.stop_player()
+            self.watch_btn.setText("Watch")
+            self.action_note.setText("")
+            return
+        argv = find_player()
+        if argv is None:
+            Qt.QMessageBox.warning(
+                self, "No Media Player",
+                "Watching needs ffplay or mpv on PATH, and neither is "
+                "installed.")
+            return
+        try:
+            self.frames.start_player(argv)
+        except Exception as exc:
+            Qt.QMessageBox.warning(self, "Could Not Start Player", str(exc))
+            return
+        self.watch_btn.setText("Stop Watching")
+        self.action_note.setText(
+            f"{os.path.basename(argv[0])} started - it shows the decoded "
+            "pictures as they arrive.")
+
+    # ------------------------------------------------------------- readout
+    def refresh(self):
+        now = time.time()
+        rms = self.level_probe.level()
+        self.lbl['level'].setText(
+            f"{20 * np.log10(rms):.1f} dBFS" if rms > 0 else "-")
+
+        status = self.frames.status
+        decoded = self.frames.frames_decoded
+        # Only update the rate over a decent interval: called twice in quick
+        # succession - which happens if anything refreshes the window as
+        # well as the timer - a sub-millisecond gap reads as 0 frames/s.
+        rate = getattr(self, '_frame_rate', 0.0)
+        if self._last_time is None:
+            self._last_decoded, self._last_time = decoded, now
+        elif now - self._last_time >= 0.4:
+            rate = (decoded - self._last_decoded) / (now - self._last_time)
+            self._frame_rate = rate
+            self._last_decoded, self._last_time = decoded, now
+
+        line_rate = status.get('line_rate', 0.0)
+        if line_rate:
+            # How far the transmitter's line rate is from 15734.266 Hz, the
+            # same clock error the ATSC receiver reads off the pilot.
+            ppm = (line_rate - FH) / FH * 1e6
+            self.lbl['line_rate'].setText(
+                f"{line_rate:,.1f} Hz  ({ppm:+.0f} ppm)")
+        else:
+            self.lbl['line_rate'].setText("-")
+
+        if status.get('sync') is not None and 'blank' in status:
+            self.lbl['levels'].setText(
+                f"{status['sync']:.3f} / {status['blank']:.3f}")
+        else:
+            self.lbl['levels'].setText("-")
+
+        # A buffer holds 1.7 frames and yields one picture, so the ceiling
+        # is 29.97/1.7 = 17.6 a second, not 29.97. Say what is actually
+        # attainable rather than flagging the design as a shortfall.
+        self.lbl['frames'].setText(
+            f"{decoded:,}  ({rate:.1f}/s of {1.0 / FRAME / 1.7:.1f})"
+            if decoded else "none")
+        self.lbl['dropped'].setText(
+            f"{self.frames.frames_dropped} / {self.frames.failures}")
+        frame = self.frames.frame
+        if frame is not None:
+            # A monochrome signal decodes with the colour axes near zero.
+            saturation = float(np.abs(frame - frame.mean(axis=2,
+                                                         keepdims=True)).mean())
+            self.lbl['colour'].setText(
+                "colour" if saturation > 0.02 else "monochrome")
+        else:
+            self.lbl['colour'].setText("-")
+
+        text, colour = self._status(decoded, rate, line_rate)
+        self.lbl['lock'].setText(text)
+        self.lbl['lock'].setStyleSheet(f"color: {colour};")
+
+        if not self.frames.player_alive() and self.watch_btn.text() != "Watch":
+            self.frames.stop_player()
+            self.watch_btn.setText("Watch")
+            self.action_note.setText("")
+
+    def _status(self, decoded, rate, line_rate):
+        if not decoded:
+            return ("No picture - nothing is syncing on this channel", self.BAD)
+        if line_rate and abs(line_rate - FH) / FH > 0.01:
+            return (f"Syncing, but the line rate is {line_rate:,.0f} Hz "
+                    f"and should be {FH:,.0f}", self.WARN)
+        if rate < 12:
+            return (f"Picture, but only {rate:.0f} frames a second", self.WARN)
+        return ("Locked - picture decoding", self.GOOD)
+
+    def closeEvent(self, event):
+        self.settings = Qt.QSettings("GNU Radio", "ntscReceiver")
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.status_timer.stop()
+        self.stop()
+        self.wait()
+        event.accept()
+
+
+def main(top_block_cls=ntscReceiver, options=None, app=None, config_values=None):
+    if app is None:
+        app = Qt.QApplication(sys.argv)
+
+    tb = top_block_cls(config_values)
+    tb.start()
+    tb.apply_gain()
+    tb.show()
+
+    import signal as _signal
+
+    def sig_handler(sig=None, frame=None):
+        tb.stop()
+        tb.wait()
+        Qt.QApplication.quit()
+
+    _signal.signal(_signal.SIGINT, sig_handler)
+    _signal.signal(_signal.SIGTERM, sig_handler)
+
+    timer = Qt.QTimer()
+    timer.start(500)
+    timer.timeout.connect(lambda: None)
+
+    if app.instance():
+        return tb
+    return app.exec_()
+
+
+if __name__ == '__main__':
+    main()
