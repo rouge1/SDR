@@ -1183,11 +1183,22 @@ ssh -i ~/.ssh/id_worklaptop2 user@192.168.50.48        # hostname TVAdemo
 ```
 
 Ubuntu 24.04, i9-11980HK, 62 GB, 3.4 TB free, GNU Radio 3.10.12.0 with gr-dtv
-in a conda env called `gnu`, repo at `/data/python/SDR`, media at
-`/data/python/media`. There is **no git** on it, as on the Windows laptop, so
-it is kept in step by copying files. It is on WiFi (the wired port is down),
-which still moves about 8 MB/s.
+in a conda env called `gnu`, repo at `/data/python/SDR`. There is **no git**
+on it, as on the Windows laptop, so it is kept in step by copying files. It is
+on WiFi (the wired port is down), which still moves about 8 MB/s - the fourteen
+video clips are 322 MB and took 47 seconds.
 
+- **Its media folder is `/home/user/Documents`, not `/data/python/media`**,
+  which does not exist on that machine. `config/window_settings.json` is
+  per-machine and is not copied across, so the two differ; copy media there,
+  not to the path this box uses. Anything CC BY goes with its credits -
+  `VIDEO-CREDITS.txt` belongs in the same folder, because the licence
+  requires the credit wherever the clip is passed on.
+- **ffmpeg is there, inside the conda env** (7.1.1, from conda-forge) rather
+  than in `/usr/bin`, so `which ffmpeg` from a bare SSH shell finds nothing
+  and it looks absent. `have_ffmpeg()` runs inside the env and sees it, so
+  the video picker works on that machine like any other. Do not conclude
+  from a plain `which` that a tool is missing on a conda machine.
 - **The VSG library is vendored, not installed.** `vendor/libvsg_api.so.1`
   sits in the repo and `VSG_API_LIB=/data/python/SDR/vendor` points
   `vsg_sink` at it, so nothing needs Sceptre. The udev rule is already in
