@@ -551,6 +551,18 @@ fixing. Three other things did:
   the longer it ran, as the Gaussian tail reaches further. `BASEBAND_SCALE` is
   0.85 now, leaving 10 dB of headroom; the analog stage sets actual power.
 
+- **It could not be tuned to most frequencies.** The dialog's centre
+  frequency was a bare `QSlider` running 50 to 2200 in *whole megahertz*:
+  2151 positions rendered a few hundred pixels wide, which is about seven
+  megahertz per pixel of mouse travel. Asked for 533 MHz - the channel this
+  bench uses - the nearest it would go was 539, and nothing on screen said
+  why. Both ATSC apps now share `FrequencyChooser` from `apps/utils.py`:
+  type the number, pick the television channel, or drag a slider that moves
+  in tenths of a megahertz and whose page step is exactly one 6 MHz channel,
+  all three staying in step with each other. The running flowgraph window
+  was never affected - its `RangeWidget` is a counter with a 0.1 step, so it
+  always took a typed value.
+
 The transport stream must be **constant bit rate at exactly 19.392658 Mbps**,
 since the flowgraph consumes it at a rate fixed by the symbol clock - mux it
 any slower or faster and the picture plays at the wrong speed. ffmpeg builds

@@ -33,8 +33,10 @@ from PyQt5 import Qt, QtCore  # type: ignore
 
 from apps.atsc_rx_core import (Afc, SYMBOL_RATE, TsAnalyzer,
                                channel_center_mhz, channel_for_center,
-                               channels, mer_db, mer_quality, since)
-from apps.utils import apply_dark_theme, read_settings, SPECTRUM_Y_AXIS
+                               channels, mer_db, mer_quality, since,
+                               tv_channel_items)
+from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
+                        FrequencyChooser)
 
 # Each radio's own rate, chosen from what it will actually accept:
 # SoapyHackRF takes whole megahertz only, and the BB60D's ladder is
@@ -430,50 +432,16 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.usrp_combo)
 
     def create_channel_control(self):
-        """Channel and centre frequency, each following the other.
+        """Channel, exact frequency and a slider, all one control.
 
-        Both are offered because both are how people actually think about
-        this: a television is tuned by channel, a bench is tuned by
-        megahertz, and ``atscXmitter`` asks for megahertz.
+        The same ``FrequencyChooser`` the transmitter uses, so the two ends
+        of the link are tuned the same way and offer the same channel list.
         """
-        self.layout.addWidget(Qt.QLabel("Television Channel:"))
-        self.channel_combo = Qt.QComboBox()
-        for n, centre in channels():
-            band = "VHF" if n <= 13 else "UHF"
-            self.channel_combo.addItem(f"{band} {n}  ({centre:g} MHz)", n)
-        self.layout.addWidget(self.channel_combo)
-
-        row = Qt.QHBoxLayout()
-        row.addWidget(Qt.QLabel("Center Frequency (MHz):"))
-        self.freq_spin = Qt.QDoubleSpinBox()
-        self.freq_spin.setDecimals(3)
-        self.freq_spin.setSingleStep(0.1)
-        self.freq_spin.setRange(50.0, 2200.0)
-        self.freq_spin.setValue(channel_center_mhz(DEFAULT_CHANNEL))
-        row.addWidget(self.freq_spin)
-        self.layout.addLayout(row)
-
-        self.channel_combo.currentIndexChanged.connect(self._channel_picked)
-        self.freq_spin.valueChanged.connect(self._freq_typed)
-        self._sync_channel(channel_center_mhz(DEFAULT_CHANNEL))
-
-    def _channel_picked(self, _index):
-        n = self.channel_combo.currentData()
-        if n is not None:
-            self.freq_spin.blockSignals(True)
-            self.freq_spin.setValue(channel_center_mhz(n))
-            self.freq_spin.blockSignals(False)
-
-    def _freq_typed(self, mhz):
-        self._sync_channel(mhz)
-
-    def _sync_channel(self, mhz):
-        n = channel_for_center(mhz)
-        index = self.channel_combo.findData(n) if n is not None else -1
-        self.channel_combo.blockSignals(True)
-        if index >= 0:
-            self.channel_combo.setCurrentIndex(index)
-        self.channel_combo.blockSignals(False)
+        self.cf_chooser = FrequencyChooser(
+            minimum=50.0, maximum=2200.0,
+            value=channel_center_mhz(DEFAULT_CHANNEL),
+            channels=tv_channel_items())
+        self.layout.addWidget(self.cf_chooser)
 
     def create_gain_control(self):
         row = Qt.QHBoxLayout()
@@ -518,7 +486,7 @@ class ConfigDialog(Qt.QDialog):
             return
         # One unreadable value must not discard everything saved after it.
         restore = [
-            ('center_mhz', lambda v: self.freq_spin.setValue(float(v))),
+            ('center_mhz', lambda v: self.cf_chooser.setValue(float(v))),
             ('gain_percent', lambda v: self.gain_slider.setValue(int(v))),
         ]
         if hasattr(self, 'usrp_combo'):
@@ -535,7 +503,7 @@ class ConfigDialog(Qt.QDialog):
     def save_config(self):
         config = {
             'radio_type': self.radio_type,
-            'center_mhz': self.freq_spin.value(),
+            'center_mhz': self.cf_chooser.value(),
             'gain_percent': self.gain_slider.value(),
         }
         if hasattr(self, 'usrp_combo'):
@@ -554,7 +522,7 @@ class ConfigDialog(Qt.QDialog):
             'radio_type': self.radio_type,
             'ipXmitAddr': (self.usrp_combo.currentData() or '') if usrp else '',
             'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
-            'center_mhz': self.freq_spin.value(),
+            'center_mhz': self.cf_chooser.value(),
             'gain_percent': self.gain_slider.value(),
         }
 

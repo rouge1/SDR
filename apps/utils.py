@@ -1,7 +1,133 @@
 import json
 import os
 from PyQt5 import Qt  #type: ignore
-from PyQt5.QtCore import QObject, QEvent, QRect  #type: ignore
+from PyQt5.QtCore import (QObject, QEvent, QRect, Qt as QtNs,  #type: ignore
+                          pyqtSignal)
+
+
+# --- Tuning -----------------------------------------------------------------
+
+#: The resolution every frequency control works in. 0.1 MHz is finer than
+#: any radio here needs to be set and keeps the slider a manageable length.
+FREQ_STEP_MHZ = 0.1
+
+
+class FrequencyChooser(Qt.QWidget):
+    """Tune to an exact frequency: type it, pick a channel, or drag to it.
+
+    **A plain QSlider cannot do this job, and it was not obvious why.**
+    ``atscXmitter`` had one running 50 to 2200 in whole megahertz: 2150
+    positions rendered across a few hundred pixels, so one pixel of mouse
+    travel is about seven megahertz and most frequencies are not reachable
+    at all. Asked for 533 MHz - the channel this bench uses - the nearest
+    the mouse could get was 539, and nothing about the control said so.
+
+    So there are three ways in, and they stay in step with each other:
+
+    - a **spin box**, which is the only one that can be exact, and which
+      takes a typed number;
+    - a **channel picker**, when the caller passes a channel plan, because
+      "UHF 24" is how anyone actually thinks about a television channel;
+    - a **slider** for sweeping, now stepping in tenths of a megahertz,
+      with its page step set to one 6 MHz channel so PageUp and PageDown
+      walk the band a channel at a time.
+
+    ``valueChanged`` carries megahertz as a float and fires once per real
+    change, whichever of the three caused it.
+    """
+
+    valueChanged = pyqtSignal(float)
+
+    def __init__(self, minimum=50.0, maximum=2200.0, value=None, channels=None,
+                 label="Center Frequency (MHz):", parent=None):
+        super().__init__(parent)
+        self._min = float(minimum)
+        self._max = float(maximum)
+        self._value = None
+
+        layout = Qt.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.channel_combo = None
+        if channels:
+            row = Qt.QHBoxLayout()
+            row.addWidget(Qt.QLabel("Channel:"))
+            self.channel_combo = Qt.QComboBox()
+            # A frequency between channels is a legitimate thing to want, so
+            # the list says so rather than snapping to the nearest channel.
+            self.channel_combo.addItem("(not on a channel)", None)
+            for _number, centre, caption in channels:
+                self.channel_combo.addItem(caption, float(centre))
+            self.channel_combo.currentIndexChanged.connect(self._channel_picked)
+            row.addWidget(self.channel_combo, 1)
+            layout.addLayout(row)
+
+        row = Qt.QHBoxLayout()
+        row.addWidget(Qt.QLabel(label))
+        self.spin = Qt.QDoubleSpinBox()
+        self.spin.setDecimals(1)
+        self.spin.setSingleStep(FREQ_STEP_MHZ)
+        self.spin.setRange(self._min, self._max)
+        # Without this the box emits on every keystroke, so typing "533"
+        # tunes through 5 MHz and 53 MHz on the way.
+        self.spin.setKeyboardTracking(False)
+        self.spin.valueChanged.connect(self.setValue)
+        row.addWidget(self.spin)
+        row.addStretch()
+        layout.addLayout(row)
+
+        self.slider = Qt.QSlider(QtNs.Horizontal)
+        self.slider.setRange(self._steps(self._min), self._steps(self._max))
+        self.slider.setSingleStep(1)                  # an arrow key: 0.1 MHz
+        self.slider.setPageStep(int(6.0 / FREQ_STEP_MHZ))   # a page: 6 MHz
+        self.slider.valueChanged.connect(
+            lambda steps: self.setValue(steps * FREQ_STEP_MHZ))
+        layout.addWidget(self.slider)
+
+        self.setValue(self._min if value is None else value)
+
+    @staticmethod
+    def _steps(mhz):
+        return int(round(float(mhz) / FREQ_STEP_MHZ))
+
+    def value(self):
+        return self._value
+
+    def setValue(self, mhz):
+        try:
+            mhz = round(min(max(float(mhz), self._min), self._max), 1)
+        except (TypeError, ValueError):
+            return
+        if self._value is not None and abs(mhz - self._value) < FREQ_STEP_MHZ / 2:
+            return
+        self._value = mhz
+        self._refresh()
+        self.valueChanged.emit(mhz)
+
+    def _refresh(self):
+        """Put all three controls on the current value without feedback."""
+        for widget, setter, new in (
+                (self.spin, self.spin.setValue, self._value),
+                (self.slider, self.slider.setValue, self._steps(self._value))):
+            widget.blockSignals(True)
+            setter(new)
+            widget.blockSignals(False)
+        if self.channel_combo is None:
+            return
+        index = 0
+        for k in range(1, self.channel_combo.count()):
+            centre = self.channel_combo.itemData(k)
+            if centre is not None and abs(centre - self._value) < 0.05:
+                index = k
+                break
+        self.channel_combo.blockSignals(True)
+        self.channel_combo.setCurrentIndex(index)
+        self.channel_combo.blockSignals(False)
+
+    def _channel_picked(self, _index):
+        centre = self.channel_combo.currentData()
+        if centre is not None:
+            self.setValue(centre)
 
 
 class DialogGeometryTracker(QObject):

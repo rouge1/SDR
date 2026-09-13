@@ -39,8 +39,14 @@ from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
+from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
+                        adopt_legacy_config, FrequencyChooser)
+
+# The channel this bench uses. Only a default: the dialog remembers what was
+# last set, and the receiver opens on the same one.
+DEFAULT_CHANNEL = 24            # 533 MHz
 
 # Baseband amplitude out of the modulator, before the radio's own level
 # control. See the note where it is applied: 8VSB peaks ~8.7 dB above its rms,
@@ -110,17 +116,16 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
-        self.cf_layout = Qt.QHBoxLayout()
-        self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.cf_slider.setMinimum(50)
-        self.cf_slider.setMaximum(2200)
-        self.cf_slider.setValue(300)
-        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
-        self.cf_slider.valueChanged.connect(
-            lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
-        self.cf_layout.addWidget(self.cf_label)
-        self.cf_layout.addWidget(self.cf_slider)
-        self.layout.addLayout(self.cf_layout)
+        # This was a bare QSlider in whole megahertz, 50 to 2200. Rendered a
+        # few hundred pixels wide that is about seven megahertz per pixel of
+        # mouse travel, so most frequencies could not be reached at all -
+        # asked for 533 MHz, the nearest it would go was 539. Type it, pick
+        # the channel, or drag; see FrequencyChooser.
+        self.cf_chooser = FrequencyChooser(
+            minimum=50.0, maximum=2200.0,
+            value=channel_center_mhz(DEFAULT_CHANNEL),
+            channels=tv_channel_items())
+        self.layout.addWidget(self.cf_chooser)
 
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
@@ -184,7 +189,10 @@ class ConfigDialog(Qt.QDialog):
                     config = json.load(f)
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
-                self.cf_slider.setValue(config.get('center_freq', 300))
+                # Saved as an int by every version before the frequency
+                # control could express anything else; setValue takes both.
+                self.cf_chooser.setValue(config.get('center_freq',
+                                                    channel_center_mhz(DEFAULT_CHANNEL)))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 
                 # Match by name, not by path: the media directory can move.
@@ -208,7 +216,7 @@ class ConfigDialog(Qt.QDialog):
 
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
-            'center_freq': self.cf_slider.value(),
+            'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'ts_file': ts_filename
         }
@@ -234,7 +242,7 @@ class ConfigDialog(Qt.QDialog):
             'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
-            'cf': self.cf_slider.value(),
+            'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
             'ts_file': self.file_combo.currentData()
         }

@@ -83,6 +83,16 @@ def channel_for_center(mhz, tolerance=0.05):
     return None
 
 
+def tv_channel_items():
+    """The channel plan as ``(number, centre MHz, caption)``, for a combo box.
+
+    Here rather than in either app so the transmitter and the receiver offer
+    the same list, and free of Qt like the rest of this module.
+    """
+    return [(n, centre, f"{'VHF' if n <= 13 else 'UHF'} {n}  ({centre:g} MHz)")
+            for n, centre in channels()]
+
+
 # --- automatic frequency control -------------------------------------------
 
 def pilot_offset_hz(samples, sample_rate, search=75e3):
