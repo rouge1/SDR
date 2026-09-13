@@ -93,15 +93,19 @@ Three radio backends are supported, selected via `radio_type` in settings:
 - **A second open aborts the process.** The vendor library enforces single-client access with C `assert()`, which calls `abort()` — `vsgOpenDevice` on a device another process holds raises SIGABRT and core-dumps before Python sees anything, and can leave the unit needing a USB reset. It is uncatchable, and `vsgGetDeviceList` still lists a held device, so discovery cannot detect the condition either. `vsg_sink` therefore keeps an advisory PID lock at `config/.vsg60.lock`: `_acquire_lock()` runs before the open and raises a normal `RuntimeError` instead, `in_use()` lets the launcher show a dialog, and a lock whose PID is dead is treated as stale and cleared. This only sees users that go through this module — an external Signal Hound application holding the device is invisible to it.
 - **Locking a running flowgraph closes the VSG unless it is held open.** GNU
   Radio calls `stop()` and then `start()` on every block when a flowgraph is
-  locked and unlocked, which is how the FM + RDS transmitter's Next Track swaps
-  its audio chain. `stop()` closes the device, since it is also the only notice
-  of a real shutdown, and the sink once had no `start()`: after Next Track the
-  VSG stayed closed, `work()` reported done, and the whole broadcast ended with
-  no error - a receiver just saw the station stop. `start()` now reopens it,
-  but opening a VSG60 takes 4.7 s (measured), whereas `vsgAbort` takes 0.1 s
-  and the open device accepts samples again straight after. So a rebuild wraps
-  its `lock()`/`unlock()` in `sink.held_open()`, inside which `stop()` leaves
-  the device open; the reopen in `start()` is only the fallback.
+  locked and unlocked, which is how the FM + RDS transmitter's Next Track once
+  swapped its audio chain. `stop()` closes the device, since it is also the
+  only notice of a real shutdown, and the sink once had no `start()`: after
+  Next Track the VSG stayed closed, `work()` reported done, and the whole
+  broadcast ended with no error - a receiver just saw the station stop.
+  `start()` now reopens it, but opening a VSG60 takes 4.7 s (measured), whereas
+  `vsgAbort` takes 0.1 s and the open device accepts samples again straight
+  after. So a rebuild wraps its `lock()`/`unlock()` in `sink.held_open()`,
+  inside which `stop()` leaves the device open; the reopen in `start()` is only
+  the fallback. Nothing in the apps locks a running flowgraph any more - Next
+  Track now swaps files in place, because a rebuild glitches the pilot and RDS
+  whatever the radio (see the FM + RDS notes) - so this is the rule for
+  anything that does.
 
 ### Output Power
 
@@ -211,7 +215,7 @@ Three things that are easy to get wrong and cost real time here:
   overwrote the last segment by segment, the display showed splices like
   "98.7WMZQBest Country", and a car-dealer advert turned up inside the song
   name. A segment that contradicts characters the current message has already
-  sent now starts a new message and drops its RT+ tags.
+  sent now starts a new message.
 - **Only blocks that arrived clean may announce a new message.** The (26,16)
   code maps nearly every syndrome to *some* correction, so a block whose error
   burst is too long comes back wrong rather than rejected - 'Tyler' as 'Eyler',
@@ -238,16 +242,23 @@ Three things that are easy to get wrong and cost real time here:
   segment whose repair matches the last repaired reception of that same
   segment, since a wrong repair almost never comes out the same way twice. PS
   goes through it too - taking every repair as it came, PS had flashed a wrong
-  value 135 times in four minutes - and so do RT+ tag groups. The receiver
-  also drops RT+ tags when the page on display switches with the A/B flag:
-  Next Track and Send Text both toggle it, and the kept tags showed the old
-  song as Now Playing for a minute, or never cleared at all. **Verified off
+  value 135 times in four minutes - and so do RT+ tag groups. **Verified off
   air**, the transmitter window on the VSG60 against the receiver window on the
   Windows HackRF, on a link that fell to 80-90% blocks good: PS wrong 0% of the
-  time (was 24%, 135 flickers), Now Playing cleared 1.3 s after Send Text (was
-  never), and the Station Clock turned over within a second of every minute
-  (was never shown). What remains is the link itself: after Next Track, at
-  80%, RadioText and Now Playing still took 44-47 s to arrive whole.
+  time (was 24%, 135 flickers), and the Station Clock turned over within a
+  second of every minute (was never shown). What remains is the link itself:
+  after Next Track, at 80%, RadioText and Now Playing still took 44-47 s to
+  arrive whole.
+- **Now Playing is an RT+ item, kept until the song changes.** NRSC-G300-C
+  section 6.10 has a receiver keep RT+ title, artist and the rest of content
+  types 1-11 across RadioText messages for as long as the item toggle bit
+  holds, and purge them when it flips. So the receiver keeps them through
+  untagged messages and A/B page switches, and drops them when the toggle
+  flips - or when a tag arrives from a different message, so that a title
+  tagged in an advert never sits beside the artist of the song before it.
+  Clearing them on every new message instead, as it once did, showed Now
+  Playing as "-" whenever a station, or the transmitter here, sent any other
+  RadioText while the song was still playing.
 - **An RT+ tag may only slice characters the current message sent.** Tags that
   arrived while the next message was still filling in cut across both, welding
   "Dan +" from the new text to "ntry" from the tail of "Country". Stations repeat
@@ -321,6 +332,7 @@ Radio and Qt so it can be tested without a radio:
 ```sh
 python scripts/test_rds_loopback.py        # encoder -> decoder, no radio at all
 python scripts/test_fm_rds_tx.py <wav>     # whole modulation chain -> decoded back
+python scripts/test_fm_rds_next_track.py   # Next Track keeps pilot and RDS continuous
 ```
 
 The multiplex is built at 200 kHz (everything up to 60 kHz fits), interpolated
@@ -350,12 +362,26 @@ Things worth knowing before changing it:
   subcarrier, which is what keeps the signal listenable on a mono receiver.
   `rds_source` emits that 38 kHz carrier on its second output, from the same
   sample counter as the pilot so it stays exactly twice it - a separate
-  oscillator would drift and lose stereo. In mono that output goes to a null
-  sink, because an unconnected port fails validation. `next_track()` rebuilds
-  the whole audio chain rather than swapping one block, since the next file may
-  be stereo where this one was mono. Verified off-air: 38 kHz subcarrier 24.8 dB
+  oscillator would drift and lose stereo. The chain is always stereo: a mono
+  file leaves `audio_source` the same on both sides, so its difference is zero
+  and the subcarrier carries nothing - on the air, a mono signal. Verified
+  off-air: 38 kHz subcarrier 24.8 dB
   out of the noise, 47 kHz peak deviation, RDS unaffected at 904/904 blocks.
   Test it with `scripts/test_fm_stereo.py <stereo.wav>`.
+- **Next Track swaps the file inside a running source; it must never rebuild
+  the flowgraph.** It once did - `lock()`, `disconnect_all()`, rebuild,
+  `unlock()` - and that throws away every sample in transit, so pilot and RDS
+  jumped 139 degrees of pilot phase at each press. A receiver measures its RDS
+  bit timing once and then follows the pilot, which reveals only the fraction
+  of a cycle that jumped, so its bit grid ended up off by whole sixteenths of a
+  bit: decoding fell from 100% to 30-60% in software, and off air to nothing at
+  all while the RF was plainly still there. A check that decodes a fresh
+  capture never sees this, because it measures the timing anew - which is how
+  "RDS unaffected" above was measured. `audio_source` plays WAV files, the tone
+  or silence and switches in place; `scripts/test_fm_rds_next_track.py` records
+  the multiplex across stereo-to-stereo and stereo-to-mono presses and requires
+  the pilot to carry straight on and a frozen-timing decoder to stay at 95% or
+  better.
 - **The recovered side/mid ratio reads high off the air, and should.** Measured
   -5.8 dB against -8.7 dB in the source file; in a noiseless software run the
   gap is only 1.4 dB. FM noise grows with baseband frequency and the difference
@@ -377,7 +403,7 @@ Things worth knowing before changing it:
 - **The On Air box reads the encoder, not the edit boxes.** What was typed is
   not always what is being sent: Next Track rewrites RadioText and its RT+
   tags, and a paged paragraph moves on by itself. So Station (call letters and
-  PI), PS, Now Playing (the RadioText sliced by its own RT+ tags), RadioText
+  PI), PS, Now Playing (the song on air, whichever RadioText page is up), RadioText
   and Station Clock (the last group 4A sent) come from
   `RdsEncoder.snapshot()` on a 500 ms timer - the same fields the RDS Receiver
   shows, so the two windows can be compared side by side.
@@ -405,8 +431,20 @@ Things worth knowing before changing it:
   ending, UTC already in the new year - in under a second.
 - RT+ offsets are computed from the very RadioText string that gets sent
   (`set_now_playing` does both together), which is precisely what 99.5 locally
-  gets wrong. Setting RadioText directly clears the tags, since stale offsets
-  would slice the new text at the wrong points.
+  gets wrong.
+- **Typed RadioText takes turns with the song, and Now Playing stays on it.**
+  Now Playing is not text of its own: it is RT+ tags pointing into RadioText,
+  so replacing RadioText used to end it, and Send Text showed Now Playing as
+  "-" on both windows. With a song on air, `set_radiotext()` now rotates the
+  typed message with the song's own line, three passes each (about 6-10 s,
+  depending on length). During the message the RT+ group still goes out, with
+  empty tags and the item toggle bit unchanged, which tells receivers to keep
+  the song (NRSC-G300-C 6.10); a receiver tuning in later learns the song on
+  its turn. The toggle flips only in `set_now_playing()`, i.e. on Next Track,
+  and a typed message stays through Next Track. Sending the song's own line,
+  or nothing, goes back to the song alone. Pages shorter than 64 characters
+  stop at their carriage return instead of sending padding, so each turn gets
+  across sooner.
 - **Messages longer than RadioText are paged.** `set_paragraph()` splits text on
   word boundaries into 64-character pages, sends each one complete, then toggles
   the A/B flag so receivers clear before the next. Pages advance on segments
@@ -474,8 +512,9 @@ power: the signal read 63.6 dB above the noise floor and decoded 912/912 blocks
 with 0.0 % errors - PI, PS, RadioText, RT+ and PTY all as sent. Channel
 separation measured 33.7 dB and 32.9 dB with the 38 kHz phase fitted to 144
 degrees, matching the software chain. A RadioText edit typed into the running
-app arrived intact on the next capture, with its RT+ tags cleared as
-`_set_rt_locked` intends.
+app arrived intact on the next capture. Its RT+ tags were cleared then, which
+is no longer the design: a typed message now takes turns with the song, and
+Now Playing stays on the song (see the FM + RDS Transmitter notes).
 
 Three things cost time on the way there, all in the *measuring*, not the radio:
 

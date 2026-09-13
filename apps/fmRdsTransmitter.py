@@ -10,12 +10,12 @@
 # Test it with the RDS Receiver app (or a car radio): everything this sends is
 # something apps/rds_core.py can read back.
 
-import contextlib
 import glob
 import json
 import os
 import signal
 import sys
+import threading
 import time
 import wave
 
@@ -290,8 +290,7 @@ class rds_source(gr.sync_block):
 
     Output 0 is the 19 kHz pilot plus the 57 kHz RDS subcarrier. Output 1 is a
     bare 38 kHz carrier for the stereo difference signal, generated from the
-    same sample counter so it is exactly twice the pilot. It is produced even
-    in mono, where the flowgraph simply discards it.
+    same sample counter so it is exactly twice the pilot.
     """
 
     def __init__(self, encoder, rate):
@@ -305,6 +304,95 @@ class rds_source(gr.sync_block):
         subcarriers, carrier38 = self.sub.generate_all(n)
         output_items[0][:] = subcarriers
         output_items[1][:] = carrier38
+        return n
+
+
+def _pcm_floats(raw, width):
+    """Little-endian PCM bytes as floats in [-1, 1)."""
+    if width == 1:
+        return (np.frombuffer(raw, np.uint8).astype(np.float32) - 128) / 128
+    if width == 2:
+        return np.frombuffer(raw, '<i2').astype(np.float32) / 32768
+    if width == 3:
+        b = np.frombuffer(raw, np.uint8).reshape(-1, 3).astype(np.int32)
+        v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+        v = np.where(v >= 1 << 23, v - (1 << 24), v)
+        return v.astype(np.float32) / (1 << 23)
+    return np.frombuffer(raw, '<i4').astype(np.float32) / 2 ** 31
+
+
+class audio_source(gr.sync_block):
+    """Left and right audio at 48 kHz, from a WAV file, a test tone or silence.
+
+    The source switches in place, so Next Track never touches the rest of the
+    flowgraph. Rebuilding it instead dropped the samples in transit: pilot and
+    RDS jumped in time together, 0.4 of a pilot cycle, and a receiver that had
+    already measured its RDS bit timing went on decoding junk, or nothing at
+    all. A mono file plays the same on both sides, so the stereo difference is
+    zero - on the air, exactly what a mono chain would send.
+    """
+
+    def __init__(self, choice='silence'):
+        gr.sync_block.__init__(self, name='audio_source', in_sig=None,
+                               out_sig=[np.float32, np.float32])
+        self._lock = threading.Lock()
+        self._wav = None
+        self._kind = 'silence'
+        self._tone_n = 0
+        self.channels = 1
+        self.set_source(choice)
+
+    def set_source(self, choice):
+        """Play a WAV file path, 'tone' or 'silence' from the next sample on."""
+        wav, kind, channels = None, 'silence', 1
+        if choice == 'tone':
+            kind = 'tone'
+        elif choice and choice != 'silence' and os.path.exists(choice):
+            try:
+                wav = wave.open(choice)
+                kind, channels = 'wav', wav.getnchannels()
+            except (wave.Error, EOFError, OSError) as exc:
+                print(f"FM+RDS: cannot play {choice}: {exc}", file=sys.stderr)
+        with self._lock:
+            old, self._wav = self._wav, wav
+            self._kind, self.channels = kind, channels
+        if old is not None:
+            old.close()
+
+    def _wav_frames(self, n):
+        """The next ``n`` frames, shape (n, channels), looping the file."""
+        width, ch = self._wav.getsampwidth(), self._wav.getnchannels()
+        parts, got = [], 0
+        while got < n:
+            raw = self._wav.readframes(n - got)
+            if not raw:
+                self._wav.rewind()
+                raw = self._wav.readframes(n - got)
+                if not raw:
+                    break
+            parts.append(_pcm_floats(raw, width))
+            got += len(raw) // (width * ch)
+        data = np.concatenate(parts) if parts else np.zeros(0, np.float32)
+        data = data[:len(data) // ch * ch].reshape(-1, ch)
+        if len(data) < n:
+            data = np.vstack([data, np.zeros((n - len(data), ch), np.float32)])
+        return data
+
+    def work(self, input_items, output_items):
+        n = len(output_items[0])
+        with self._lock:
+            if self._kind == 'wav':
+                data = self._wav_frames(n)
+                left = data[:, 0]
+                right = data[:, 1] if data.shape[1] > 1 else left
+            elif self._kind == 'tone':
+                t = (self._tone_n + np.arange(n)) / AUDIO_RATE
+                left = right = (0.5 * np.cos(2 * np.pi * 1000 * t)).astype(np.float32)
+                self._tone_n = (self._tone_n + n) % AUDIO_RATE
+            else:
+                left = right = np.zeros(n, np.float32)
+        output_items[0][:] = left
+        output_items[1][:] = right
         return n
 
 
@@ -476,38 +564,29 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             f"{self.call}  (PI {snap['pi_hex']})" if call_to_pi(self.call)
             else f"PI {snap['pi_hex']}")
         self.lbl['ps'].setText(snap['ps'] if snap['ps'].strip() else '-')
-        # RT+ tags are offsets into the RadioText being sent, stored as
-        # (content type, start, length - 1): 4 is artist, 1 is title.
-        parts = {}
-        for ctype, start, length in snap['rtplus'] or ():
-            if ctype in (1, 4):
-                parts[ctype] = full[start:start + length + 1].strip()
+        # The song on air, not a slice of whichever RadioText page is up: while
+        # a typed message takes its turn, receivers keep the song as well.
+        item = snap['now_playing'] or {}
         self.lbl['nowplaying'].setText(
-            ' - '.join(x for x in (parts.get(4), parts.get(1)) if x) or '-')
+            ' - '.join(x for x in (item.get('artist'), item.get('title')) if x)
+            or '-')
         # A carriage return ends a short page; what follows it is not shown.
         self.lbl['radiotext'].setText(full.split('\r')[0].rstrip() or '-')
         # The last clock group sent, so it changes once a minute, not every tick.
         self.lbl['clock'].setText(clock_text(snap['clock']) or '-')
 
     # ----------------------------------------------------------- flowgraph
-    def _audio_branch(self, path):
-        if path and path not in ('tone', 'silence') and os.path.exists(path):
-            return blocks.wavfile_source(path, True)
-        if path == 'tone':
-            return analog.sig_source_f(AUDIO_RATE, analog.GR_COS_WAVE, 1000,
-                                       0.5, 0, 0)
-        return blocks.null_source(gr.sizeof_float)
-
     def _build_audio(self):
-        """Create the audio blocks for the current track, mono or stereo.
+        """Create the audio chain - once, and in stereo whatever the file.
 
-        A stereo file is matrixed into mid (L+R)/2 and side (L-R)/2, because FM
-        does not transmit left and right: it sends the sum as ordinary audio and
-        the difference on the 38 kHz subcarrier, which is what keeps the signal
-        listenable on a mono receiver.
+        FM does not transmit left and right: it sends the sum (L+R)/2 as
+        ordinary audio and the difference (L-R)/2 on the 38 kHz subcarrier,
+        which is what keeps the signal listenable on a mono receiver. A mono
+        file leaves audio_source the same on both sides, so its difference is
+        zero and the subcarrier carries nothing - a mono signal on the air.
         """
-        self.audio_src = self._audio_branch(self.audio_choice)
-        self.stereo = wav_channels(self.audio_choice or '') == 2
+        self.audio_src = audio_source(self.audio_choice)
+        self.stereo = self.audio_src.channels == 2
         # 48 kHz media up to the 200 kHz multiplex rate: 200/48 = 25/6.
         def resampler():
             return filter.rational_resampler_fff(
@@ -520,10 +599,6 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
                     filter.fir_filter_fff(
                         1, firdes.low_pass(AUDIO_LEVEL, MPX_RATE, 15e3, 2e3)))
 
-        if not self.stereo:
-            self.audio_resamp = resampler()
-            self.preemph, self.audio_lpf = audio_shaping()
-            return
         self.resamp_l, self.resamp_r = resampler(), resampler()
         self.lr_add, self.lr_sub = blocks.add_ff(1), blocks.sub_ff(1)
         self.mid_half = blocks.multiply_const_ff(0.5)
@@ -533,13 +608,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.side_mix = blocks.multiply_ff(1)     # side x 38 kHz carrier
         self.audio_sum = blocks.add_vff(1)        # mid + modulated side
 
-    def _connect_audio(self):
-        if not self.stereo:
-            self.connect(self.audio_src, self.audio_resamp, self.preemph,
-                         self.audio_lpf, (self.mpx_sum, 0))
-            # The stereo carrier is still produced; nothing wants it in mono.
-            self.connect((self.rds, 1), self.null_carrier)
-            return
+    def _connect_all(self):
         self.connect((self.audio_src, 0), self.resamp_l)
         self.connect((self.audio_src, 1), self.resamp_r)
         self.connect(self.resamp_l, (self.lr_add, 0))
@@ -553,18 +622,12 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.connect((self.rds, 1), (self.side_mix, 1))
         self.connect(self.side_mix, (self.audio_sum, 1))
         self.connect(self.audio_sum, (self.mpx_sum, 0))
-
-    def _connect_all(self):
-        self._connect_audio()
         self.connect((self.rds, 0), (self.mpx_sum, 1))
         self.connect(self.mpx_sum, self.mpx_resamp, self.modulator,
                      self.radio_sink)
-        if hasattr(self, 'mpx_sink'):
-            self.connect(self.mpx_sum, self.mpx_sink)
 
     def _build_flowgraph(self):
         self.rds = rds_source(self.encoder, MPX_RATE)
-        self.null_carrier = blocks.null_sink(gr.sizeof_float)
         self.mpx_sum = blocks.add_vff(1)
         self._build_audio()
         # MPX up to the radio's rate, then frequency modulate. Doing it in this
@@ -659,21 +722,17 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.track_index = (self.track_index + 1) % len(self.playlist)
         path = self.playlist[self.track_index]
         self.audio_choice = path
-        # Rebuild rather than swap one block: the next track may be stereo
-        # where this one was mono, which is a different chain entirely.
-        # lock() stops every block and unlock() starts them again; a VSG60
-        # held open through that resumes at once instead of reopening for 4.7 s.
-        hold = getattr(self.radio_sink, 'held_open', contextlib.nullcontext)
-        with hold():
-            self.lock()
-            self.disconnect_all()
-            self._build_audio()
-            self._connect_all()
-            self.unlock()
+        # Swap the file inside the running source. Rebuilding the flowgraph
+        # instead threw away the samples in transit, and the jump it put into
+        # the pilot and RDS left receivers decoding junk or nothing at all.
+        self.audio_src.set_source(path)
+        self.stereo = self.audio_src.channels == 2
         self._update_track_label()
         if self.track_in_rt:
             self.encoder.set_now_playing('', track_name(path))
-            self.rt_edit.setText(self.encoder.snapshot()['radiotext'])
+            # A typed message stays in the box; otherwise it shows the new song.
+            snap = self.encoder.snapshot()
+            self.rt_edit.setText(snap['message'] or snap['radiotext'])
 
     def closeEvent(self, event):
         self.readout_timer.stop()

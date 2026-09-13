@@ -306,6 +306,9 @@ class RdsProtocol:
         self.oda_aids = {}          # AID -> (group type, version) carrying it
         self.rtplus = {}            # RT+ content class -> text
         self._rtplus_group = None
+        self._rtplus_toggle = None  # the RT+ item toggle bit last seen
+        self._rt_message = 0        # counts the messages put on display
+        self._rtplus_message = None  # the message the item fields came from
         self.pty = None
         self.tp = None
         self.ta = None
@@ -480,9 +483,7 @@ class RdsProtocol:
                 if trusted and buf.differs(base, chars):
                     buf.clear()
                     if self._rt_show is None or ab == self._rt_show:
-                        # The tags describe the message that carried them, and
-                        # that message is gone.
-                        self.rtplus.clear()
+                        self._rt_message += 1     # a new message on display
                 for j, ch in enumerate(chars):
                     buf.put(base + j, ch, trusted)
             # Switch which buffer is reported only once the new flag has been
@@ -496,10 +497,9 @@ class RdsProtocol:
             elif ab == self._rt_show_pending:
                 self._rt_show = ab
                 self._rt_show_pending = None
-                # The tags described the page that has just left the screen.
-                # Kept, a new song showed the old one as Now Playing for a
-                # minute off air, and text sent without tags never lost them.
-                self.rtplus.clear()
+                # Another page on display. RT+ item fields stay: whether the
+                # song has ended is for the item toggle bit to say, not the page.
+                self._rt_message += 1
             else:
                 self._rt_show_pending = ab
             if self._rt_show is not None:
@@ -516,6 +516,13 @@ class RdsProtocol:
         than one run-on string.
         """
         bits = ((b['B'] & 0x1F) << 32) | (b['C'] << 16) | b['D']
+        toggle = (bits >> 36) & 1
+        if self._rtplus_toggle is not None and toggle != self._rtplus_toggle:
+            # The item toggle bit flips when the item - the song - changes,
+            # and tells a receiver to purge content types 1 to 11, title and
+            # artist among them (NRSC-G300-C section 6.10.1).
+            self._drop_item()
+        self._rtplus_toggle = toggle
         text = self.rt.text()
         tags = (((bits >> 29) & 0x3F, (bits >> 23) & 0x3F, (bits >> 17) & 0x3F),
                 ((bits >> 11) & 0x3F, (bits >> 5) & 0x3F, bits & 0x1F))
@@ -543,7 +550,19 @@ class RdsProtocol:
                           or not text[end - 1].isalnum())
             value = text[start:end].strip()
             if value and starts_clean and ends_clean:
+                if 1 <= ctype <= 11 and self._rtplus_message != self._rt_message:
+                    # Item fields outlast the RadioText message that carried
+                    # them, as the standard intends, but are never mixed from
+                    # two: a title tagged in an advert must not sit beside the
+                    # artist of the song before it.
+                    self._drop_item()
+                    self._rtplus_message = self._rt_message
                 self.rtplus[RTPLUS_CLASSES.get(ctype, f"class{ctype}")] = value
+
+    def _drop_item(self):
+        """Forget the item fields: title, artist, album and the rest (1-11)."""
+        for ctype in range(1, 12):
+            self.rtplus.pop(RTPLUS_CLASSES[ctype], None)
 
     def _believed(self, key, value, repaired):
         """Whether a segment of text can be taken at its word.

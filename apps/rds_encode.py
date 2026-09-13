@@ -108,15 +108,25 @@ class RdsEncoder:
         self._ps = _chars(ps, 8)
         self._rt = _chars(radiotext, 64)
         self._rt_ab = 0
-        self._rtplus = None               # (ctype, start, len) pairs
+        self._rtplus = None               # tags into the RadioText on air now
+        # The song on air as (its RadioText line, the tags into that line). Its
+        # RT+ fields are an "item": receivers keep them across other RadioText
+        # messages until the item toggle bit flips, which happens only when the
+        # song changes (NRSC-G300-C section 6.10).
+        self._item = None
+        self._item_toggle = 0
+        self._message = None              # RadioText typed in by hand
         self.station_name = station_name
         self._seq_index = 0
         self._ps_seg = 0
         self._rt_seg = 0
-        self._pages = []            # paragraph mode: RadioText pages in order
+        self._pages = []            # RadioText pages in rotation: (text, tags)
         self._page_i = 0
         self._page_repeats = 1
         self._page_cycles = 0
+
+    #: Complete passes of each page before the next takes its turn.
+    ROTATE_REPEATS = 3
 
     # -- live edits --------------------------------------------------------
     def set_ps(self, text):
@@ -124,8 +134,28 @@ class RdsEncoder:
             self._ps = _chars(text, 8)
 
     def set_radiotext(self, text):
+        """Put a message in RadioText.
+
+        While a song is on air the message takes turns with the song's own
+        line, so a receiver tuning in at any moment still learns what is
+        playing, and Now Playing stays on the song throughout. Sending the
+        song's line itself, or nothing, goes back to the song alone.
+        """
+        text = (text or '')[:64]
         with self._lock:
-            self._set_rt_locked(text)
+            song = self._item[0] if self._item else None
+            if not text.strip() or text.rstrip() == song:
+                self._message = None
+                if self._item:
+                    self._set_rt_locked(*self._item)
+                else:
+                    self._set_rt_locked(text)
+                return
+            self._message = text
+            if self._item:
+                self._rotate_locked([(text, None), self._item])
+            else:
+                self._set_rt_locked(text)
 
     def set_paragraph(self, text, repeats=1, number_pages=True):
         """Send a message longer than RadioText as a sequence of pages.
@@ -152,62 +182,88 @@ class RdsEncoder:
                         break
                     total = len(pages)
                 pages = [f"{i+1}/{total} {p}" for i, p in enumerate(pages)]
-            self._pages = pages
-            self._page_i = 0
-            self._page_repeats = max(1, int(repeats))
-            self._page_cycles = 0
-            self._rt_seg = 0
-            self._rtplus = None
-            self._load_page_locked()
+            self._message = None
+            # A song on air keeps its line in the rotation, as with a message.
+            self._rotate_locked([(p, None) for p in pages]
+                                + ([self._item] if self._item else []),
+                                repeats=max(1, int(repeats)))
+
+    def _rotate_locked(self, pages, repeats=None):
+        """Send ``pages`` - (text, tags) pairs - in turn, for as long as asked."""
+        self._pages = list(pages)
+        self._page_i = 0
+        self._page_repeats = repeats or self.ROTATE_REPEATS
+        self._page_cycles = 0
+        self._rt_seg = 0
+        self._load_page_locked()
+        self._rt_ab ^= 1                  # receivers clear before the first page
 
     def _load_page_locked(self):
-        page = self._pages[self._page_i]
+        page, self._rtplus = self._pages[self._page_i]
         # A carriage return ends a short page, so receivers do not leave the
         # tail of a longer previous page on screen.
         self._rt = _chars(page + '\r' if len(page) < 64 else page, 64)
 
-    def _set_rt_locked(self, text):
+    def _set_rt_locked(self, text, tags=None):
         text = text[:64]
-        self._pages = []            # a single message cancels paragraph mode
+        self._pages = []            # a single message ends any rotation
         self._rt = _chars(text, 64)
-        # Drop any RT+ tags: they are offsets into the *previous* message, and
-        # left in place they would slice the new text at the wrong points and
-        # advertise a half-word as the title - exactly the fault a local
-        # station ships. set_now_playing() reinstates them straight after,
-        # having computed them from the string it just set.
-        self._rtplus = None
+        # Tags must be offsets into this very string. Any others would slice
+        # it at the wrong points and advertise half a word as the title -
+        # exactly the fault a local station ships.
+        self._rtplus = tags
         # Toggling the A/B flag is how a receiver is told to clear the old
         # message rather than overwrite it character by character.
         self._rt_ab ^= 1
         self._rt_len = len(text)
 
     def set_now_playing(self, artist, title):
-        """Set RadioText and the matching RT+ tags in one consistent step.
+        """Start a new song: its RadioText line and the RT+ tags into it.
 
-        RT+ tags are offsets into the RadioText, so they have to be computed
-        from the very string that gets sent or a receiver slices the wrong
-        characters - exactly the bug seen off-air on a local station.
+        RT+ tags are offsets into the RadioText, so they are computed from the
+        very string that gets sent, or a receiver slices the wrong characters -
+        exactly the bug seen off-air on a local station. A new song also flips
+        the RT+ item toggle bit, which tells receivers to drop the last song's
+        title and artist. A typed message stays, taking turns with the new line.
         """
         artist, title = (artist or '').strip(), (title or '').strip()
         with self._lock:
             if artist and title:
-                text = f"{artist} - {title}"
-                self._set_rt_locked(text)
-                self._rtplus = ((4, 0, len(artist) - 1),
-                                (1, len(artist) + 3, len(title) - 1))
+                item = (f"{artist} - {title}",
+                        ((4, 0, len(artist) - 1),
+                         (1, len(artist) + 3, len(title) - 1)))
             elif title:
-                self._set_rt_locked(title)
-                self._rtplus = ((1, 0, len(title) - 1), (0, 0, 0))
+                item = (title, ((1, 0, len(title) - 1), (0, 0, 0)))
             else:
+                item = None
+            self._item = item
+            self._item_toggle ^= 1
+            if item and self._message:
+                self._rotate_locked([(self._message, None), item])
+            elif item:
+                self._set_rt_locked(*item)
+            elif self._message:
+                self._set_rt_locked(self._message)
+            else:
+                self._pages = []
                 self._rtplus = None
 
     def snapshot(self):
         with self._lock:
+            now_playing = None
+            if self._item:
+                text, tags = self._item
+                names = {1: 'title', 4: 'artist'}
+                now_playing = {names[c]: text[s:s + l + 1]
+                               for c, s, l in tags if c in names}
             return {
                 'pi': self.pi, 'pi_hex': f"0x{self.pi:04X}",
                 'ps': ''.join(self._ps), 'radiotext': ''.join(self._rt).rstrip(),
                 'pty': self.pty, 'tp': self.tp, 'ta': self.ta,
-                'rtplus': self._rtplus,
+                'rtplus': self._rtplus,           # tags into the page on air
+                'now_playing': now_playing,       # the song, whatever page is up
+                'message': self._message,
+                'item_toggle': self._item_toggle,
                 'clock': self._ct_sent,
             }
 
@@ -228,7 +284,11 @@ class RdsEncoder:
 
     def _group_2a(self):
         seg = self._rt_seg & 0xF
-        self._rt_seg = (self._rt_seg + 1) & 0xF
+        # Stop at the segment holding the carriage return: the rest of a short
+        # page is padding, and skipping it gets each page across sooner.
+        end = ''.join(self._rt).find('\r')
+        last = end // 4 if end >= 0 else 15
+        self._rt_seg = 0 if seg >= last else seg + 1
         b = self._common_b(2) | (self._rt_ab & 1) << 4 | seg
         c = (ord(self._rt[seg * 4]) << 8) | ord(self._rt[seg * 4 + 1])
         d = (ord(self._rt[seg * 4 + 2]) << 8) | ord(self._rt[seg * 4 + 3])
@@ -252,9 +312,12 @@ class RdsEncoder:
                 make_block(0x0000, 'C'), make_block(RTPLUS_AID, 'D')]
 
     def _group_12a(self):
-        (t1, s1, l1), (t2, s2, l2) = self._rtplus
+        # While the song's own line is on air the tags point into it. While a
+        # typed message takes its turn they are empty, and the unchanged item
+        # toggle tells receivers to keep the song they already have.
+        (t1, s1, l1), (t2, s2, l2) = self._rtplus or ((0, 0, 0), (0, 0, 0))
         running = 1
-        toggle = self._rt_ab & 1
+        toggle = self._item_toggle & 1
         bits = ((toggle & 1) << 36 | (running & 1) << 35
                 | (t1 & 0x3F) << 29 | (s1 & 0x3F) << 23 | (l1 & 0x3F) << 17
                 | (t2 & 0x3F) << 11 | (s2 & 0x3F) << 5 | (l2 & 0x1F))
@@ -322,8 +385,8 @@ class RdsEncoder:
         for _ in range(len(self.SEQUENCE)):
             kind = self.SEQUENCE[self._seq_index % len(self.SEQUENCE)]
             self._seq_index += 1
-            if kind in ('3A', '12A') and not self._rtplus:
-                continue                          # nothing to announce yet
+            if kind in ('3A', '12A') and not self._item:
+                continue                          # no song to tag
             return {'0A': self._group_0a, '2A': self._group_2a,
                     '3A': self._group_3a, '12A': self._group_12a}[kind]()
         return self._group_0a()
