@@ -42,6 +42,11 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
+# Baseband amplitude out of the modulator, before the radio's own level
+# control. See the note where it is applied: 8VSB peaks ~8.7 dB above its rms,
+# and the radios take 1.0 as I/Q full scale.
+BASEBAND_SCALE = 0.85
+
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -133,27 +138,42 @@ class ConfigDialog(Qt.QDialog):
     def create_file_selector(self):
         self.file_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
+        self.ts_files = []
+
+        # The media directory, like every other app. This used to read a
+        # tsFileList.txt from the working directory, which does not exist in
+        # the repo - so the combo always fell into the except branch, OK stayed
+        # disabled, and the app could not be launched at all.
+        settings = read_settings()
+        self.media_dir = settings.get('media_directory', '')
+
         try:
-            with open("tsFileList.txt", "r") as f:
-                self.ts_files = f.readlines()
-                if not self.ts_files:  # Check if file is empty
-                    raise FileNotFoundError("No files listed in tsFileList.txt")
-                for ts_file in self.ts_files:
-                    display_name = ts_file.strip()
-                    self.file_combo.addItem(display_name, display_name)
-            # Only enable OK button if we have both IP addresses and media files
-            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
+            if not self.media_dir or not os.path.exists(self.media_dir):
+                raise FileNotFoundError("Error - Setup Media directory in Settings")
+
+            for file in os.listdir(self.media_dir):
+                if file.endswith('.ts'):
+                    display_name = os.path.splitext(file)[0].replace('-', ' ')
+                    self.ts_files.append((display_name, file))
+
+            if not self.ts_files:
+                raise FileNotFoundError("No transport streams (.ts) in media directory")
+
+            self.ts_files.sort()
+            for display_name, filename in self.ts_files:
+                self.file_combo.addItem(display_name, os.path.join(self.media_dir, filename))
+
+            ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg') or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
-        except:
-            self.file_combo.addItem("No TS files found in directory")
+        except Exception as e:
+            self.file_combo.addItem(str(e))
             self.file_combo.setEnabled(False)
             # Disable OK button and add opacity effect
             ok_button.setEnabled(False)
             opacity_effect = Qt.QGraphicsOpacityEffect()
             opacity_effect.setOpacity(0.30)
             ok_button.setGraphicsEffect(opacity_effect)
-            
+
         self.layout.addWidget(Qt.QLabel("Select Transport Stream File:"))
         self.layout.addWidget(self.file_combo)
 
@@ -167,23 +187,30 @@ class ConfigDialog(Qt.QDialog):
                 self.cf_slider.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 
-                # Try to find saved file in current file list
+                # Match by name, not by path: the media directory can move.
                 saved_file = config.get('ts_file')
                 if saved_file:
-                    index = self.file_combo.findData(saved_file)
-                    if index >= 0:
-                        self.file_combo.setCurrentIndex(index)
+                    saved_file = os.path.basename(saved_file)
+                    for i, (_, filename) in enumerate(self.ts_files):
+                        if filename == saved_file:
+                            self.file_combo.setCurrentIndex(i)
+                            break
             except:
                 pass
         else:
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
+        current_index = self.file_combo.currentIndex()
+        ts_filename = None
+        if 0 <= current_index < len(self.ts_files):
+            _, ts_filename = self.ts_files[current_index]
+
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
-            'ts_file': self.file_combo.currentData()
+            'ts_file': ts_filename
         }
         
         with open(self.config_file, 'w') as f:
@@ -200,24 +227,15 @@ class ConfigDialog(Qt.QDialog):
         else:
             ipNum = 0
             ipXmitAddr = ''
-        pwr = self.pwr_slider.value()
-        
-        # Calculate RF gain and attenuation
-        if pwr < -50:
-            rfGain = 0
-            atten = pwr + 50
-        else:
-            atten = 0
-            rfGain = pwr + 50
-            
+        # rfGain/atten used to be computed here from the old dBm-labelled
+        # slider. The slider is 0-100% now and the flowgraph goes through
+        # scale_power(), so those two were dead the moment that changed.
         return {
             'radio_type': self.radio_type,
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_slider.value(),
-            'pwr': pwr,
-            'rfGain': rfGain,
-            'atten': atten,
+            'pwr': self.pwr_slider.value(),
             'ts_file': self.file_combo.currentData()
         }
 
@@ -268,8 +286,6 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
         pwr = values['pwr']
-        rfGain = values['rfGain']
-        atten = values['atten']
         self.ts_file = values['ts_file']
 
         ##################################################
@@ -279,7 +295,12 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.rfPwrDefault = rfPwrDefault = pwr
         self.cfDefault = cfDefault = cf
         self.atscFileName = atscFileName = self.ts_file
-        self.samp_rate = samp_rate = 12.5e6
+        # 12 MS/s, not the 12.5 this once used: SoapyHackRF accepts only whole
+        # megahertz between 1 and 20 and rejects anything else outright, so on
+        # a HackRF the app died in the constructor with "Unsupported sample
+        # rate" and could never transmit at all. 12 MS/s carries the 6 MHz
+        # channel just as well and every backend here takes it.
+        self.samp_rate = samp_rate = 12e6
         self.rfPwr = rfPwr = rfPwrDefault
         self.pilot_freq = pilot_freq = (6000000.0 - (symbol_rate / 2)) / 2
         self.outputIpAddr = outputIpAddr = ipXmitAddr
@@ -330,9 +351,12 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
             self.radio_sink.set_frequency(0, cf*1e6)
             self.radio_sink.set_gain(0, 'VGA', scale_power(rfPwr, self._power_range))
             self.radio_sink.set_gain(0, 'AMP', 0)
+        # The first stage takes the 10.762237 MS/s symbol stream to exactly
+        # 28.5 MS/s (x143/54); this one brings that to the radio rate. 8/19
+        # lands on 12 MS/s exactly, where 25/57 landed on 12.5.
         self.rational_resampler_xxx_1 = filter.rational_resampler_ccc(
-                interpolation=25,
-                decimation=57,
+                interpolation=8,
+                decimation=19,
                 taps=[],
                 fractional_bw=0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_ccc(
@@ -417,6 +441,13 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
             self.top_grid_layout.setRowStretch(r, 1)
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
+        # 8VSB is noise-like: measured 8.7 dB peak-to-average, and the chain
+        # came out at 1.007 peak against a radio that takes I/Q full scale as
+        # 1.0 and clips above it - so the loudest samples were being flattened
+        # before the signal ever left the box, and the longer it runs the
+        # further into the Gaussian tail it reaches. Backing the baseband off
+        # leaves 10 dB of headroom; the analog stage sets the actual power.
+        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(BASEBAND_SCALE)
         self.fft_filter_xxx_0 = filter.fft_filter_ccc(1, firdes.root_raised_cosine(0.11, symbol_rate, symbol_rate/2, 0.1152, 200), 1)
         self.fft_filter_xxx_0.declare_sample_delay(0)
         self.dtv_dvbs2_modulator_bc_0 = dtv.dvbs2_modulator_bc(
@@ -432,7 +463,6 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.dtv_atsc_field_sync_mux_0 = dtv.atsc_field_sync_mux()
         self.blocks_vector_to_stream_1 = blocks.vector_to_stream(gr.sizeof_char*1, 1024)
         self.blocks_rotator_cc_0 = blocks.rotator_cc(((-3000000.0 + pilot_freq) / symbol_rate) * (math.pi * 2), False)
-        self.blocks_multiply_const_vxx_0 = blocks.multiply_const_cc(1)
         self.blocks_keep_m_in_n_0 = blocks.keep_m_in_n(gr.sizeof_char, 832, 1024, 4)
         self.blocks_file_source_0 = blocks.file_source(gr.sizeof_char*1, atscFileName, True, 0, 0)
         self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
@@ -514,7 +544,8 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
 
     def set_rfPwr(self, rfPwr):
         self.rfPwr = rfPwr
-        self.blocks_multiply_const_vxx_0.set_k(1)
+        # Baseband stays put - power is an analog setting now (see CLAUDE.md,
+        # "Output Power"). This used to re-assert set_k(1) on every move.
         if self.radio_type == 'vsg':
             self.radio_sink.set_level(scale_power(self.rfPwr, self._power_range))
         elif self.radio_type == 'usrp':

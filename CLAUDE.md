@@ -91,6 +91,16 @@ Three radio backends are supported, selected via `radio_type` in settings:
   siblings there (a bundled libc, libstdc++, libudev) would be picked up ahead
   of the system ones and mixed into the host runtime.
 - **A second open aborts the process.** The vendor library enforces single-client access with C `assert()`, which calls `abort()` — `vsgOpenDevice` on a device another process holds raises SIGABRT and core-dumps before Python sees anything, and can leave the unit needing a USB reset. It is uncatchable, and `vsgGetDeviceList` still lists a held device, so discovery cannot detect the condition either. `vsg_sink` therefore keeps an advisory PID lock at `config/.vsg60.lock`: `_acquire_lock()` runs before the open and raises a normal `RuntimeError` instead, `in_use()` lets the launcher show a dialog, and a lock whose PID is dead is treated as stale and cleared. This only sees users that go through this module — an external Signal Hound application holding the device is invisible to it.
+- **A VSG60 and a BB60D will not stream at the same time on one host.** Start a
+  capture while the VSG is transmitting and the BB60 library reports `GetIQ:
+  Device packet framing issues` after exactly three buffers, every time, while
+  the VSG reports a USB transfer failure. It is not bandwidth (it fails just as
+  readily with the VSG at 2 MS/s as at 12.5), not power, not CPU (71% idle),
+  not RF (identical at −113 dBm and at −55), and the kernel logs nothing at
+  all — no xhci errors, no over-current, no bandwidth complaint. Separate root
+  controllers and removing every hub from both paths changed nothing. Both
+  radios are perfect alone. So any measurement that needs one of each has to
+  put them on different machines, which is what TVAdemo is for.
 - **Locking a running flowgraph closes the VSG unless it is held open.** GNU
   Radio calls `stop()` and then `start()` on every block when a flowgraph is
   locked and unlocked, which is how the FM + RDS transmitter's Next Track once
@@ -162,7 +172,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `subcarrierRecordedAudio.py` | Subcarrier with recorded audio | ✅ |
 | `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ⏳ |
-| `atscXmitter.py` | ATSC digital TV transmitter | ⏳ |
+| `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
 | `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
 | `fmRdsTransmitter.py` | FM broadcast transmitter with RDS | ✅ |
 
@@ -507,6 +517,123 @@ Things worth knowing before changing it:
   where the cycle wraps; it also costs page width, which can add a page and so
   widen the prefix, which `set_paragraph` settles by iterating.
 
+### ATSC Transmitter
+
+`atscXmitter.py` broadcasts an MPEG-2 transport stream as 8VSB on a 6 MHz
+television channel, which a real TV can tune. The flowgraph is the stock GNU
+Radio `file_atsc_tx` example block for block - same chain, same root-raised
+cosine taps, same rotator - so the modulation was never the thing that needed
+fixing. Three other things did:
+
+- **It could not be launched at all.** The dialog read a `tsFileList.txt` from
+  the working directory, a file that has never existed in this repo, so the
+  combo box always fell into its except branch, OK stayed disabled at 30%
+  opacity, and no amount of configuring got past the dialog. It scans the
+  media directory for `.ts` now, like every other app scans for `.wav`.
+- **It could not run on a HackRF.** `samp_rate` was 12.5e6, and SoapyHackRF
+  accepts only whole megahertz from 1 to 20 - it raises in the constructor,
+  naming every rate it will take. So the app died before transmitting a
+  sample on the one radio most likely to be attached. The second resampler is
+  8/19 rather than 25/57 now, which lands on exactly 12.000000 MS/s from the
+  same 28.5 MS/s intermediate stage and still carries the 6 MHz channel.
+- **It clipped.** 8VSB is noise-like: measured 8.7 dB peak-to-average, and the
+  chain came out at 1.007 peak against radios that take 1.0 as I/Q full scale,
+  so the loudest samples were flattened before the signal left the box - worse
+  the longer it ran, as the Gaussian tail reaches further. `BASEBAND_SCALE` is
+  0.85 now, leaving 10 dB of headroom; the analog stage sets actual power.
+
+The transport stream must be **constant bit rate at exactly 19.392658 Mbps**,
+since the flowgraph consumes it at a rate fixed by the symbol clock - mux it
+any slower or faster and the picture plays at the wrong speed. ffmpeg builds
+one with `-muxrate 19392658 -f mpegts`, MPEG-2 video and AC-3 audio.
+
+```sh
+python scripts/test_atsc_loopback.py <stream.ts> 2      # no radio
+python scripts/test_atsc_loopback.py <stream.ts> 2 15   # ... at 15 dB SNR
+```
+
+runs the transmit chain into GNU Radio's own ATSC receiver (`dtv.atsc_rx`)
+with no radio: locks in 0.42 s, then 99.7% of packets come back byte-perfect,
+holding above 98.5% down to about 15 dB SNR and collapsing below 14 - which is
+where A/53 puts the cliff, and matching it is the best evidence the chain is
+honest.
+
+**Verified off air**, the VSG60 transmitting from the TVAdemo laptop into the
+BB60D here on RF channel 24 (533 MHz) at -9.5 dBm: **79,285 video packets
+recovered with 209 flagged bad, 99.74% clean**, which is what the same stream
+scores decoded purely in software. ffmpeg read it back as 704x480 MPEG-2 at
+29.97 fps with AC-3 audio - exactly what went in - and rendered the test
+pattern with its frame counter legible.
+
+Four things cost real time getting there, none of them in the app:
+
+- **A weak capture fails identically to a broken decoder.** `dtv.atsc_rx`
+  contains an `agc_ff` creeping at 1e-5 per sample toward a reference of 4.0.
+  A BB60D capture of a real station arrives around 0.0002 rms, so the loop
+  needs a gain of ~20000 and half a minute of samples to reach it; on a
+  five-second capture it never converged and decoded pure noise. Scale the
+  capture to about unity rms first and it decodes immediately.
+- **Measure that scale in the middle of the capture, not at the start.** A
+  HackRF opens at whatever gain it had before the requested one is applied, so
+  the first half second can sit 24 dB above the rest.
+- **A free-running transmitter needs AFC, and twice over.** A HackRF put the
+  pilot 7063 Hz from where A/53 places it - 13.3 ppm at 533 MHz, ordinary for
+  that radio - which is far outside `atsc_fpll`'s pull-in, so the decode came
+  back as noise while the spectrum looked perfect. Correcting the carrier
+  alone changed nothing: the same 13.3 ppm scales the **symbol clock**, and
+  correcting that took the decode from nothing to 81% of packets. The VSG60,
+  being an instrument, lands within 158 Hz and needs neither correction - a
+  live broadcast measured 200 Hz out, which is exactly why a capture of a real
+  station decoded first time and ours did not.
+- **A spectrum average hides a transmitter that is off half the time.** Asked
+  to modulate 8VSB at 12 MS/s, the Windows laptop's HackRF was silent 45% of
+  the time in gaps up to 10.9 ms, while its spectrum looked flat across the
+  channel with clean shoulders - better than the real broadcaster's. Only the
+  time-domain envelope showed it. Rendering the baseband on a fast machine and
+  letting the slow one play the file back cured it completely (0.000% of time
+  below threshold).
+
+### NTSC composite video
+
+`apps/ntsc_encode.py` builds a 525-line, 2:1 interlaced composite signal to
+SMPTE 170M-2004 - sync, blanking, equalizing pulses, serrations, colour burst
+and a quadrature-modulated chroma subcarrier - and `apps/ntsc_decode.py`
+takes it apart again. Both are free of GNU Radio and Qt, like the RDS pair, so
+they can be checked with no radio at all:
+
+```sh
+python scripts/test_ntsc_loopback.py       # encoder -> decoder, no radio
+```
+
+All seven colour bars return with a worst error under 0.01, and a full-scale
+grey ramp within 0.008. `docs/S170m-2004.pdf` holds the timing tables (2 and
+3), the levels (table 1) and the encoding equations (annex A).
+
+- **Generate every sample from absolute time, never from a count per line.** A
+  line is 63.5556 us, which is 635.56 samples at 10 MS/s and not a whole
+  number at any rate worth transmitting at. Rounding per line accumulates
+  until the picture shears, so each sample works out which line it belongs to
+  from `n / sample_rate`. Nothing drifts and any sample rate works.
+- **Take the subcarrier phase from that same absolute time.** There are
+  exactly 227.5 subcarrier cycles per line (clause 11.2), so the burst phase
+  inverts line to line and the four-field colour sequence repeats by itself.
+  Tracking it per line is bookkeeping that can only go wrong.
+- **Decode colour against the burst, never against a local oscillator.** The
+  burst is nine cycles at a known phase sent on every line for exactly this
+  purpose: it says where the subcarrier's zero crossing falls *on this line*.
+  Decoding against a locally generated subcarrier gets the hue wrong by
+  however much the sampling origin happened to differ.
+- **Find sync by pulse width, not by level.** Equalizing pulses (2.3 us),
+  horizontal sync (4.7 us) and the vertical serrations all sit at exactly the
+  same level, so a threshold crossing says nothing about which is which. How
+  long the signal stays down is what separates a field from a line.
+
+The encoder's output has the same geometry as the instructor's captures: at
+18 MS/s a frame is 600600 samples of 1144, which is exactly what the
+`*-946x486-18M0FS.dat` files in the media folder contain (one still frame
+each, sync tip 0.034, white 0.877). Those are the only known-good composite
+video in the repo and are worth keeping as a reference.
+
 ### Testing the launcher end to end
 
 The `scripts/test_*.py` above all bypass the GUI. `scripts/test_launcher_gui.py`
@@ -583,6 +710,31 @@ Three things cost time on the way there, all in the *measuring*, not the radio:
   mid-capture, a window that straddles the transition catches an RT+ tag
   belonging to the *outgoing* message and reads exactly like a stale-tag bug.
   Decode a slice safely after the change before believing one.
+
+### The TVAdemo laptop, and why there is a second machine
+
+Anything that needs a transmitter and a receiver at once needs two machines,
+because the VSG60 and the BB60D cannot stream together on one (see the VSG60
+notes). TVAdemo is the transmitter:
+
+```sh
+ssh -i ~/.ssh/id_worklaptop2 user@192.168.50.48        # hostname TVAdemo
+```
+
+Ubuntu 24.04, i9-11980HK, 62 GB, 3.4 TB free, GNU Radio 3.10.12.0 with gr-dtv
+in a conda env called `gnu`, repo at `/data/python/SDR`, media at
+`/data/python/media`. There is **no git** on it, as on the Windows laptop, so
+it is kept in step by copying files. It is on WiFi (the wired port is down),
+which still moves about 8 MB/s.
+
+- **The VSG library is vendored, not installed.** `vendor/libvsg_api.so.1`
+  sits in the repo and `VSG_API_LIB=/data/python/SDR/vendor` points
+  `vsg_sink` at it, so nothing needs Sceptre. The udev rule is already in
+  place and the device node comes up mode 0666.
+- **Prefer it for transmitting anything that must be timed accurately.** Its
+  VSG puts the ATSC pilot within 158 Hz of where the standard says (0.3 ppm);
+  a HackRF managed 7063 Hz, and that one number was the difference between
+  nothing decoding and 99.7% of packets decoding.
 
 ### Running on Windows
 
