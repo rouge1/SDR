@@ -27,7 +27,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from gnuradio import blocks, gr  # noqa: E402
+from fractions import Fraction  # noqa: E402
+from gnuradio import analog, blocks, gr  # noqa: E402
+from gnuradio import filter as gr_filter  # noqa: E402
 
 from apps.ntsc_encode import (FH, FRAME, IRE_PEAK, IRE_TROUGH,  # noqa: E402
                               LINE, NtscEncoder, ire_to_unit)
@@ -376,6 +378,137 @@ def check_sound(path):
     corr = float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum()))
     check("what comes off the aural carrier is the clip's own sound",
           corr > 0.99, f"correlation {corr:.5f}")
+
+    check_sound_loopback(audio)
+
+
+def check_sound_loopback(audio):
+    """The transmitter's sound chain into the receiver's, both as built.
+
+    The check above modulates by hand. This one uses the app's own blocks
+    at both ends - pre-emphasis, the rail, the resampler to the flowgraph
+    rate, the FM modulator and the aural carrier on the way out;
+    ``NtscSound``'s channel filter, demodulator, de-emphasis and resampler
+    on the way back - so a mismatch between the two ends shows up here and
+    nowhere else. It is how the missing pre-emphasis was found: the
+    receiver de-emphasised sound that had never been pre-emphasised, and
+    every treble frequency came back rolled off.
+    """
+    from apps.ntscAnalogVideoRecorded import AUDIO_PREEMPHASIS
+    from apps.ntscReceiver import AUDIO_RATE, NtscSound
+
+    print("\nthe transmitter's sound chain into the receiver's")
+    seconds = min(3.0, audio.size / AUDIO_RATE - 0.2)
+    source = audio[:int(AUDIO_RATE * seconds)]
+
+    tb = gr.top_block("sound loopback", catch_exceptions=True)
+    src = blocks.vector_source_f(source.astype(np.float32).tolist())
+    preemph = analog.fm_preemph(float(AUDIO_RATE), tau=AUDIO_PREEMPHASIS)
+    rail = analog.rail_ff(-1.0, 1.0)
+    modulating = blocks.vector_sink_f()
+    ratio = Fraction(int(RATE), AUDIO_RATE).limit_denominator(10000)
+    up = gr_filter.rational_resampler_fff(
+        interpolation=ratio.numerator, decimation=ratio.denominator,
+        taps=[], fractional_bw=0)
+    fm = analog.frequency_modulator_fc(2 * np.pi * AURAL_DEVIATION / RATE)
+    carrier = analog.sig_source_c(RATE, analog.GR_COS_WAVE, AURAL_CARRIER,
+                                  AURAL_AMPLITUDE, 0, 0)
+    mix = blocks.multiply_vcc(1)
+    # The radio runs at twice the flowgraph rate and the whole baseband is
+    # shifted down by LO_OFFSET on the way out, which is exactly what the
+    # receiver expects to find.
+    interp = gr_filter.rational_resampler_ccc(
+        interpolation=2, decimation=1, taps=[], fractional_bw=0)
+    lo = analog.sig_source_c(RATE * 2, analog.GR_COS_WAVE, -LO_OFFSET, 1, 0, 0)
+    shift = blocks.multiply_vcc(1)
+    sound = NtscSound(RATE * 2, volume=1.0)
+    out = blocks.vector_sink_f()
+    tb.connect(src, preemph, rail, up, fm, (mix, 0))
+    tb.connect(rail, modulating)
+    tb.connect(carrier, (mix, 1))
+    tb.connect(mix, interp, (shift, 0))
+    tb.connect(lo, (shift, 1))
+    tb.connect(shift, sound, out)
+    tb.run()
+    heard = np.array(out.data(), dtype=np.float64)
+    check("sound comes out of the receiver's chain", heard.size > AUDIO_RATE,
+          f"{heard.size / AUDIO_RATE:.2f} s")
+    if heard.size < AUDIO_RATE:
+        return
+
+    # What actually modulates the carrier, after pre-emphasis has lifted the
+    # treble and the rail has caught whatever that pushed past full scale.
+    # Deviation is |1.0| x 25 kHz by construction, so the check is really
+    # that the rail is not doing so much work that it is distorting.
+    driving = np.array(modulating.data(), dtype=np.float64)
+    railed = float((np.abs(driving) >= 0.999999).mean())
+    print(f"       after pre-emphasis the rail holds "
+          f"{railed * 100:.3f}% of samples at full deviation")
+    check("peak deviation cannot exceed System M's 25 kHz",
+          np.abs(driving).max() <= 1.000001,
+          f"{np.abs(driving).max() * AURAL_DEVIATION / 1e3:.1f} kHz")
+    check("and the rail is catching peaks, not shaping the sound",
+          railed < 0.02, f"{railed * 100:.3f}% railed")
+
+    # Ignore the first fifth of a second, while the resamplers and the
+    # de-emphasis fill up.
+    skip = int(AUDIO_RATE * 0.2)
+    sent = np.clip(source, -1.0, 1.0)[skip:]
+    got = heard[skip:]
+
+    # **Search negative lags as well.** GNU Radio does not prepend a
+    # filter's group delay to its output, so the first sample out
+    # corresponds to an input sample some way in and the recovered audio
+    # can *lead* the reference. Searching only forwards finds a spurious
+    # peak and scores a perfect chain at 0.03 - which is exactly what this
+    # test did until it was checked against a signal delayed by a known
+    # amount.
+    def align(a, b, span=4000, window=40000):
+        best = (-2.0, 0)
+        for lag in range(-span, span):
+            if lag >= 0:
+                second = b[lag:lag + window]
+                first = a[:second.size]
+            else:
+                second = b[:window]
+                first = a[-lag:-lag + second.size]
+                second = second[:first.size]
+            if second.size < window // 2:
+                continue
+            first = first - first.mean()
+            second = second - second.mean()
+            corr = float((first * second).sum() /
+                         np.sqrt((first ** 2).sum() * (second ** 2).sum()))
+            if corr > best[0]:
+                best = (corr, lag)
+        return best
+
+    score, lag = align(sent, got)
+    offset = max(lag, 0)
+    aligned = got[offset:offset + sent.size]
+    reference = sent[max(-lag, 0):max(-lag, 0) + aligned.size]
+    aligned = aligned[:reference.size]
+    print(f"       the recovered audio sits {lag / AUDIO_RATE * 1e3:+.2f} ms "
+          f"from the source")
+    check("and it is the same sound that went in", score > 0.9,
+          f"correlation {score:.4f}")
+
+    # Pre-emphasis and de-emphasis must cancel. Without the transmitter's
+    # half, everything above a couple of kilohertz comes back quieter.
+    def band(signal, lo_hz, hi_hz):
+        spec = np.abs(np.fft.rfft(signal * np.hanning(signal.size)))
+        freqs = np.fft.rfftfreq(signal.size, 1 / AUDIO_RATE)
+        return float(spec[(freqs >= lo_hz) & (freqs < hi_hz)].mean())
+
+    tilt = []
+    for lo_hz, hi_hz in ((200, 1000), (1000, 4000), (4000, 10000)):
+        ratio_db = 20 * np.log10(band(aligned, lo_hz, hi_hz) /
+                                 max(band(reference, lo_hz, hi_hz), 1e-12))
+        tilt.append(ratio_db)
+        print(f"       {lo_hz:5d}-{hi_hz:5d} Hz comes back {ratio_db:+.2f} dB")
+    check("the treble is not rolled off - pre-emphasis and de-emphasis "
+          "cancel", max(tilt) - min(tilt) < 2.0,
+          f"{max(tilt) - min(tilt):.2f} dB of tilt across the band")
 
 
 if __name__ == '__main__':

@@ -80,6 +80,9 @@ CARRIER_FLOOR = 0.02
 AURAL_AMPLITUDE = 0.316
 #: Peak deviation of the aural carrier, and the visual/aural spacing.
 AURAL_DEVIATION = 25e3
+#: Sound is pre-emphasised like FM broadcast, and the receiver undoes it.
+#: 75 us in the US; 50 us elsewhere.
+AUDIO_PREEMPHASIS = 75e-6
 #: Leave headroom: radios take 1.0 as full scale and clip above it.
 BASEBAND_SCALE = 0.85
 
@@ -949,11 +952,23 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.audio_head = head
         tail = head
         if kind != 'silence':
+            # **Pre-emphasis, because the receiver de-emphasises.** System M
+            # sound is 75 us pre-emphasised like FM broadcast (the FM + RDS
+            # transmitter here does the same), and a receiver undoes it. Send
+            # without it and every set rolls the treble off instead: the
+            # sound is not wrong, just dull, which is the kind of fault
+            # nobody reports and everybody hears.
+            self.audio_preemph = analog.fm_preemph(float(rate),
+                                                   tau=AUDIO_PREEMPHASIS)
+            self.connect(tail, self.audio_preemph)
+            tail = self.audio_preemph
             # Full deviation is |1.0|, so anything past it over-deviates the
             # aural carrier and splatters into the next channel. The clip
             # conditioning in AUDIO_FILTER keeps it there on all but one
-            # sample in sixty thousand; this is the guarantee, at 48 kHz
-            # where it costs nothing, rather than a hope.
+            # sample in sixty thousand, and pre-emphasis lifts the treble on
+            # top of that; this is the guarantee, at 48 kHz where it costs
+            # nothing, rather than a hope. It goes *after* the boost, which
+            # is the order a real station limits in.
             self.audio_rail = analog.rail_ff(-1.0, 1.0)
             self.connect(tail, self.audio_rail)
             tail = self.audio_rail

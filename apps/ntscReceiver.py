@@ -21,7 +21,8 @@ try:                 # PyQt5 ships sip inside the package; some builds also
     import sip       # expose it at the top level.
 except ImportError:  # pragma: no cover - depends on the PyQt5 build
     from PyQt5 import sip  # type: ignore
-from gnuradio import analog, blocks, filter, gr, qtgui, soapy, uhd  # type: ignore
+from fractions import Fraction
+from gnuradio import analog, audio, blocks, filter, gr, qtgui, soapy, uhd  # type: ignore
 from gnuradio.fft import window  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
@@ -31,7 +32,8 @@ from apps.ntsc_encode import FH, FRAME, IRE_SYNC
 # The two ends of the link must agree about where the carriers sit, so the
 # receiver takes those numbers from the transmitter rather than repeating
 # them. Importing the app module is cheap - it only defines things.
-from apps.ntscAnalogVideoRecorded import (CARRIER_AT_SYNC, CARRIER_AT_WHITE,
+from apps.ntscAnalogVideoRecorded import (AURAL_CARRIER, AURAL_DEVIATION,
+                                          CARRIER_AT_SYNC, CARRIER_AT_WHITE,
                                           LO_OFFSET, VISUAL_CARRIER)
 from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
@@ -57,6 +59,18 @@ VIDEO_BAND_LOW = -1.25e6
 VIDEO_BAND_HIGH = 4.2e6
 BAND_EDGE = 0.3e6
 NYQUIST_TAPS = 257
+
+#: Sound. System M puts it on its own FM carrier 4.5 MHz above the visual
+#: one, so the picture chain's channel filter deliberately throws it away
+#: (see nyquist_slope_taps) and this takes a second copy of the baseband.
+AUDIO_RATE = 48000
+#: What the sound carrier is brought down to before demodulating: 20 MS/s
+#: decimated by 100, which is 25 audio samples for every 6 at 48 kHz.
+SOUND_IF_RATE = 200e3
+#: Carson's rule on 25 kHz of deviation and 15 kHz of audio: 2*(25+15).
+SOUND_BANDWIDTH = 80e3
+#: US de-emphasis. The rest of the world uses 50 us.
+SOUND_DEEMPHASIS = 75e-6
 
 
 def nyquist_slope_taps(sample_rate, ntaps=NYQUIST_TAPS):
@@ -140,6 +154,90 @@ class NtscDemod(gr.hier_block2):
     def set_center_offset(self, center_offset):
         self.rotator.set_phase_inc(
             -2 * np.pi * (VISUAL_CARRIER - center_offset) / self.sample_rate)
+
+
+class NtscSound(gr.hier_block2):
+    """The aural carrier: complex baseband in, audio out at 48 kHz.
+
+    System M carries the sound on its own FM carrier 4.5 MHz above the
+    visual one, deviating 25 kHz - a narrowband FM station riding beside
+    the picture. So this is an FM receiver, and it is deliberately a
+    *separate* path: the picture's Nyquist filter exists partly to throw
+    the sound away, because a video detector fed both produces no
+    recognisable sync at all.
+
+    Everything before the demodulator is one `freq_xlating_fir_filter`,
+    which mixes the sound carrier to zero, filters to Carson's 80 kHz and
+    decimates by 100 in a single pass - a dot product per *output* sample,
+    so 20 MS/s in costs what 200 kS/s costs.
+
+    **Demodulate well above the audio rate and filter down afterwards.**
+    Taking the instantaneous frequency straight to 48 kHz folds everything
+    up to 60 kHz back into the audio band; measured while proving the
+    transmitter, that read 0.087 correlation against the source on a link
+    that was in fact carrying it at 0.999.
+    """
+
+    def __init__(self, sample_rate, center_offset=LO_OFFSET,
+                 audio_rate=AUDIO_RATE, volume=0.5):
+        gr.hier_block2.__init__(
+            self, "ntsc_sound",
+            gr.io_signature(1, 1, gr.sizeof_gr_complex),
+            gr.io_signature(1, 1, gr.sizeof_float))
+        self.sample_rate = float(sample_rate)
+        decimation = max(1, int(round(self.sample_rate / SOUND_IF_RATE)))
+        self.if_rate = self.sample_rate / decimation
+
+        # The radio is tuned center_offset above the channel centre, so the
+        # sound carrier sits this far from DC - as with the picture, but
+        # 4.5 MHz further up.
+        carrier_at = AURAL_CARRIER - center_offset
+        self.channel = filter.freq_xlating_fir_filter_ccf(
+            decimation,
+            filter.firdes.low_pass(1.0, self.sample_rate, SOUND_BANDWIDTH,
+                                   SOUND_BANDWIDTH),
+            carrier_at, self.sample_rate)
+        # Scaled so that full deviation is +-1.0, which makes the meter read
+        # in kilohertz without another constant.
+        self.demod = analog.quadrature_demod_cf(
+            self.if_rate / (2 * np.pi * AURAL_DEVIATION))
+        self.audio_lpf = filter.fir_filter_fff(
+            1, filter.firdes.low_pass(1.0, self.if_rate, 15e3, 4e3))
+        ratio = Fraction(int(audio_rate),
+                         int(round(self.if_rate))).limit_denominator(1000)
+        self.resamp = filter.rational_resampler_fff(
+            interpolation=ratio.numerator, decimation=ratio.denominator,
+            taps=[], fractional_bw=0)
+        self.deemph = analog.fm_deemph(float(audio_rate), SOUND_DEEMPHASIS)
+        self.gain = blocks.multiply_const_ff(float(volume))
+        self.connect(self, self.channel, self.demod, self.audio_lpf,
+                     self.resamp, self.deemph, self.gain, self)
+
+        # Two meters. The carrier level says the sound is being transmitted
+        # at all; the deviation says something is modulating it. A station
+        # sending silence shows a strong carrier and no deviation, which is
+        # a different fault from no carrier.
+        self.carrier_rms = blocks.rms_cf(0.01)
+        self.carrier_probe = blocks.probe_signal_f()
+        self.connect(self.channel, self.carrier_rms, self.carrier_probe)
+        self.deviation_rms = blocks.rms_ff(0.005)
+        self.deviation_probe = blocks.probe_signal_f()
+        self.connect(self.demod, self.deviation_rms, self.deviation_probe)
+
+    def set_center_offset(self, center_offset):
+        self.channel.set_center_freq(AURAL_CARRIER - center_offset)
+
+    def set_volume(self, value):
+        self.gain.set_k(float(value))
+
+    def carrier_level(self):
+        """Sound carrier, in dBFS, or None when there is nothing there."""
+        rms = self.carrier_probe.level()
+        return 20 * np.log10(rms) if rms > 0 else None
+
+    def deviation_hz(self):
+        """How hard the sound is modulating the carrier, in hertz rms."""
+        return self.deviation_probe.level() * AURAL_DEVIATION
 
 
 class ntsc_frame_sink(gr.sync_block):
@@ -367,6 +465,7 @@ class ConfigDialog(Qt.QDialog):
         self.create_receiver_selector()
         self.create_channel_control()
         self.create_gain_control()
+        self.create_sound_control()
 
         self.layout.addWidget(self.button_box)
         self.load_config()
@@ -429,6 +528,15 @@ class ConfigDialog(Qt.QDialog):
         row.addWidget(self.gain_slider)
         self.layout.addLayout(row)
 
+    def create_sound_control(self):
+        self.sound_check = Qt.QCheckBox("Play the sound carrier")
+        self.sound_check.setChecked(True)
+        self.sound_check.setToolTip(
+            "System M sends the sound on its own FM carrier 4.5 MHz above "
+            "the picture. Turning this off leaves the picture untouched - "
+            "the two are decoded by separate chains.")
+        self.layout.addWidget(self.sound_check)
+
     def update_ok_state(self):
         ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
         enabled = self.radio_type != 'usrp' or bool(self.ipList)
@@ -454,6 +562,7 @@ class ConfigDialog(Qt.QDialog):
         restore = [
             ('center_mhz', lambda v: self.cf_chooser.setValue(float(v))),
             ('gain_percent', lambda v: self.gain_slider.setValue(int(v))),
+            ('sound', lambda v: self.sound_check.setChecked(bool(v))),
         ]
         if hasattr(self, 'usrp_combo'):
             restore.append(
@@ -471,6 +580,7 @@ class ConfigDialog(Qt.QDialog):
             'radio_type': self.radio_type,
             'center_mhz': self.cf_chooser.value(),
             'gain_percent': self.gain_slider.value(),
+            'sound': self.sound_check.isChecked(),
         }
         if hasattr(self, 'usrp_combo'):
             config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
@@ -490,6 +600,7 @@ class ConfigDialog(Qt.QDialog):
             'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
             'center_mhz': self.cf_chooser.value(),
             'gain_percent': self.gain_slider.value(),
+            'sound': self.sound_check.isChecked(),
         }
 
 
@@ -556,6 +667,9 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.gain_percent = float(values.get('gain_percent', 60))
         self.usrp_ip = values.get('ipXmitAddr', '')
         self.samp_rate = SAMPLE_RATES.get(self.radio_type, 20e6)
+        self.want_sound = bool(values.get('sound', True))
+        self.volume = 0.5
+        self.sound = None
         self._last_decoded = 0
         self._last_time = None
 
@@ -603,6 +717,20 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.gain_value = Qt.QLabel(f"{int(self.gain_percent)}%")
         row.addWidget(self.gain_value)
 
+        if self.want_sound:
+            row.addSpacing(15)
+            self.mute_btn = Qt.QPushButton("Mute")
+            self.mute_btn.setCheckable(True)
+            self.mute_btn.setMaximumWidth(70)
+            self.mute_btn.toggled.connect(self.set_muted)
+            row.addWidget(self.mute_btn)
+            self.volume_slider = Qt.QSlider(QtCore.Qt.Horizontal)
+            self.volume_slider.setRange(0, 100)
+            self.volume_slider.setValue(int(self.volume * 100))
+            self.volume_slider.setMinimumWidth(90)
+            self.volume_slider.valueChanged.connect(self.set_volume)
+            row.addWidget(self.volume_slider)
+
         row.addStretch(1)
         self.watch_btn = Qt.QPushButton("Watch")
         self.watch_btn.setToolTip(
@@ -639,6 +767,12 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         field(sg, 'lock', "Status", 0, 0, big, span=3)
         field(sg, 'level', "Input Level", 1, 0)
         field(sg, 'levels', "Sync / Blanking", 1, 1)
+        if self.want_sound:
+            # Two fields, not one: a carrier with no deviation on it is a
+            # station sending silence, which is a different thing from no
+            # sound carrier at all.
+            field(sg, 'sound', "Sound Carrier", 2, 0)
+            field(sg, 'deviation', "Deviation", 2, 1)
         sg.setColumnStretch(1, 1)
         sg.setColumnStretch(3, 1)
         sg.setHorizontalSpacing(12)
@@ -714,6 +848,27 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.rms = blocks.rms_cf(0.01)
         self.connect(self.radio_source, self.demod, self.frames)
         self.connect(self.radio_source, self.rms, self.level_probe)
+        if self.want_sound:
+            self._build_sound()
+
+    def _build_sound(self):
+        """The sound carrier, out of the speakers.
+
+        Built off the *radio* rather than off the picture chain, because
+        the picture chain's Nyquist filter exists partly to remove the
+        sound. If there is no audio device the picture must still work, so
+        a failure here turns sound off and says so rather than taking the
+        receiver down with it.
+        """
+        self.sound = NtscSound(self.samp_rate, volume=self.volume)
+        try:
+            self.audio_out = audio.sink(AUDIO_RATE, '', True)
+        except Exception as exc:
+            print(f"NTSC receiver: no audio output ({exc})", file=sys.stderr)
+            self.want_sound = False
+            self.sound = None
+            return
+        self.connect(self.radio_source, self.sound, self.audio_out)
 
     # ------------------------------------------------------------ controls
     def apply_gain(self):
@@ -736,6 +891,23 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.gain_percent = float(percent)
         self.gain_value.setText(f"{int(percent)}%")
         self.apply_gain()
+
+    def set_volume(self, percent):
+        """Loudness, as a plain 0-100% like every other slider here."""
+        self.volume = max(0.0, min(100.0, float(percent))) / 100.0
+        if self.sound is not None and not self._muted():
+            self.sound.set_volume(self.volume)
+
+    def _muted(self):
+        return hasattr(self, 'mute_btn') and self.mute_btn.isChecked()
+
+    def set_muted(self, muted):
+        # The sound chain keeps running while muted: the carrier level and
+        # deviation meters go on reading, which is the point of having them.
+        if self.sound is not None:
+            self.sound.set_volume(0.0 if muted else self.volume)
+        if hasattr(self, 'mute_btn'):
+            self.mute_btn.setText("Unmute" if muted else "Mute")
 
     def set_center(self, mhz):
         mhz = float(mhz)
@@ -845,6 +1017,19 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
                 "colour" if saturation > 0.02 else "monochrome")
         else:
             self.lbl['colour'].setText("-")
+
+        if self.sound is not None:
+            level = self.sound.carrier_level()
+            self.lbl['sound'].setText(
+                f"{level:.1f} dBFS" if level is not None else "-")
+            deviation = self.sound.deviation_hz()
+            # Below about a hundred hertz rms there is nothing on the
+            # carrier worth calling sound - it is the demodulator's own
+            # noise floor, and reading "0.1 kHz" as if it were programme
+            # invites hunting for a fault that is not there.
+            self.lbl['deviation'].setText(
+                f"{deviation / 1e3:.1f} kHz rms" if deviation > 100
+                else "silent")
 
         text, colour = self._status(decoded, rate, line_rate)
         self.lbl['lock'].setText(text)

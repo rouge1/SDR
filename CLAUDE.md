@@ -182,6 +182,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `subcarrierRecordedAudio.py` | Subcarrier with recorded audio | ✅ |
 | `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ✅ |
+| `ntscReceiver.py` | NTSC analog video receiver - pictures and sound | ✅ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
 | `atscReceiver.py` | ATSC digital TV receiver - decodes the transport stream | ✅ |
 | `rdsReceiver.py` | RDS/RBDS receiver - decodes FM station data | ✅ |
@@ -1070,6 +1071,63 @@ in the radio:
   whole reference. Three seconds of recovered audio against a 106-second
   clip cannot score above sqrt(3/106) = 0.168 however exact it is, which
   reads as a failure and is arithmetic.
+- **Search negative lags too.** GNU Radio does not prepend a filter's group
+  delay to its output, so the first sample out of a chain corresponds to an
+  input sample some way in and the recovered signal can *lead* the
+  reference. A forward-only search finds a spurious peak: it scored a
+  chain that was in fact carrying the sound at 0.947 as **0.03**, and cost
+  an hour of looking for a fault that was not there. The alignment search
+  in `test_ntsc_transmit.py` is checked against a signal delayed by a known
+  amount before it is trusted.
+
+### NTSC Receiver
+
+`ntscReceiver.py` is the other end of `ntscAnalogVideoRecorded.py` and
+shares its tile. The picture side is described above; the **sound** is a
+second, separate chain off the same radio, because System M puts it on its
+own FM carrier 4.5 MHz above the visual one and the picture's Nyquist
+filter exists partly to throw it away (a video detector fed both produces
+no recognisable sync at all).
+
+- **It is an FM receiver.** `NtscSound` mixes the aural carrier to zero,
+  filters to Carson's 80 kHz - 2 x (25 kHz deviation + 15 kHz audio) - and
+  decimates 100:1, all in one `freq_xlating_fir_filter`, which costs a dot
+  product per *output* sample so 20 MS/s in costs what 200 kS/s costs.
+  Then quadrature demodulation, 15 kHz low pass, 6/25 to 48 kHz,
+  de-emphasis, volume, `audio.sink`.
+- **Demodulate well above the audio rate.** Taking the instantaneous
+  frequency straight to 48 kHz folds everything up to 60 kHz into the audio
+  band - see the measuring notes above.
+- **A missing audio device must not take the picture down**, so the sink is
+  built inside a try/except and a failure turns sound off and says so, the
+  same shape as the RDS receiver.
+- **Two meters, not one.** Sound Carrier says the sound is being
+  transmitted at all; Deviation says something is modulating it. A strong
+  carrier with no deviation is a station sending silence, which is a
+  different fault from no carrier - and below about 100 Hz rms the readout
+  says "silent" rather than quoting the demodulator's own noise floor as
+  though it were programme.
+- **Mute keeps the chain running**, so both meters go on reading. That is
+  the point of having them.
+
+**The transmitter had no pre-emphasis, and adding the receiver is what
+found it.** System M sound is 75 us pre-emphasised like FM broadcast, and a
+receiver de-emphasises; the FM + RDS transmitter here has always done it,
+and the NTSC one never did. Sent that way, every set rolls the treble off -
+the sound is not wrong, just dull, which is the kind of fault nobody
+reports and everybody hears. `fm_preemph` goes in ahead of the rail,
+because pre-emphasis lifts transients by up to 18 dB on this material and
+the limiter has to be the thing that catches them; that is the order a real
+station processes in. Measured through both chains afterwards: the response
+is flat to **0.03 dB from 200 Hz to 10 kHz**, and the rail holds 0.000% to
+0.011% of samples at full deviation.
+
+**Verified off air**, the VSG60 transmitting a clip from TVAdemo into the
+BB60D here on RF 24: the sound carrier reads a steady -53.0 dBFS, deviation
+tracks the programme between 1.7 and 6.5 kHz rms, the picture goes on
+decoding at 17.6 frames a second beside it, and the recovered audio
+correlates **0.999** with the same clip decoded locally, the next-best
+alignment scoring 8% of that.
 
 ### How every dialog gets laid out
 
