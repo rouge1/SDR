@@ -555,7 +555,8 @@ fixing. Three other things did:
   the working directory, a file that has never existed in this repo, so the
   combo box always fell into its except branch, OK stayed disabled at 30%
   opacity, and no amount of configuring got past the dialog. It scans the
-  media directory for `.ts` now, like every other app scans for `.wav`.
+  media directory now, like every other app - and for every video, not
+  only `.ts` (below).
 - **It could not run on a HackRF.** `samp_rate` was 12.5e6, and SoapyHackRF
   accepts only whole megahertz from 1 to 20 - it raises in the constructor,
   naming every rate it will take. So the app died before transmitting a
@@ -579,6 +580,28 @@ fixing. Three other things did:
   all three staying in step with each other. The running flowgraph window
   was never affected - its `RangeWidget` is a counter with a 0.1 step, so it
   always took a typed value.
+- **It played only transport streams, which on the machine that transmits
+  meant one.** The picker listed `.ts` files. Every clip exists as a `.ts`
+  here, so the list looked complete - but TVAdemo was sent the fourteen
+  clips as `.mp4` only, and its picker offered the test pattern and nothing
+  else. It lists every video ffmpeg reads now, one entry per clip, and a
+  clip with no `.ts` of its own is encoded as it plays by
+  `apps/atsc_source.py`: ffmpeg, with the settings `VIDEO-CREDITS.txt`
+  records the `.ts` files were made with, into a pipe the flowgraph reads
+  through `file_descriptor_source`. That is cheap - 21x real time on the
+  8-core bench and 31x on TVAdemo, measured on the busiest clip, and
+  transmitting on TVAdemo it used 0.26 of a core beside the modulator's
+  2.06. The radio paces it, since ffmpeg blocks when the pipe is full, and
+  what comes through is the mux rate to 0.01% in whole 188-byte packets.
+  - A clip that has its `.ts` still plays that file: it costs nothing, and
+    it is the one checked through the loopback.
+  - Without ffmpeg only the `.ts` files are offered, and the list says how
+    many more need it rather than looking like an emptier folder.
+  - A choice is remembered by clip name, not file name, so one saved here
+    as a `.ts` reopens on TVAdemo as the `.mp4`.
+  - `close_stream()` ends ffmpeg once the flowgraph has stopped. Left
+    alone it would sit blocked on a full pipe for as long as the launcher
+    stays open.
 
 The transport stream must be **constant bit rate at exactly 19.392658 Mbps**,
 since the flowgraph consumes it at a rate fixed by the symbol clock - mux it
@@ -586,15 +609,19 @@ any slower or faster and the picture plays at the wrong speed. ffmpeg builds
 one with `-muxrate 19392658 -f mpegts`, MPEG-2 video and AC-3 audio.
 
 ```sh
-python scripts/test_atsc_loopback.py <stream.ts> 2      # no radio
-python scripts/test_atsc_loopback.py <stream.ts> 2 15   # ... at 15 dB SNR
+python scripts/test_atsc_loopback.py <video> 2      # no radio
+python scripts/test_atsc_loopback.py <video> 2 15   # ... at 15 dB SNR
 ```
 
 runs the transmit chain into GNU Radio's own ATSC receiver (`dtv.atsc_rx`)
 with no radio: locks in 0.42 s, then 99.7% of packets come back byte-perfect,
 holding above 98.5% down to about 15 dB SNR and collapsing below 14 - which is
 where A/53 puts the cliff, and matching it is the best evidence the chain is
-honest.
+honest. The video can be anything the transmitter takes, and a non-`.ts` goes
+through the same ffmpeg pipe; either way the score is against what actually
+entered the chain, recorded on the way in. The Ford `.mp4` encoded as it
+played came back 99.93% byte-perfect after locking in 0.42 s, beside 99.96%
+for the test pattern's `.ts`.
 
 **Verified off air**, the VSG60 transmitting from the TVAdemo laptop into the
 BB60D here on RF channel 24 (533 MHz) at -9.5 dBm: **79,285 video packets
@@ -602,6 +629,25 @@ recovered with 209 flagged bad, 99.74% clean**, which is what the same stream
 scores decoded purely in software. ffmpeg read it back as 704x480 MPEG-2 at
 29.97 fps with AC-3 audio - exactly what went in - and rendered the test
 pattern with its frame counter legible.
+
+**And a clip encoded as it plays**, over the same link: TVAdemo transmitted
+`Prelinger-Ford-1960-Wonderful-New-World.mp4`, a clip it has only as an
+`.mp4`, through the app's own flowgraph. **0 bad packets of 759,936** over a
+minute (0.000%), MER 22.0-23.1 dB, pilot +199 Hz, no BB60D overflows;
+TVAdemo's modulator ran on 2.07 cores and its ffmpeg on 0.26, and ffmpeg was
+gone the moment `close_stream()` ran. The recording read back as 704x480
+MPEG-2 at 29.97 fps, 4:3, with AC-3 stereo, a frame of it rendered cleanly,
+and its sound correlated 1.000 with the clip's own soundtrack at 48 kHz. Two
+readings of that recording look like faults and are not:
+
+- **Correlated at 8 kHz it scores 0.965** - and so does the clip's `.ts`
+  twin, with no radio anywhere near it. That figure belongs to measuring at
+  8 kHz, not to the link.
+- **ffmpeg reports fourteen frames with no dimensions** whenever it opens
+  the recording, even told to start a second in, because it reads the start
+  of the file to find the streams. A recording begins partway through a
+  15-frame group of pictures; the pristine `.ts` decodes with none, from its
+  start or from 30 s in.
 
 Four things cost real time getting there, none of them in the app:
 
@@ -834,8 +880,8 @@ folder.
   at 18 MS/s, so they are played by a file source and resampled 5/9 - see
   `dat_resample_ratio`.
 - **One clip, one entry in the picker.** The media folder holds each clip
-  twice - a `.mp4` for here and a `.ts` of the same picture and sound for
-  the ATSC transmitter, which needs a transport stream - so offering every
+  twice - a `.mp4` for here and a `.ts` of the same picture and sound, which
+  the ATSC transmitter plays without having to encode it - so offering every
   readable file made the video list forty items long with every title in it
   twice, spelled identically, and nothing on screen saying which was which.
   `video_files()` collapses files that share a name to one, keeping the
@@ -1416,6 +1462,18 @@ video clips are 322 MB and took 47 seconds.
   sits in the repo and `VSG_API_LIB=/data/python/SDR/vendor` points
   `vsg_sink` at it, so nothing needs Sceptre. The udev rule is already in
   place and the device node comes up mode 0666.
+- **Launch the transmitter and start the receiver as two commands.** A job
+  put in the background inside an SSH command can hold that command open
+  until the job ends: with `setsid nohup bash -ic ... > log 2>&1 < /dev/null
+  &`, a 20-second job kept `ssh` from returning for 20.7 s. A script that
+  launches the transmitter that way and then starts the receiver begins
+  listening *after* the transmission is over. Four runs like that read the
+  BB60D's bare noise floor, the known-good test pattern included - which
+  looks exactly like a disconnected antenna, and was reported as one. The
+  two logs gave it away: the transmitter off air at 17:48:26, the first
+  reading here at 17:48:31, with the clocks agreeing to 0.3 s. Start the
+  transmitter as its own backgrounded command and have the receiver wait on
+  its log.
 - **Prefer it for transmitting anything that must be timed accurately.** Its
   VSG puts the ATSC pilot within 200 Hz of where the standard says, and most
   of even that is the BB60D measuring it (see the ATSC transmitter notes);

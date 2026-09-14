@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """ATSC transmit chain -> dtv.atsc_rx -> transport stream, no radio.
 
-    python scripts/test_atsc_loopback.py <in.ts> <seconds> [snr_db]
+    python scripts/test_atsc_loopback.py <video> <seconds> [snr_db]
 
 Runs exactly the block chain atscXmitter.py builds, feeds the result to GNU
 Radio's own ATSC receiver, and reports how much of the transport stream came
 back byte for byte.
+
+The video is anything the transmitter takes: a ``.ts`` plays as it is, and
+anything else is encoded by ffmpeg as it plays, through the same pipe the
+transmitter reads (``apps/atsc_source.py``). Either way the result is scored
+against what actually went into the chain, recorded on the way in, since an
+encoded stream has no file of its own to compare against.
 """
 import math
 import os
@@ -15,18 +21,28 @@ import tempfile
 from gnuradio import analog, blocks, dtv, filter, gr
 from gnuradio.filter import firdes
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from apps.atsc_source import TransportStream, needs_encoding  # noqa: E402
+
 TS_RATE = 19392658.0          # ATSC transport stream bitrate, bits/s
 
 
 class Loop(gr.top_block):
-    def __init__(self, ts_in, ts_out, nbytes, snr_db=None):
+    def __init__(self, video, ts_sent, ts_out, nbytes, snr_db=None):
         gr.top_block.__init__(self, "atsc loopback", catch_exceptions=True)
         symbol_rate = 4500000.0 / 286 * 684
         pilot_freq = (6000000.0 - (symbol_rate / 2)) / 2
         samp_rate = 12e6
 
-        src = blocks.file_source(gr.sizeof_char, ts_in, False, 0, 0)
+        if needs_encoding(video):
+            self.stream = TransportStream(video)
+            src = blocks.file_descriptor_source(
+                gr.sizeof_char, self.stream.fileno(), False)
+        else:
+            self.stream = None
+            src = blocks.file_source(gr.sizeof_char, video, False, 0, 0)
         head = blocks.head(gr.sizeof_char, nbytes)
+        self.connect(head, blocks.file_sink(gr.sizeof_char, ts_sent, False))
         pad = dtv.atsc_pad()
         rand = dtv.atsc_randomizer()
         rs = dtv.atsc_rs_encoder()
@@ -96,16 +112,21 @@ def compare(ts_in, ts_out):
 
 
 if __name__ == '__main__':
-    ts_in = sys.argv[1]
+    video = sys.argv[1]
     seconds = float(sys.argv[2])
     snr = float(sys.argv[3]) if len(sys.argv) > 3 else None
     nbytes = int(seconds * TS_RATE / 8) // 188 * 188
     tag = 'clean' if snr is None else f'{snr:.0f}db'
-    # Next to the source would put it in the media directory, where the app
+    # Next to the source would put these in the media directory, where the app
     # would then offer the decoder's own output as something to transmit.
-    out = os.path.join(tempfile.gettempdir(),
-                       os.path.basename(ts_in).replace('.ts', '') + f'_rx_{tag}.ts')
-    tb = Loop(ts_in, out, nbytes, snr)
-    tb.run()
+    stem = os.path.splitext(os.path.basename(video))[0]
+    sent = os.path.join(tempfile.gettempdir(), f'{stem}_tx.ts')
+    out = os.path.join(tempfile.gettempdir(), f'{stem}_rx_{tag}.ts')
+    tb = Loop(video, sent, out, nbytes, snr)
+    try:
+        tb.run()
+    finally:
+        if tb.stream is not None:
+            tb.stream.close()
     label = "clean" if snr is None else f"{snr:.0f} dB SNR"
-    print(f"{label}: {compare(ts_in, out)}")
+    print(f"{label}: {compare(sent, out)}")

@@ -65,7 +65,7 @@ def have_ffmpeg():
     return shutil.which('ffmpeg') is not None
 
 
-def video_files(directory):
+def video_files(directory, extensions=VIDEO_EXTENSIONS):
     """Playable video files in a directory, as (display name, full path).
 
     **One clip, one entry.** The media folder holds each clip twice - a
@@ -74,9 +74,10 @@ def video_files(directory):
     picker forty items long with every title in it twice, spelled
     identically, and nothing on screen said which was which. So files that
     share a name are collapsed to one, keeping the extension earliest in
-    ``VIDEO_EXTENSIONS``: the ``.mp4`` is 640x480 with square pixels, which
-    is exactly what the encoder wants, where the ``.ts`` is 704x480 at
-    10:11 and would have to be stretched back.
+    ``extensions``: by default the ``.mp4``, which is 640x480 with square
+    pixels, exactly what the encoder wants, where the ``.ts`` is 704x480 at
+    10:11 and would have to be stretched back. The ATSC transmitter asks
+    for the ``.ts`` first instead - see ``apps/atsc_source.py``.
     """
     if not directory or not os.path.isdir(directory):
         return []
@@ -84,9 +85,9 @@ def video_files(directory):
     for name in sorted(os.listdir(directory)):
         stem, ext = os.path.splitext(name)
         ext = ext.lower()
-        if ext not in VIDEO_EXTENSIONS:
+        if ext not in extensions:
             continue
-        rank = VIDEO_EXTENSIONS.index(ext)
+        rank = extensions.index(ext)
         if stem not in best or rank < best[stem][0]:
             best[stem] = (rank, name)
     return [(stem.replace('-', ' '), os.path.join(directory, name))

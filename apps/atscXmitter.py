@@ -40,6 +40,9 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
+from apps.atsc_source import (TransportStream, atsc_video_files, describe,
+                              needs_encoding)
+from apps.ntsc_source import have_ffmpeg
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         adopt_legacy_config, FrequencyChooser)
@@ -141,9 +144,17 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_file_selector(self):
+        """Every video in the media folder, one entry per clip.
+
+        This offered only ``.ts`` files, because the flowgraph plays a
+        transport stream. That looked complete here, where every clip has a
+        ``.ts`` twin, and gave TVAdemo - the machine that transmits, which
+        has the clips only as ``.mp4`` - the test pattern and nothing else.
+        A clip with no ``.ts`` is encoded as it plays now; see
+        ``apps/atsc_source.py``.
+        """
         self.file_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        self.ts_files = []
 
         # The media directory, like every other app. This used to read a
         # tsFileList.txt from the working directory, which does not exist in
@@ -156,17 +167,27 @@ class ConfigDialog(Qt.QDialog):
             if not self.media_dir or not os.path.exists(self.media_dir):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
 
-            for file in os.listdir(self.media_dir):
-                if file.endswith('.ts'):
-                    display_name = os.path.splitext(file)[0].replace('-', ' ')
-                    self.ts_files.append((display_name, file))
+            clips = atsc_video_files(self.media_dir)
+            if not clips:
+                raise FileNotFoundError(
+                    "No video in media directory" if have_ffmpeg() else
+                    "No transport streams (.ts) in media directory, and "
+                    "ffmpeg is not installed to encode anything else")
+            for display_name, path in clips:
+                self.file_combo.addItem(display_name, path)
 
-            if not self.ts_files:
-                raise FileNotFoundError("No transport streams (.ts) in media directory")
-
-            self.ts_files.sort()
-            for display_name, filename in self.ts_files:
-                self.file_combo.addItem(display_name, os.path.join(self.media_dir, filename))
+            # Without ffmpeg only the .ts files can play. A list that just
+            # left the rest out would look like clips missing from the folder.
+            if not have_ffmpeg():
+                unplayable = (len(atsc_video_files(self.media_dir, encode=True))
+                              - len(clips))
+                if unplayable:
+                    self.file_combo.insertSeparator(self.file_combo.count())
+                    self.file_combo.addItem(
+                        f"{unplayable} more need ffmpeg, which is not "
+                        "installed here")
+                    self.file_combo.model().item(
+                        self.file_combo.count() - 1).setEnabled(False)
 
             ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg') or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
@@ -179,7 +200,7 @@ class ConfigDialog(Qt.QDialog):
             opacity_effect.setOpacity(0.30)
             ok_button.setGraphicsEffect(opacity_effect)
 
-        self.layout.addWidget(Qt.QLabel("Select Transport Stream File:"))
+        self.layout.addWidget(Qt.QLabel("Video Source:"))
         self.layout.addWidget(self.file_combo)
 
     def load_config(self):
@@ -195,12 +216,17 @@ class ConfigDialog(Qt.QDialog):
                                                     channel_center_mhz(DEFAULT_CHANNEL)))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 
-                # Match by name, not by path: the media directory can move.
-                saved_file = config.get('ts_file')
+                # Match by clip name, not by path or extension: the media
+                # directory can move, and a clip saved where it was a .ts
+                # should still be found where it is only a .mp4. 'ts_file' is
+                # what this was saved as when a .ts was all it took.
+                saved_file = config.get('video_file') or config.get('ts_file')
                 if saved_file:
-                    saved_file = os.path.basename(saved_file)
-                    for i, (_, filename) in enumerate(self.ts_files):
-                        if filename == saved_file:
+                    stem = os.path.splitext(os.path.basename(saved_file))[0]
+                    for i in range(self.file_combo.count()):
+                        path = self.file_combo.itemData(i)
+                        if path and os.path.splitext(
+                                os.path.basename(path))[0] == stem:
                             self.file_combo.setCurrentIndex(i)
                             break
             except:
@@ -209,16 +235,13 @@ class ConfigDialog(Qt.QDialog):
             os.makedirs(self.config_dir, exist_ok=True)
 
     def save_config(self):
-        current_index = self.file_combo.currentIndex()
-        ts_filename = None
-        if 0 <= current_index < len(self.ts_files):
-            _, ts_filename = self.ts_files[current_index]
+        path = self.file_combo.currentData()
 
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
-            'ts_file': ts_filename
+            'video_file': os.path.basename(path) if path else None
         }
         
         with open(self.config_file, 'w') as f:
@@ -244,7 +267,7 @@ class ConfigDialog(Qt.QDialog):
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
-            'ts_file': self.file_combo.currentData()
+            'video_file': self.file_combo.currentData()
         }
 
 class atscXmitter2(gr.top_block, Qt.QWidget):
@@ -294,7 +317,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
         pwr = values['pwr']
-        self.ts_file = values['ts_file']
+        self.video_file = values.get('video_file') or values.get('ts_file')
 
         ##################################################
         # Variables
@@ -302,7 +325,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.symbol_rate = symbol_rate = 4500000.0 / 286 * 684
         self.rfPwrDefault = rfPwrDefault = pwr
         self.cfDefault = cfDefault = cf
-        self.atscFileName = atscFileName = self.ts_file
+        self.atscFileName = atscFileName = self.video_file
         # 12 MS/s, not the 12.5 this once used: SoapyHackRF accepts only whole
         # megahertz between 1 and 20 and rejects anything else outright, so on
         # a HackRF the app died in the constructor with "Unsupported sample
@@ -313,7 +336,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.pilot_freq = pilot_freq = (6000000.0 - (symbol_rate / 2)) / 2
         self.outputIpAddr = outputIpAddr = ipXmitAddr
         self.modulation = modulation = 'ATSC'
-        self.fileBeingBroadcast = fileBeingBroadcast = atscFileName
+        self.fileBeingBroadcast = fileBeingBroadcast = describe(atscFileName)
         self.cf = cf
         self.radio_type = radio_type
 
@@ -472,8 +495,18 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.blocks_vector_to_stream_1 = blocks.vector_to_stream(gr.sizeof_char*1, 1024)
         self.blocks_rotator_cc_0 = blocks.rotator_cc(((-3000000.0 + pilot_freq) / symbol_rate) * (math.pi * 2), False)
         self.blocks_keep_m_in_n_0 = blocks.keep_m_in_n(gr.sizeof_char, 832, 1024, 4)
-        self.blocks_file_source_0 = blocks.file_source(gr.sizeof_char*1, atscFileName, True, 0, 0)
-        self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
+        if needs_encoding(atscFileName):
+            # A clip with no .ts of its own, encoded by ffmpeg as it plays and
+            # looped inside ffmpeg, so this never reaches the end of it. Made
+            # after the radio has opened, so a radio that fails to open does
+            # not leave an ffmpeg running behind it.
+            self.ts_stream = TransportStream(atscFileName)
+            self.blocks_file_source_0 = blocks.file_descriptor_source(
+                gr.sizeof_char*1, self.ts_stream.fileno(), False)
+        else:
+            self.ts_stream = None
+            self.blocks_file_source_0 = blocks.file_source(gr.sizeof_char*1, atscFileName, True, 0, 0)
+            self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
 
 
         ##################################################
@@ -502,8 +535,19 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        self.close_stream()
 
         event.accept()
+
+    def close_stream(self):
+        """Stop the ffmpeg encoding the clip, once the flowgraph has stopped.
+
+        Nothing reads its pipe after that, so left alone it would sit blocked
+        on a full pipe for as long as the launcher stays open.
+        """
+        stream, self.ts_stream = getattr(self, 'ts_stream', None), None
+        if stream is not None:
+            stream.close()
 
     def get_symbol_rate(self):
         return self.symbol_rate
@@ -617,6 +661,7 @@ def main(top_block_cls=atscXmitter2, options=None, app=None, config_values=None)
         def _signal_handler():
             tb.stop()
             tb.wait()
+            tb.close_stream()
             app.quit()  # Changed from Qt.QApplication.quit()
         
         # Use QTimer to handle the signal in the Qt event loop
@@ -633,6 +678,7 @@ def main(top_block_cls=atscXmitter2, options=None, app=None, config_values=None)
     def handle_close():
         tb.stop()
         tb.wait()
+        tb.close_stream()
         app.quit()  # Use app instance instead of Qt.QApplication
 
     # Connect close event
