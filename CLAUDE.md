@@ -1109,6 +1109,40 @@ no recognisable sync at all).
   though it were programme.
 - **Mute keeps the chain running**, so both meters go on reading. That is
   the point of having them.
+- **The spectrum shows the channel, not the radio.** Fed straight off the
+  radio the sink is centred on the *local oscillator*, which is
+  `LO_OFFSET` - 6 MHz - above the channel centre: 20 MHz wide with the
+  television channel squashed into the left third and two thirds of the
+  plot empty air. Side by side with the transmitter's own 10 MHz
+  channel-centred plot of the same signal, the two looked like different
+  signals, and the obvious reading of the receiver's was that it had
+  invented a second carrier. It had not - **both windows show two
+  carriers, and both are right**: measured off air, visual at 531.2504
+  MHz, aural at 535.7499 (visual + 4.4995 against the standard's 4.5) and
+  the colour subcarrier at 534.8295 (visual + 3.5791 against 3.579545).
+  The receiver now mixes the channel back to the centre and decimates to
+  the transmitter's own 10 MS/s in one `freq_xlating_fir_filter`, and the
+  transmitter's plot - which is called *RF* Spectrum and was labelled 0 Hz
+  at the channel centre - is labelled in RF. The two windows now have the
+  same span, the same centre and the same axis.
+  - The filter is flat across the whole 6 MHz channel and stops at
+    exactly 5 MHz, the decimated Nyquist, so nothing folds into the plot.
+    A display that invents a signal is worse than no display - and the
+    price of that is that the noise floor *outside* the channel is the
+    filter's skirt rather than the air, so do not read adjacent-channel
+    interference off this plot.
+  - It costs about 0.7 of a core of the eight. Measured off air with it
+    in and with it out, back to back on the same transmission: 1,764
+    frames either way, 17.6 a second, **0 failed, 0 dropped, 0 BB60D
+    overflows**, 3.83 cores against 3.13.
+- **The BB60D's analog filter is flat to +-8.5 MHz and gone by +-9.0**
+  (measured off its own noise floor at 20 MS/s: -0.7 dB at 8.5,
+  -10.9 at 9.0, -70.7 at 9.5, where the decimation filter takes over).
+  Tuned 6 MHz above the channel centre the channel occupies -9 to -3 MHz
+  of that, so the bottom of the vestigial sideband - 0.75 MHz below the
+  visual carrier, at -8.5 MHz - sits in the last half megahertz of flat
+  response. It fits, and decoding is unaffected, but there is no margin
+  below it: a larger receive offset would start cutting the vestige.
 
 **The transmitter had no pre-emphasis, and adding the receiver is what
 found it.** System M sound is 75 us pre-emphasised like FM broadcast, and a

@@ -733,7 +733,11 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.qtgui_freq_sink_x_0 = qtgui.freq_sink_c(
             8192, #size
             window.WIN_BLACKMAN_hARRIS, #wintype
-            0, #fc
+            cf*1e6, #fc - the channel centre, so a plot called 'RF Spectrum'
+                    # is labelled in RF. It read 0 Hz at the channel centre,
+                    # which is not a frequency anything is transmitting on,
+                    # and made the receiver's plot of the same signal
+                    # impossible to compare with.
             samp_rate, #bw
             'RF Spectrum', #name
             1,
@@ -1076,7 +1080,7 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.analog_frequency_modulator_fc_0.set_sensitivity(2*pi*AURAL_DEVIATION/self.samp_rate)
         self.analog_sig_source_x_0_0_0.set_sampling_freq(self.samp_rate)
         self.analog_sig_source_x_1.set_sampling_freq(self.samp_rate*2)
-        self.qtgui_freq_sink_x_0.set_frequency_range(0, self.samp_rate)
+        self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6, self.samp_rate)
         if self.radio_type == 'usrp':
             self.radio_sink.set_samp_rate(self.samp_rate*2)
         else:
@@ -1106,6 +1110,10 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
 
     def set_cf(self, cf):
         self.cf = cf
+        # The spectrum is baseband, but it is labelled in RF, so retuning
+        # has to move its axis with the radio.
+        self.qtgui_freq_sink_x_0.set_frequency_range(self.cf*1e6,
+                                                     self.samp_rate)
         if self.radio_type == 'usrp':
             self.radio_sink.set_center_freq(self.cf*1e6+6e6, 0)
         else:

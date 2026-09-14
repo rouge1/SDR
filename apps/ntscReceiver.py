@@ -45,6 +45,9 @@ from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
 # where the expensive work is.
 SAMPLE_RATES = {'hackrf': 20e6, 'usrp': 20e6, 'bb60': 20e6}
 COMPOSITE_DECIM = 2
+#: The spectrum display runs at the transmitter's own 10 MS/s, so that the
+#: two windows show the same span of the same channel at the same zoom.
+SPECTRUM_DECIM = 2
 DEFAULT_CHANNEL = 24            # 533 MHz, the channel this bench uses
 
 ACTIVE_WIDTH = 640
@@ -797,9 +800,29 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.top_grid_layout.setRowStretch(2, 1)
 
     def _build_spectrum(self):
+        """The television channel, drawn the way the transmitter draws it.
+
+        The radio is tuned LO_OFFSET *above* the channel centre, so a sink
+        fed straight off it is centred on the local oscillator rather than
+        on the channel: 20 MHz wide with the channel squashed into the
+        left third and two thirds of the plot empty air. The two windows
+        then look nothing like each other even though they are showing the
+        same signal, which is exactly what a side-by-side pair must not
+        do. So the channel is mixed back to the centre and decimated to
+        the transmitter's own 10 MS/s first. One `freq_xlating_fir_filter`
+        does both, at a dot product per *output* sample.
+
+        The filter is flat across the whole 6 MHz channel and stops at
+        exactly the decimated Nyquist, 5 MHz, so nothing folds into the
+        plot: a display that invents a signal is worse than no display.
+        """
+        self.spectrum_channel = filter.freq_xlating_fir_filter_ccf(
+            SPECTRUM_DECIM,
+            filter.firdes.low_pass(1.0, self.samp_rate, 3.6e6, 1.4e6),
+            -LO_OFFSET, self.samp_rate)
         self.spectrum = qtgui.freq_sink_c(
             2048, window.WIN_BLACKMAN_hARRIS,
-            self.center_mhz * 1e6 + LO_OFFSET, self.samp_rate,
+            self.center_mhz * 1e6, self.samp_rate / SPECTRUM_DECIM,
             'Received Channel - visual carrier 1.75 MHz below channel centre, '
             'sound 4.5 MHz above it', 1, None)
         self.spectrum.set_update_time(0.10)
@@ -814,7 +837,7 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
         self.spectrum.disable_legend()
         widget = sip.wrapinstance(self.spectrum.qwidget(), Qt.QWidget)
         self.top_grid_layout.addWidget(widget, 2, 0, 7, 10)
-        self.connect(self.radio_source, self.spectrum)
+        self.connect(self.radio_source, self.spectrum_channel, self.spectrum)
 
     # ----------------------------------------------------------- flowgraph
     def _build_flowgraph(self):
@@ -921,7 +944,11 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
             self.radio_source.set_center_freq(tuned)
         else:
             self.radio_source.set_frequency(0, tuned)
-        self.spectrum.set_frequency_range(tuned, self.samp_rate)
+        # The axis follows the channel, not the radio - the mixer inside
+        # spectrum_channel is a fixed offset from the radio and needs no
+        # retuning.
+        self.spectrum.set_frequency_range(mhz * 1e6,
+                                          self.samp_rate / SPECTRUM_DECIM)
         for widget, value in ((self.freq_spin, mhz),
                               (self.channel_combo, channel_for_center(mhz))):
             widget.blockSignals(True)
