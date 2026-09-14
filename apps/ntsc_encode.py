@@ -111,16 +111,22 @@ class NtscEncoder:
 
     # -- timing ---------------------------------------------------------
 
-    def _frame_slice(self):
-        """Sample indices whose time falls in the next frame.
+    def frame_bounds(self, n0):
+        """[start, end) sample indices of the frame beginning at ``n0``.
 
         Half-open on time, so consecutive frames neither overlap nor leave a
-        gap however the boundary lands between samples.
+        gap however the boundary lands between samples. Public because a
+        caller encoding frames on several threads has to know where the next
+        frame starts *before* this one has finished - see ``ntsc_source``.
         """
-        start_time = self._n / self.sample_rate
+        start_time = int(n0) / self.sample_rate
         end_time = (np.floor(start_time / FRAME) + 1) * FRAME
-        n_end = int(np.ceil(end_time * self.sample_rate))
-        n = np.arange(self._n, n_end, dtype=np.int64)
+        return int(n0), int(np.ceil(end_time * self.sample_rate))
+
+    def _frame_slice(self):
+        """Sample indices whose time falls in the next frame."""
+        start, n_end = self.frame_bounds(self._n)
+        n = np.arange(start, n_end, dtype=np.int64)
         self._n = n_end
         return n
 

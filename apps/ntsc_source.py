@@ -33,6 +33,8 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from queue import Empty, Full, Queue
 
@@ -258,25 +260,169 @@ class VideoFile(FrameSource):
         return os.path.basename(self.path)
 
 
+# --- the sound that goes with the picture -----------------------------------
+
+#: What the clip's soundtrack is decoded to. Nothing here needs more: the
+#: aural carrier is FM with 25 kHz deviation, and System M sound is mono.
+AUDIO_RATE = 48000
+
+#: Conditioning applied to a clip's sound before it modulates the aural
+#: carrier, which is the same shape of processing every real station runs.
+#:
+#: The clips are loudness-normalised to -24 LKFS (ATSC A/85), which is
+#: deliberately quiet: measured across all fourteen, peaks ran 0.30 to 1.11
+#: and rms 0.038 to 0.088. Fed straight to a modulator whose full deviation
+#: is |1.0|, the quietest of them would have swung +-7.5 kHz of the +-25 kHz
+#: System M allows - 10 dB down, and it would have been reported as the sound
+#: being too quiet rather than as a level fault.
+#:
+#: A fixed gain alone cannot fix it, because the *loudness* is uniform and
+#: the crest factor is not: 8 dB puts speech where it belongs and clips the
+#: two music-heavy Blender films on 0.17% of their samples. Compressing
+#: first and then lifting gives rms 0.091-0.210 and peaks 0.64-1.54 across
+#: the whole set, with the worst clip needing the rail on 0.0017% of samples
+#: - one in sixty thousand. Both numbers are measured, not guessed.
+#:
+#: ffmpeg's own `loudnorm` would be the obvious tool and is the wrong one
+#: here: its dynamic mode looks three seconds ahead, and since the picture
+#: comes from a *separate* ffmpeg on the same file, that delay would land
+#: as three seconds of lip-sync error.
+AUDIO_FILTER = ('acompressor=threshold=0.125:ratio=4:attack=5:release=120'
+                ':makeup=1,volume=8dB')
+
+
+def has_audio(path):
+    """Whether ffmpeg can find a soundtrack in this file.
+
+    Asked once, of the one file that was chosen, at the moment the flowgraph
+    is built - never of every file in the media folder while a dialog is
+    opening, which would be fourteen subprocesses on every click.
+    """
+    if not path or not have_ffmpeg():
+        return False
+    probe = shutil.which('ffprobe')
+    if probe is None:
+        return False
+    try:
+        out = subprocess.run(
+            [probe, '-v', 'error', '-select_streams', 'a:0',
+             '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return b'audio' in out.stdout
+
+
+class AudioTrack:
+    """A video file's own soundtrack, as mono float at ``AUDIO_RATE``.
+
+    **The picture and the sound must come from the same file.** The NTSC
+    transmitter used to take its aural carrier from a ``.wav`` picked
+    separately in the dialog, which was the only thing available when the
+    only video it could send was a single still frame. Once it could send
+    clips that carry their own sound, that left a 1950s car advertisement
+    going out with an unrelated cartoon soundtrack over it.
+
+    This is a second ffmpeg on the same file, decoding audio where
+    ``VideoFile`` decodes video, and it stays in step for free: GNU Radio
+    consumes exactly one audio sample per composite sample once the audio is
+    resampled, so both are paced by the radio's own clock. The two loop
+    together as long as the file's streams are the same length, which they
+    are for anything made the way ``media/VIDEO-CREDITS.txt`` describes.
+
+    The pipe is handed to ``blocks.file_descriptor_source`` rather than
+    being read by a Python block: there is nothing to compute, and a Python
+    block whose wrapper gets garbage collected takes the process down with
+    it (see the FM + RDS notes).
+    """
+
+    def __init__(self, path, rate=AUDIO_RATE, loop=True, filters=AUDIO_FILTER):
+        if not have_ffmpeg():
+            raise RuntimeError(
+                "Playing a clip's sound needs ffmpeg on PATH, and it is not "
+                "installed.")
+        self.path = path
+        self.rate = int(rate)
+        argv = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
+        if loop:
+            argv += ['-stream_loop', '-1']
+        argv += ['-i', path, '-vn']
+        if filters:
+            argv += ['-af', filters]
+        argv += ['-ac', '1', '-ar', str(self.rate),
+                 '-f', 'f32le', '-acodec', 'pcm_f32le', 'pipe:1']
+        self._proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL)
+
+    def fileno(self):
+        return self._proc.stdout.fileno()
+
+    def close(self):
+        proc, self._proc = getattr(self, '_proc', None), None
+        if proc is None:
+            return
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    @property
+    def description(self):
+        return os.path.basename(self.path) + " (its own sound)"
+
+
 # --- the GNU Radio source ---------------------------------------------------
+
+def encode_workers(requested=None):
+    """How many threads to encode on.
+
+    One is not enough. Encoding a frame at 10 MS/s takes 26-32 ms against a
+    33.4 ms budget, measured on both machines here, so a single encoder runs
+    at 1.03-1.21x real time - and that is *before* it shares the processor
+    with the modulator, the resamplers and the radio sink. Off air it lost,
+    and the way it lost was the transmitter going silent (see ``work``).
+
+    numpy releases the interpreter lock inside the large array operations
+    this encoder is made of, so plain threads scale: measured 1.03x, 1.62x,
+    2.16x, 2.49x real time on one, two, three and four. Three is the
+    default - past that the return falls off and the rest of the flowgraph
+    needs cores too.
+    """
+    if requested:
+        return max(1, int(requested))
+    cores = os.cpu_count() or 1
+    return 3 if cores >= 8 else (2 if cores >= 4 else 1)
+
 
 class ntsc_source(gr.sync_block):
     """Composite NTSC baseband, as a stream of floats at ``sample_rate``.
 
     Sync tip is 0.0 and white is 1.0, which is what the transmitter expects
-    to modulate. See the module docstring for why encoding happens on its
-    own thread.
+    to modulate. See the module docstring for why encoding happens off the
+    scheduler's thread, and ``encode_workers`` for why it takes more than
+    one of them.
     """
 
-    #: Frames encoded ahead. Three is about 100 ms of slack - enough to ride
-    #: out a slow decode, small enough that changing source is not delayed.
-    QUEUE_DEPTH = 3
+    #: Frames encoded ahead. Six is about 200 ms of slack - enough to ride
+    #: out a slow decode or a garbage collection without the picture having
+    #: to repeat, small enough that changing source is not delayed. It was
+    #: three, which the encoder could drain during the first tenth of a
+    #: second before it had built any cushion at all.
+    QUEUE_DEPTH = 6
 
-    def __init__(self, frames, sample_rate, color=True):
+    def __init__(self, frames, sample_rate, color=True, workers=None):
         gr.sync_block.__init__(self, name='ntsc_source', in_sig=None,
                                out_sig=[np.float32])
         self.sample_rate = float(sample_rate)
         self.frames = frames
+        self.color = bool(color)
+        self.workers = encode_workers(workers)
         self.encoder = NtscEncoder(self.sample_rate, color=color)
         self._queue = Queue(maxsize=self.QUEUE_DEPTH)
         self._thread = None
@@ -285,13 +431,28 @@ class ntsc_source(gr.sync_block):
         self._pos = 0
         self.frames_encoded = 0
         self.starved = 0
-        #: What to emit when the encoder has not kept up: blanking level, so
-        #: a receiver sees a black frame rather than a burst of noise.
+        self.repeats = 0
+        #: The last complete frame, replayed when the encoder has not kept
+        #: up. A frozen picture holds sync; blanking does not.
+        self._last = None
         self._blank = np.float32(ire_to_unit(IRE_BLANK))
 
     # -- lifecycle -------------------------------------------------------
 
     def start(self):
+        # Encode the first frame before saying the block is ready. Otherwise
+        # the ~30 ms it takes is dead air: the scheduler is already pulling
+        # samples, there is nothing to give it and nothing yet to repeat, so
+        # the transmitter opens with a burst of blanking.
+        try:
+            first = self.encoder.encode_frame(
+                self.frames.next_frame()).astype(np.float32)
+            self._last = first
+            self._queue.put_nowait(first)
+            self.frames_encoded += 1
+        except Exception as exc:
+            print(f"NTSC source: could not encode the first frame: {exc}",
+                  file=sys.stderr)
         self._running.set()
         self._thread = threading.Thread(target=self._produce, daemon=True,
                                         name='ntsc-encode')
@@ -316,39 +477,101 @@ class ntsc_source(gr.sync_block):
         return True
 
     def _produce(self):
-        while self._running.is_set():
-            try:
-                samples = self.encoder.encode_frame(self.frames.next_frame())
-            except Exception as exc:
-                print(f"NTSC source: encoding stopped: {exc}", file=sys.stderr)
-                return
-            # Put with a timeout rather than blocking forever, so stop() is
-            # never waiting on a queue nobody is draining.
+        """Read frames, encode them on several threads, queue them in order.
+
+        Frames are independent given where each one starts, and
+        ``frame_bounds`` says that without encoding anything - so the next
+        frame can be dispatched while this one is still being computed. The
+        results have to go into the queue in order, which is what the
+        pending deque is for.
+        """
+        pool = ThreadPoolExecutor(max_workers=self.workers,
+                                  thread_name_prefix='ntsc-encode')
+        free = Queue()
+        for _ in range(self.workers):
+            free.put(NtscEncoder(self.sample_rate, color=self.color))
+        pending = deque()
+        n = self.encoder._n
+        try:
             while self._running.is_set():
+                while len(pending) < self.workers and self._running.is_set():
+                    try:
+                        frame = self.frames.next_frame()
+                    except Exception as exc:
+                        print(f"NTSC source: reading stopped: {exc}",
+                              file=sys.stderr)
+                        return
+                    start, end = self.encoder.frame_bounds(n)
+                    pending.append(pool.submit(self._encode_one, free, frame,
+                                               start))
+                    n = end
+                if not pending:
+                    return
                 try:
-                    self._queue.put(samples.astype(np.float32), timeout=0.2)
-                    self.frames_encoded += 1
-                    break
-                except Full:
-                    continue
+                    samples = pending.popleft().result()
+                except Exception as exc:
+                    print(f"NTSC source: encoding stopped: {exc}",
+                          file=sys.stderr)
+                    return
+                # Put with a timeout rather than blocking forever, so stop()
+                # is never waiting on a queue nobody is draining.
+                while self._running.is_set():
+                    try:
+                        self._queue.put(samples, timeout=0.2)
+                        self.frames_encoded += 1
+                        break
+                    except Full:
+                        continue
+        finally:
+            for future in pending:
+                future.cancel()
+            pool.shutdown(wait=False)
+
+    def _encode_one(self, free, frame, start):
+        """One frame, on a borrowed encoder, starting at a known sample."""
+        encoder = free.get()
+        try:
+            encoder._n = start
+            return encoder.encode_frame(frame).astype(np.float32)
+        finally:
+            free.put(encoder)
 
     # -- streaming -------------------------------------------------------
 
     def work(self, input_items, output_items):
+        """Samples out, and **never** a pause.
+
+        This waited a tenth of a second for a frame before giving up, which
+        turned a late frame into a *silent transmitter*: nothing came out of
+        the block, so nothing reached the radio, and off air the carrier was
+        simply absent for up to 100 ms at a time. Measured on the VSG60 with
+        a real clip, before the encoder was given more threads: 74 gaps in
+        three seconds, the longest 18.6 ms, 25% of the air time missing -
+        and the picture still decoded, so only a look at the envelope showed
+        it at all. The same trap as the HackRF ATSC case in CLAUDE.md.
+
+        So the wait is two milliseconds, long enough to catch a frame that
+        is about to arrive and far too short to take the transmitter off
+        air, and what fills the gap is the *previous* frame rather than
+        blanking. A frozen picture keeps sync pulses and colour burst
+        coming; blanking is a level, and a receiver loses lock on it.
+        """
         out = output_items[0]
         want = len(out)
         done = 0
         while done < want:
             if self._buf is None or self._pos >= self._buf.size:
                 try:
-                    self._buf = self._queue.get(timeout=0.1)
+                    self._buf = self._queue.get(timeout=0.002)
                     self._pos = 0
+                    self._last = self._buf
                 except Empty:
                     if not self._running.is_set():
                         return -1 if done == 0 else done
-                    # Rather than stall the radio, fill with blanking and
-                    # count it. A starved frame is a dropped one either way,
-                    # and a receiver holds sync through black.
+                    if self._last is not None:
+                        self._buf, self._pos = self._last, 0
+                        self.repeats += 1
+                        continue
                     out[done:want] = self._blank
                     self.starved += want - done
                     return want

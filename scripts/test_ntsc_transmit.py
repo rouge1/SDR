@@ -29,14 +29,16 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gnuradio import blocks, gr  # noqa: E402
 
-from apps.ntsc_encode import (FH, IRE_PEAK, IRE_TROUGH, LINE,  # noqa: E402
-                              NtscEncoder, ire_to_unit)
+from apps.ntsc_encode import (FH, FRAME, IRE_PEAK, IRE_TROUGH,  # noqa: E402
+                              LINE, NtscEncoder, ire_to_unit)
 from apps.ntsc_decode import NtscDecoder  # noqa: E402
-from apps.ntsc_source import (TestPattern, VideoFile, colour_bars,  # noqa: E402
-                              dat_resample_ratio, have_ffmpeg, ntsc_source)
+from apps.ntsc_source import (AUDIO_RATE, AudioTrack, TestPattern,  # noqa: E402
+                              VideoFile, colour_bars, dat_resample_ratio,
+                              has_audio, have_ffmpeg, ntsc_source)
 from apps.ntscAnalogVideoRecorded import (  # noqa: E402
-    AURAL_CARRIER, AURAL_SPACING, CARRIER_AT_SYNC, CARRIER_AT_WHITE,
-    LO_OFFSET, NtscModulator, VISUAL_CARRIER)
+    AURAL_AMPLITUDE, AURAL_CARRIER, AURAL_DEVIATION, AURAL_SPACING,
+    CARRIER_AT_SYNC, CARRIER_AT_WHITE, LO_OFFSET, NtscModulator,
+    VISUAL_CARRIER)
 
 RATE = 10e6
 #: How far the vestigial sideband extends either side of the visual carrier,
@@ -234,21 +236,61 @@ def main():
         close("mean error through the whole transmit chain", err, 0.0, 0.15)
 
     print("\nthe live source keeps up with the air")
-    for label, frames in (("colour bars", TestPattern()),):
-        src = ntsc_source(frames, RATE)
-        tb = gr.top_block("speed", catch_exceptions=True)
-        head = blocks.head(gr.sizeof_float, int(RATE * 0.5))
-        sink = blocks.null_sink(gr.sizeof_float)
-        tb.connect(src, head, sink)
-        import time
+    import time
+    sources = [("colour bars", TestPattern)]
+    if args.video and have_ffmpeg():
+        sources.append(("the clip", lambda: VideoFile(args.video)))
+    for label, make in sources:
+        # Two runs. The first is paced at the sample rate a radio would
+        # consume at, which is the question that matters: does a frame
+        # arrive before the one before it has finished going out? The
+        # second lets the encoder run flat out to say how much room is
+        # left. A free-running consumer cannot answer the first, since it
+        # empties the queue however fast the encoder is.
+        src = ntsc_source(make(), RATE)
+        tb = gr.top_block("paced", catch_exceptions=True)
+        tb.connect(src, blocks.throttle(gr.sizeof_float, RATE),
+                   blocks.null_sink(gr.sizeof_float))
+        tb.start()
+        time.sleep(1.5)
+        # Repeats while the queue is still filling say nothing; what matters
+        # is whether the encoder keeps up once it is running.
+        warm = src.repeats
+        time.sleep(4.0)
+        steady = src.repeats - warm
+        tb.stop()
+        tb.wait()
+        print(f"       {label}: at the radio's own rate on {src.workers} "
+              f"threads - {src.frames_encoded} frames, {src.repeats} "
+              f"repeats ({steady} after warm-up), {src.starved} blanked")
+        # Off air, a late frame used to take the *transmitter* off the air
+        # for up to 100 ms; now it repeats the previous picture instead.
+        # Either way a repeat means the encoder lost, so require none.
+        check(f"{label} never has to repeat a frame in steady state",
+              steady == 0)
+        check(f"{label} never emitted blanking", src.starved == 0)
+
+        src = ntsc_source(make(), RATE)
+        tb = gr.top_block("flat out", catch_exceptions=True)
+        tb.connect(src, blocks.null_sink(gr.sizeof_float))
+        tb.start()
         t0 = time.time()
-        tb.run()
+        time.sleep(4.0)
+        encoded = src.frames_encoded
         wall = time.time() - t0
-        print(f"       {label}: {0.5 / wall:.2f}x real time, "
-              f"{src.frames_encoded} frames, {src.starved} samples starved")
-        check(f"{label} encodes faster than real time", 0.5 / wall > 1.0,
-              f"{0.5 / wall:.2f}x")
-        check(f"{label} never starved the output", src.starved == 0)
+        tb.stop()
+        tb.wait()
+        speed = encoded / wall / (1.0 / FRAME)
+        print(f"       {label}: {speed:.2f}x real time flat out "
+              f"({encoded} frames in {wall:.1f} s)")
+        # One thread managed 1.03-1.21x on the two machines here, and off
+        # air that was not enough once the modulator and the radio sink
+        # wanted processor too.
+        check(f"{label} encodes well ahead of real time", speed > 1.6,
+              f"{speed:.2f}x")
+
+    if args.video and have_ffmpeg():
+        check_sound(args.video)
 
     print()
     if failures:
@@ -256,6 +298,84 @@ def main():
         return 1
     print("all checks passed")
     return 0
+
+
+def check_sound(path):
+    """The sound on the aural carrier is the clip's own, and at the right depth.
+
+    The transmitter used to take its aural carrier from a `.wav` chosen
+    separately in the dialog, so the picture came from one file and the
+    sound from another - a 1950s car advertisement going out over an
+    unrelated cartoon soundtrack. This proves the two now come from the same
+    file, by modulating the clip's track onto the aural carrier and
+    demodulating it back.
+    """
+    print("\nthe sound that goes with the picture")
+    check("ffmpeg finds a soundtrack in the clip", has_audio(path))
+    if not has_audio(path):
+        return
+
+    seconds = 4.0
+    track = AudioTrack(path)
+    wanted = int(AUDIO_RATE * seconds) * 4
+    raw = b''
+    while len(raw) < wanted:
+        piece = os.read(track.fileno(), 1 << 16)
+        if not piece:
+            break
+        raw += piece
+    track.close()
+    audio = np.frombuffer(raw[:len(raw) // 4 * 4], dtype=np.float32).astype(np.float64)
+    check("the clip's track decodes as 48 kHz mono float",
+          audio.size >= AUDIO_RATE, f"{audio.size / AUDIO_RATE:.1f} s")
+
+    peak = float(np.abs(audio).max())
+    rms = float(np.sqrt((audio ** 2).mean()))
+    print(f"       conditioned audio: peak {peak:.3f}, rms {rms:.3f}")
+    # Measured across all fourteen clips after AUDIO_FILTER: rms 0.091-0.210.
+    # Below about 0.03 the aural carrier is more than 10 dB under-deviated,
+    # which is what -24 LKFS material does untouched.
+    check("it is loud enough to deviate the carrier properly", rms > 0.03,
+          f"rms {rms:.3f}")
+    check("and not so loud that the rail is doing the work",
+          float((np.abs(audio) > 1.0).mean()) < 0.01,
+          f"{float((np.abs(audio) > 1.0).mean()) * 100:.4f}% over full scale")
+
+    # Modulate it exactly as the app does: rail, resample to the flowgraph
+    # rate, frequency modulate, put it on the aural carrier.
+    railed = np.clip(audio, -1.0, 1.0)
+    step = int(round(RATE / AUDIO_RATE))
+    up = np.repeat(railed, step)                    # the resampler, crudely
+    phase = np.cumsum(up) * 2 * np.pi * AURAL_DEVIATION / RATE
+    baseband = AURAL_AMPLITUDE * np.exp(1j * phase)
+    n = np.arange(up.size)
+    aural = baseband * np.exp(1j * 2 * np.pi * AURAL_CARRIER * n / RATE)
+
+    spectrum = np.abs(np.fft.fftshift(np.fft.fft(aural[:1 << 18] *
+                                                 np.hanning(1 << 18))))
+    freqs = np.fft.fftshift(np.fft.fftfreq(1 << 18, 1 / RATE))
+    peak_hz = float(freqs[int(np.argmax(spectrum))])
+    close("the aural carrier sits 4.5 MHz above the visual one",
+          peak_hz - VISUAL_CARRIER, AURAL_SPACING, 30e3)
+
+    # Demodulate: mix down, then the angle between consecutive samples is
+    # the instantaneous frequency.
+    down = aural * np.exp(-1j * 2 * np.pi * AURAL_CARRIER * n / RATE)
+    inst = np.angle(down[1:] * np.conj(down[:-1])) * RATE / (2 * np.pi)
+    deviation = float(np.abs(inst).max())
+    print(f"       peak deviation {deviation / 1e3:.1f} kHz of the "
+          f"{AURAL_DEVIATION / 1e3:.0f} kHz System M allows")
+    check("peak deviation stays inside System M's 25 kHz",
+          deviation <= AURAL_DEVIATION * 1.02, f"{deviation / 1e3:.1f} kHz")
+
+    recovered = inst[::step] / AURAL_DEVIATION
+    both = min(recovered.size, railed.size)
+    a, b = railed[:both], recovered[:both]
+    a = a - a.mean()
+    b = b - b.mean()
+    corr = float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum()))
+    check("what comes off the aural carrier is the clip's own sound",
+          corr > 0.99, f"correlation {corr:.5f}")
 
 
 if __name__ == '__main__':

@@ -739,8 +739,12 @@ they can be checked with no radio at all:
 ```sh
 python scripts/test_ntsc_loopback.py       # encoder -> decoder, no radio
 python scripts/test_ntsc_transmit.py       # ... and through the modulator
-python scripts/test_ntsc_transmit.py --video clip.mp4
+python scripts/test_ntsc_transmit.py --video clip.mp4   # picture and sound
 ```
+
+With `--video` the transmit test also checks the clip's soundtrack all the
+way onto the aural carrier and back, and that the source keeps up when it is
+paced at the rate a radio consumes.
 
 All seven colour bars return with a worst error under 0.01, and a full-scale
 grey ramp within 0.008. `docs/S170m-2004.pdf` holds the timing tables (2 and
@@ -774,12 +778,35 @@ scaled to 640x480 and letterboxed if it is not 4:3, looping forever; there
 is also a built-in colour-bar pattern so the app works with an empty media
 folder.
 
-- **Frames are encoded on their own thread.** Encoding a frame takes ~20 ms
-  and a work() call at 10 MS/s covers well under a millisecond, so encoding
-  inside work() would stall the radio for 20 ms in every 33 and underrun it.
-  A three-deep queue between the two keeps the output continuous and paces
-  the encoder for free - it fills, the producer blocks, and frames are
-  pulled at exactly the rate the radio consumes them.
+- **Frames are encoded on their own threads - more than one of them.**
+  Encoding inside work() would stall the radio, so it happens behind a
+  queue. One encoder thread is not enough, though: a frame at 10 MS/s takes
+  26-32 ms against a 33.4 ms budget, measured on both machines, so a single
+  thread runs at 1.03-1.21x real time *before* it shares the processor with
+  the modulator, the resamplers and the radio sink. Off air it lost. numpy
+  releases the interpreter lock inside the large array operations this
+  encoder is made of, so plain threads scale - measured 1.03x, 1.62x, 2.16x
+  and 2.49x on one, two, three and four - and `encode_workers()` uses three
+  on anything with eight cores. Frames are independent given where each one
+  starts, and `NtscEncoder.frame_bounds()` says that without encoding
+  anything, so the next frame can be dispatched while this one is still
+  being computed; the results go into the queue in order.
+- **A late frame must never take the transmitter off the air.** work() used
+  to wait a tenth of a second for a frame before giving up, which turned a
+  slow encoder into a *silent carrier*: nothing came out of the block, so
+  nothing reached the radio. Measured on the VSG60 with a real clip: **74
+  gaps in three seconds, the longest 18.6 ms, 25% of the air time missing**
+  - and the picture still decoded at 17.4 frames a second with zero
+  failures, so nothing but the envelope showed it. This is the same trap as
+  the HackRF ATSC case below, and the same lesson: a spectrum average
+  cannot see a transmitter that is off half the time. The wait is two
+  milliseconds now, and what fills a gap is the *previous frame* rather
+  than blanking - a frozen picture keeps sync pulses and colour burst
+  coming, where blanking is a level a receiver loses lock on. The first
+  frame is encoded before the block reports itself started, so the
+  transmitter never opens with blanking either. `repeats` and `starved`
+  count both, and `scripts/test_ntsc_transmit.py` requires zero of each in
+  steady state at the radio's own rate.
 - **The `.dat` captures do not go through it.** They are already composite,
   at 18 MS/s, so they are played by a file source and resampled 5/9 - see
   `dat_resample_ratio`.
@@ -922,6 +949,31 @@ things were wrong, and each of them alone stopped it working:
   the carrier off. The aural carrier came down from 0.8 to 0.316, which is
   the 10% of peak visual *power* the FCC asks for; it had been 8 dB too
   loud, stealing headroom from the picture.
+- **The sound came from a different file than the picture.** The aural
+  carrier was fed by a `.wav` picked separately in the dialog, which was
+  all that was possible when the only video the app could send was a single
+  still frame. Once it could send clips, a 1950s car advertisement went out
+  with an unrelated cartoon soundtrack over it. The clip's own track is the
+  default now - a second ffmpeg on the same file, decoded to 48 kHz mono
+  and handed to `blocks.file_descriptor_source` - and the two stay in step
+  for free, since GNU Radio consumes exactly one audio sample per composite
+  sample and both are paced by the radio's clock. The dialog still offers a
+  `.wav`, and offers silence, because the built-in pattern and the `.dat`
+  stills have no sound of their own; "From the video clip" greys out when
+  the source is not one, and comes back when it is.
+- **Clip audio has to be conditioned or the carrier is 10 dB
+  under-deviated.** The clips are loudness-normalised to -24 LKFS (ATSC
+  A/85), which is deliberately quiet: measured across all fourteen, peaks
+  ran 0.30 to 1.11 and rms 0.038 to 0.088, where full deviation is |1.0|.
+  A fixed gain cannot fix it, because the loudness is uniform and the crest
+  factor is not - 8 dB puts speech where it belongs and clips the two
+  music-heavy Blender films on 0.17% of their samples. `AUDIO_FILTER`
+  compresses and then lifts, which gives rms 0.091-0.210 and peaks
+  0.64-1.54 across the whole set, with the worst needing the rail on
+  0.0017% of samples. ffmpeg's own `loudnorm` is the obvious tool and the
+  wrong one: its dynamic mode looks three seconds ahead, and since the
+  picture comes from a *separate* ffmpeg on the same file, that delay lands
+  as three seconds of lip-sync error.
 
 Two things worth knowing before changing it:
 
@@ -950,6 +1002,38 @@ took the measured colour error from 0.43 to 0.13.
 open movies through the whole chain and back, 0.078-0.088 mean error, the
 black-and-white spots clean and the colour ones looking convincingly like
 period colour television.
+
+**Verified off air, picture and sound**, the VSG60 transmitting
+`Prelinger-Chevrolet-1955-Heres-Looking.mp4` from TVAdemo into the BB60D
+here on RF channel 24 (533 MHz) at -9.5 dBm:
+
+- **1,049 frames decoded, none dropped**, 17.4-17.9 a second against the
+  17.6 the receiver's buffer allows, line rate 15,734.2-15,734.4 Hz against
+  the 15,734.266 the standard specifies - a few parts per million, which is
+  the NTSC equivalent of the ATSC pilot offset.
+- **The carrier was present 100.00% of the time**, no gap at all, against
+  25% of the air time missing before the encoder was given more threads.
+- **The sound is the clip's own**: the aural carrier demodulated and
+  cross-correlated against the same clip decoded locally scores **0.999**
+  over the matching window, with the next-best alignment at 10% of that.
+  Peak deviation 17.1 kHz of the 25 kHz System M allows, envelope
+  std/mean 0.005 - a clean FM carrier.
+- What is not perfect: the receiver fails about 23 frames in its first ten
+  seconds, in bursts, and then none at all. It is the same in every run and
+  independent of the material, so it is the receiver settling rather than
+  anything on the air.
+
+Two things about measuring this that wasted time, neither of them a fault
+in the radio:
+
+- **Demodulate well above the audio rate, then filter down.** Subsampling
+  the instantaneous frequency straight from 20 MS/s to 48 kHz folds
+  everything up to 60 kHz back into the audio band. That read 0.087
+  correlation on a link that was in fact perfect.
+- **Normalise a correlation over the window that matched**, not over the
+  whole reference. Three seconds of recovered audio against a 106-second
+  clip cannot score above sqrt(3/106) = 0.168 however exact it is, which
+  reads as a failure and is arithmetic.
 
 ### How every dialog gets laid out
 
@@ -1188,10 +1272,11 @@ on it, as on the Windows laptop, so it is kept in step by copying files. It is
 on WiFi (the wired port is down), which still moves about 8 MB/s - the fourteen
 video clips are 322 MB and took 47 seconds.
 
-- **Its media folder is `/home/user/Documents`, not `/data/python/media`**,
-  which does not exist on that machine. `config/window_settings.json` is
-  per-machine and is not copied across, so the two differ; copy media there,
-  not to the path this box uses. Anything CC BY goes with its credits -
+- **Check where its media folder actually is before copying anything
+  there.** `config/window_settings.json` is per-machine and is *not* one of
+  the files kept in step, so `media_directory` can differ; it has been
+  `/home/user/Documents` and is now `/data/python/media`, the same as here.
+  Read the file, do not assume. Anything CC BY goes with its credits -
   `VIDEO-CREDITS.txt` belongs in the same folder, because the licence
   requires the credit wherever the clip is passed on.
 - **ffmpeg is there, inside the conda env** (7.1.1, from conda-forge) rather

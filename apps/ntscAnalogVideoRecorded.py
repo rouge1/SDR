@@ -48,9 +48,9 @@ import sip #type: ignore
 from fractions import Fraction
 
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
-from apps.ntsc_source import (TestPattern, VideoFile, dat_files,
-                              dat_resample_ratio, have_ffmpeg, ntsc_source,
-                              video_files)
+from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, dat_files,
+                              dat_resample_ratio, has_audio, have_ffmpeg,
+                              ntsc_source, video_files)
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
@@ -329,28 +329,67 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.polarity_combo)
 
     def create_audio_controls(self):
+        """What the aural carrier carries - the clip's own sound by default.
+
+        This used to be a `.wav` picked separately from the media folder,
+        which was all there was when the only video the app could send was
+        a single still frame. Once it could send clips, that left a 1950s
+        car advertisement going out with an unrelated cartoon soundtrack
+        over it - the picture from one file and the sound from another.
+        The clip's own track is the default now, and a separate file is
+        still offered for the sources that have no sound of their own: the
+        built-in pattern and the `.dat` stills.
+        """
+        self.layout.addWidget(Qt.QLabel("Sound:"))
         self.audio_combo = Qt.QComboBox()
-        self.layout.addWidget(Qt.QLabel("Audio File:"))
-        
-        # Check if media directory exists
-        if not os.path.exists(self.media_dir):
-            self.audio_combo.addItem("Error - Setup Media directory in Settings")
-            self.audio_paths = [os.path.join(self.media_dir, "default.wav")]
-            self.audio_combo.setEnabled(False)
-        else:
-            # Scan media directory for .wav files
-            audio_files = sorted([f for f in os.listdir(self.media_dir) if f.endswith('.wav')])
-            if audio_files:
-                # Create display names by cleaning up filenames
-                audio_names = [os.path.splitext(f)[0].replace('-', ' ') for f in audio_files]
-                self.audio_paths = [os.path.join(self.media_dir, f) for f in audio_files]
-                self.audio_combo.addItems(audio_names)
-            else:
-                self.audio_combo.addItem("No audio files found")
-                self.audio_paths = [os.path.join(self.media_dir, "default.wav")]
-                self.audio_combo.setEnabled(False)
-                
+        self.audio_combo.addItem("From the video clip", ('clip', None))
+        self.audio_combo.addItem("Silence - aural carrier only",
+                                 ('silence', None))
+
+        wavs = []
+        if self.media_dir and os.path.isdir(self.media_dir):
+            wavs = sorted(f for f in os.listdir(self.media_dir)
+                          if f.lower().endswith('.wav'))
+        if wavs:
+            self.audio_combo.insertSeparator(self.audio_combo.count())
+        for name in wavs:
+            self.audio_combo.addItem(
+                os.path.splitext(name)[0].replace('-', ' '),
+                ('file', os.path.join(self.media_dir, name)))
+
         self.layout.addWidget(self.audio_combo)
+        # The first entry only means something when a clip is selected, so
+        # it follows the video picker rather than sitting there offering
+        # sound that does not exist.
+        self._audio_forced = False
+        self.audio_combo.activated.connect(self._audio_picked)
+        self.video_combo.currentIndexChanged.connect(self._sync_audio_choice)
+        self._sync_audio_choice()
+
+    def _audio_picked(self, _index):
+        """The user chose for themselves, so stop overriding the choice."""
+        self._audio_forced = False
+
+    def _sync_audio_choice(self):
+        """Grey out 'From the video clip' when the source is not a clip.
+
+        A turn away from a clip and back must come back to the clip's own
+        sound: silence was substituted *for* the user, not chosen by them,
+        and leaving it there means picking a clip and silently transmitting
+        no sound with it. ``_audio_forced`` is what tells the two apart.
+        """
+        kind = (self.video_combo.currentData() or ('pattern', None))[0]
+        from_clip = kind == 'video'
+        item = self.audio_combo.model().item(0)
+        item.setEnabled(from_clip)
+        item.setText("From the video clip" if from_clip else
+                     "From the video clip - this source has no sound")
+        if not from_clip and self.audio_combo.currentIndex() == 0:
+            self.audio_combo.setCurrentIndex(1)      # silence
+            self._audio_forced = True
+        elif from_clip and self._audio_forced:
+            self.audio_combo.setCurrentIndex(0)
+            self._audio_forced = False
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -371,9 +410,13 @@ class ConfigDialog(Qt.QDialog):
                         if data and data[1] == saved:
                             self.video_combo.setCurrentIndex(i)
                             break
-                audio_index = config.get('audio_index', 0)
-                if audio_index < self.audio_combo.count():
-                    self.audio_combo.setCurrentIndex(audio_index)
+                # Matched the same way, and by kind as well, since two of
+                # the three choices have no path. A config from before the
+                # sound came off the clip holds an 'audio_index' into a
+                # list that no longer has that shape; it is ignored, and
+                # the default below stands.
+                self._restore_audio(config.get('audio_kind'),
+                                    config.get('audio_file'))
                 index = self.polarity_combo.findData(
                     config.get('polarity', 'negative'))
                 self.polarity_combo.setCurrentIndex(max(index, 0))
@@ -384,15 +427,32 @@ class ConfigDialog(Qt.QDialog):
             # Create config directory if it doesn't exist
             os.makedirs(self.config_dir, exist_ok=True)
 
+    def _restore_audio(self, kind, path):
+        """Put the sound picker back on a saved choice, by kind and path."""
+        if not kind:
+            return
+        for i in range(self.audio_combo.count()):
+            data = self.audio_combo.itemData(i)
+            if data and data[0] == kind and data[1] == path:
+                self.audio_combo.setCurrentIndex(i)
+                break
+        self._sync_audio_choice()
+
+    def audio_choice(self):
+        """(kind, path) for the sound, as ('clip'|'silence'|'file', path)."""
+        return self.audio_combo.currentData() or ('silence', None)
+
     def save_config(self):
         kind, path = self.video_combo.currentData() or ('pattern', None)
+        audio_kind, audio_path = self.audio_choice()
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'video_kind': kind,
             'video_source': path,
-            'audio_index': self.audio_combo.currentIndex(),
+            'audio_kind': audio_kind,
+            'audio_file': audio_path,
             'polarity': self.polarity_combo.currentData(),
         }
 
@@ -413,6 +473,7 @@ class ConfigDialog(Qt.QDialog):
             ipXmitAddr = ''
         
         kind, path = self.video_combo.currentData() or ('pattern', None)
+        audio_kind, audio_path = self.audio_choice()
         return {
             'radio_type': self.radio_type,
             'ipNum': ipNum,
@@ -422,7 +483,8 @@ class ConfigDialog(Qt.QDialog):
             'pwr': self.pwr_slider.value(),
             'videoKind': kind,
             'videoFileName': path,
-            'audioFileName': self.audio_paths[self.audio_combo.currentIndex()],
+            'audioKind': audio_kind,
+            'audioFileName': audio_path,
             'polarity': self.polarity_combo.currentData(),
         }
 
@@ -476,7 +538,8 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         pwr = values['pwr']
         videoFileName = values['videoFileName']
         videoKind = values.get('videoKind', 'pattern')
-        audioFileName = values['audioFileName']
+        audioFileName = values.get('audioFileName')
+        audioKind = values.get('audioKind', 'clip')
         polarity = values.get('polarity', 'negative')
         videoInvert = -1 if polarity == 'negative' else 1
 
@@ -604,17 +667,6 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.rational_resampler_xxx_2 = filter.rational_resampler_ccc(
                 interpolation=2,
                 decimation=1,
-                taps=[],
-                fractional_bw=0)
-        # Audio to the flowgraph rate. This was a fixed 625/3, which is right
-        # only for a 48 kHz file - every wav in the media folder happens to
-        # be one, but a 44.1 kHz file would have played 8.8% fast and taken
-        # the aural deviation with it. Worked out from the file instead.
-        audio_ratio = Fraction(int(samp_rate),
-                               int(self.audio_rate(audioFileName))).limit_denominator(10000)
-        self.rational_resampler_xxx_1 = filter.rational_resampler_fff(
-                interpolation=audio_ratio.numerator,
-                decimation=audio_ratio.denominator,
                 taps=[],
                 fractional_bw=0)
         self.rational_resampler_xxx_0 = filter.rational_resampler_fff(
@@ -771,7 +823,6 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         # The vestigial-sideband filter, the video mixers and the composite
         # scaling all moved into NtscModulator; what is left here is the
         # aural carrier, the sum, and the shift down to the radio.
-        self.blocks_wavfile_source_0 = blocks.wavfile_source(audioFileName, True)
         self.blocks_multiply_xx_1 = blocks.multiply_vcc(1)
         self.blocks_multiply_xx_0_0_0 = blocks.multiply_vcc(1)
         # Everything that follows sums to at most visual peak plus aural, so
@@ -780,6 +831,8 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.blocks_multiply_const_vxx_2 = blocks.multiply_const_cc(
             BASEBAND_SCALE / (CARRIER_AT_SYNC + AURAL_AMPLITUDE))
         self._build_video_source(samp_rate, videoKind, videoFileName)
+        self._build_audio_source(samp_rate, audioKind, audioFileName,
+                                 videoKind, videoFileName)
         self.modulator = NtscModulator(samp_rate, polarity)
         self.blocks_add_xx_0 = blocks.add_vcc(1)
         self.analog_sig_source_x_1 = analog.sig_source_c(samp_rate*2, analog.GR_COS_WAVE, -LO_OFFSET, 1, 0, 0)
@@ -802,9 +855,8 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.connect((self.blocks_add_xx_0, 0), (self.qtgui_freq_sink_x_0, 0))
         self.connect((self.blocks_multiply_const_vxx_2, 0), (self.rational_resampler_xxx_2, 0))
         self.connect((self.blocks_multiply_xx_1, 0), (self.radio_sink, 0))
-        self.connect((self.blocks_wavfile_source_0, 0), (self.rational_resampler_xxx_1, 0))
         self.connect((self.rational_resampler_xxx_0, 0), (self.qtgui_time_sink_x_0, 0))
-        self.connect((self.rational_resampler_xxx_1, 0), (self.analog_frequency_modulator_fc_0, 0))
+        self.connect((self.audio_source, 0), (self.analog_frequency_modulator_fc_0, 0))
         self.connect((self.rational_resampler_xxx_2, 0), (self.blocks_multiply_xx_1, 0))
 
     def _build_video_source(self, samp_rate, kind, path):
@@ -841,12 +893,92 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.video_source = self.ntsc_frames
         self.sourceDescription = frames.description
 
+    def _build_audio_source(self, samp_rate, kind, audio_path,
+                            video_kind, video_path):
+        """What the aural carrier carries, ending in floats at ``samp_rate``.
+
+        **The sound should come from the same file as the picture.** It used
+        to come from a ``.wav`` chosen separately in the dialog - the only
+        thing possible when the app could send nothing but a single still
+        frame - so once it could send clips, a 1950s car advertisement went
+        out with an unrelated cartoon soundtrack over it.
+
+        Three sources, and each one falls back to the next if it cannot be
+        had: the clip's own track, a ``.wav`` from the media folder, and
+        silence. Silence is a real choice rather than an absence - System M
+        transmits the aural carrier whether or not there is anything on it,
+        and the built-in pattern and the ``.dat`` stills have no sound of
+        their own.
+
+        The resampling ratio is worked out from the source's own rate. It
+        was a fixed 625/3, right only for a 48 kHz file: every wav in the
+        media folder happens to be one, but a 44.1 kHz file would have
+        played 8.8% fast and taken the aural deviation with it.
+        """
+        head, rate = None, None
+        if kind == 'clip' and video_kind == 'video' and video_path:
+            if has_audio(video_path):
+                try:
+                    self.audio_track = AudioTrack(video_path)
+                    head = blocks.file_descriptor_source(
+                        gr.sizeof_float, self.audio_track.fileno())
+                    rate = self.audio_track.rate
+                    self.soundDescription = self.audio_track.description
+                except Exception as exc:
+                    print(f"Could not open the clip's sound: {exc}",
+                          file=sys.stderr)
+            else:
+                print(f"{os.path.basename(video_path)} has no soundtrack; "
+                      "transmitting a silent aural carrier.", file=sys.stderr)
+
+        if head is None and kind == 'file' and audio_path \
+                and os.path.exists(audio_path):
+            head = blocks.wavfile_source(audio_path, True)
+            rate = self.audio_rate(audio_path)
+            self.soundDescription = os.path.basename(audio_path)
+
+        if head is None:
+            # A constant zero at the flowgraph's own rate, so it needs no
+            # resampling at all - the aural carrier goes out unmodulated,
+            # which is what an off-air silent channel looks like.
+            head = analog.sig_source_f(samp_rate, analog.GR_CONST_WAVE,
+                                       0, 0, 0)
+            rate = samp_rate
+            self.soundDescription = "silence"
+
+        self.audio_head = head
+        tail = head
+        if kind != 'silence':
+            # Full deviation is |1.0|, so anything past it over-deviates the
+            # aural carrier and splatters into the next channel. The clip
+            # conditioning in AUDIO_FILTER keeps it there on all but one
+            # sample in sixty thousand; this is the guarantee, at 48 kHz
+            # where it costs nothing, rather than a hope.
+            self.audio_rail = analog.rail_ff(-1.0, 1.0)
+            self.connect(tail, self.audio_rail)
+            tail = self.audio_rail
+
+        if int(rate) == int(samp_rate):
+            self.audio_source = tail
+            return
+        ratio = Fraction(int(samp_rate), int(rate)).limit_denominator(10000)
+        self.audio_resampler = filter.rational_resampler_fff(
+            interpolation=ratio.numerator, decimation=ratio.denominator,
+            taps=[], fractional_bw=0)
+        self.connect(tail, self.audio_resampler)
+        self.audio_source = self.audio_resampler
 
     def closeEvent(self, event):
         self.settings = Qt.QSettings("GNU Radio", "ntscAnalogVideoRecorded")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        # The video source closes its own ffmpeg in the block's stop(); the
+        # audio one is a plain pipe into file_descriptor_source, so it is
+        # shut down here rather than left for garbage collection.
+        track = getattr(self, 'audio_track', None)
+        if track is not None:
+            track.close()
 
         event.accept()
 
