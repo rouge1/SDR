@@ -746,9 +746,31 @@ With `--video` the transmit test also checks the clip's soundtrack all the
 way onto the aural carrier and back, and that the source keeps up when it is
 paced at the rate a radio consumes.
 
-All seven colour bars return with a worst error under 0.01, and a full-scale
-grey ramp within 0.008. `docs/S170m-2004.pdf` holds the timing tables (2 and
-3), the levels (table 1) and the encoding equations (annex A).
+All seven colour bars return with a worst error around 1e-11 and a full-scale
+grey ramp within 0.002 - it was 0.0089 and 0.0092 until blanking started
+coming off the back porch (below). `docs/S170m-2004.pdf` holds the timing
+tables (2 and 3), the levels (table 1) and the encoding equations (annex A).
+
+- **Blanking must be measured on the back porch, not guessed from a
+  histogram.** `levels()` reads the sync tip as a low percentile and
+  blanking as the commonest single level, since the porches occupy about
+  18% of every line at exactly one value. Bounding that search by a
+  fraction of the signal's own range is what broke it: the window was the
+  10-60% band of sync-to-white, which is right for an ordinary picture
+  (blanking lands at 45% of the range), but the top of that range is *the
+  brightest thing in this buffer*. On a dark scene it collapses toward
+  blanking, blanking moves to 89% of what is left, and the search window no
+  longer contains it - the estimate landed on dark picture content a
+  thousandth above the sync tip, and `find_pulses` returned **no pulses at
+  all**. The window is 5-98% now, which is what stops it failing; and
+  `decode_frame` then re-reads blanking on the breezeway between sync and
+  the colour burst, which is where a television clamps and is independent
+  of the picture entirely. That second reading is also what made the
+  loopback exact: off air the histogram sits about 19% high, because black
+  setup is 7.5 IRE above blanking and a dark picture makes *that* the
+  commonest level. Re-slicing with the corrected level is not worth the
+  fifth of a decode it costs - measured, 883 pulses either way - so it only
+  happens if the first estimate was out by more than half the span.
 
 - **Every sample of a frame is computed at once.** The encoder used to walk
   the 525 lines in a Python loop, picking each line's samples out with
@@ -999,9 +1021,10 @@ washed toward grey - which reads as a broken modulator and is not one. It
 took the measured colour error from 0.43 to 0.13.
 
 **Verified with real material**: 1950s Prelinger advertising and the Blender
-open movies through the whole chain and back, 0.078-0.088 mean error, the
-black-and-white spots clean and the colour ones looking convincingly like
-period colour television.
+open movies through the whole chain and back, **0.00002-0.0099 mean error**
+(it was 0.078-0.088 until blanking came off the back porch and fixed the
+IRE scale), the black-and-white spots clean and the colour ones looking
+convincingly like period colour television.
 
 **Verified off air, picture and sound**, the VSG60 transmitting
 `Prelinger-Chevrolet-1955-Heres-Looking.mp4` from TVAdemo into the BB60D
@@ -1018,10 +1041,23 @@ here on RF channel 24 (533 MHz) at -9.5 dBm:
   over the matching window, with the next-best alignment at 10% of that.
   Peak deviation 17.1 kHz of the 25 kHz System M allows, envelope
   std/mean 0.005 - a clean FM carrier.
-- What is not perfect: the receiver fails about 23 frames in its first ten
-  seconds, in bursts, and then none at all. It is the same in every run and
-  independent of the material, so it is the receiver settling rather than
-  anything on the air.
+The first run of this also found a fault in the *receiver*, which is worth
+recording because of how it looked. About seventeen frames in a row failed,
+once a run, always with the same exception - "could not find two fields - no
+vertical sync?" - and the input level never moved, there were no BB60D
+overflows and no dropped buffers. It looked like the receiver settling; it
+was nothing of the kind. The failures were **exactly one buffer period
+apart, seventeen of them, spanning one second**, and they landed at a
+different time in every run. Transmitting the built-in colour bars for 150
+seconds instead gave 2,616 frames and not one failure, which placed it in
+the *picture*: the clip fades through a dark shot about once per 106-second
+loop, and on a dark picture the blanking estimate collapsed onto the sync
+tip. See the back-porch note under [NTSC composite
+video](#ntsc-composite-video); `scripts/test_ntsc_loopback.py` now
+reproduces it with no radio at all. Afterwards the same link ran **3,498
+frames with none failed, none dropped and no overflows** over 200 seconds,
+which is nearly two full passes of the clip and of its dark shot, and 4,183
+frames with none failed over four minutes before that.
 
 Two things about measuring this that wasted time, neither of them a fault
 in the radio:

@@ -103,7 +103,11 @@ for k, name in enumerate(NAMES):
     worst = max(worst, err)
     print(f"  {name:8s} sent {np.round(want, 2)}  back {np.round(got, 2)}  "
           f"error {err:.4f}")
-close("worst colour error across all seven bars", worst, 0.0, 0.02)
+# Was 0.02, and the bars came back at 0.0089. Clamping on the back
+# porch rather than a histogram bin made blanking exact, and with it
+# the IRE scale, so the error fell to about 1e-11. The tolerance is
+# tightened to match: this is now a real tripwire rather than slack.
+close("worst colour error across all seven bars", worst, 0.0, 1e-4)
 
 print("\nluma survives on its own, with colour switched off")
 enc = NtscEncoder(fs, color=False)
@@ -113,7 +117,48 @@ sig = np.concatenate([enc.encode_frame(grey) for _ in range(3)])
 out = NtscDecoder(fs, width=640, active_lines=240).decode_frame(sig, color=False)
 ramp_err = float(np.abs(out[100:140, 40:600, 0].mean(axis=0)
                         - grey[100, 40:600, 0]).max())
-close("a full-scale grey ramp comes back", ramp_err, 0.0, 0.03)
+close("a full-scale grey ramp comes back", ramp_err, 0.0, 0.005)
+
+print("\nblanking is found whatever the picture is doing")
+# Off air this was one second of lost picture every time a clip reached a
+# dark shot: 17 frames in a row raising "could not find two fields", with
+# the input level never moving. The decoder read blanking as the commonest
+# level in the 10-60% band of sync-to-white, and on a dark scene the top of
+# that range collapses toward blanking, which then sits at 89% of what is
+# left - outside the window. It landed on dark picture content a thousandth
+# above the sync tip and the slicer found no pulses at all.
+fs = 4 * FSC
+truth = ire_to_unit(IRE_BLANK)
+pictures = {
+    '75% colour bars': colour_bars(),
+    'all white': np.ones((480, 640, 3)),
+    'all black': np.zeros((480, 640, 3)),
+    'flat mid grey': np.full((480, 640, 3), 0.5),
+    'a dark scene': np.clip(np.random.RandomState(0).rand(480, 640, 3) * 0.18,
+                            0, 1),
+    'nine tenths white': np.concatenate([np.ones((432, 640, 3)),
+                                         np.zeros((48, 640, 3))]),
+}
+decoder = NtscDecoder(fs, width=640, active_lines=240)
+worst_level, worst_name = 0.0, ''
+for name, picture in pictures.items():
+    enc = NtscEncoder(fs)
+    sig = np.concatenate([enc.encode_frame(picture) for _ in range(2)])
+    sync, blank = decoder.levels(sig)
+    starts, widths = decoder.find_pulses(sig, sync, blank)
+    porch = decoder.back_porch_level(sig, starts, widths, blank)
+    try:
+        decoder.decode_frame(sig)
+        decoded = "decodes"
+    except Exception as exc:
+        decoded = f"FAILED: {exc}"
+        failures.append(f"decoding {name}")
+    print(f"  {name:18s} histogram {blank:.4f}, back porch {porch:.4f}"
+          f"  {decoded}")
+    if abs(porch - truth) > worst_level:
+        worst_level, worst_name = abs(porch - truth), name
+close(f"back porch gives blanking to within this of {truth:.4f} "
+      f"(worst: {worst_name})", worst_level, 0.0, 0.005)
 
 print()
 if failures:

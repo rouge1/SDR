@@ -134,9 +134,28 @@ class NtscDecoder:
 
         A capture arrives at whatever scale the radio gave it, so nothing can
         be assumed about absolute level. The sync tip is a low percentile,
-        robust against spikes; blanking is the commonest level in the lower
-        part of the range, because the porches occupy more time than any
-        single picture value.
+        robust against spikes; blanking is the commonest single level,
+        because the porches occupy about 18% of every line at exactly one
+        value while picture content is spread over many.
+
+        **Where blanking sits in the range depends on the picture, and
+        bounding the search by a fraction of that range is what broke it.**
+        The window used to be the 10-60% band of sync-to-white, which is
+        right for an ordinary picture: blanking came out at 45% of the
+        range. But the top of the range is the *brightest thing in this
+        buffer*, so on a dark scene it collapses toward blanking and
+        blanking moves to 89% of what is left - outside the window
+        entirely. The estimate then landed on dark picture content a
+        thousandth above the sync tip, the slicer had nothing to slice, and
+        `find_pulses` returned no pulses at all. Off air that cost about a
+        second of picture every time the clip reached a dark shot: 17
+        consecutive frames, always the same exception, and nothing wrong
+        with the signal - the input level never moved.
+        `scripts/test_ntsc_loopback.py` reproduces it with no radio.
+
+        The window is 5-98% now, and `decode_frame` refines the answer on
+        the back porch afterwards, which is what a television clamps on and
+        is independent of the picture altogether.
         """
         # Every fourth sample is plenty: a frame is a third of a million of
         # them and this only needs two percentiles and a histogram, while
@@ -145,9 +164,42 @@ class NtscDecoder:
         sync = float(np.percentile(sample, 0.5))
         top = float(np.percentile(sample, 99.5))
         hist, edges = np.histogram(sample, bins=256, range=(sync, top))
-        lo, hi = int(0.10 * len(hist)), int(0.60 * len(hist))
+        lo, hi = int(0.05 * len(hist)), int(0.98 * len(hist))
         blank = float(edges[lo + int(np.argmax(hist[lo:hi]))])
         return sync, blank
+
+    #: Where to read blanking once the sync pulses are known: the breezeway,
+    #: between the trailing edge of sync and the start of the colour burst.
+    #: The burst begins 0.6 us after sync ends, so this stops well short.
+    BREEZEWAY = (0.1e-6, 0.5e-6)
+
+    def back_porch_level(self, x, starts, widths, fallback):
+        """Blanking, measured where a television measures it.
+
+        Every real receiver clamps on the back porch, because it is the one
+        part of the line whose level is fixed by the standard rather than
+        by the picture. Once `find_pulses` has found the sync pulses, the
+        breezeway just after each one gives blanking directly - no
+        histogram, no assumption about how bright the scene is.
+
+        Only full-width horizontal sync counts: an equalizing pulse is too
+        narrow and a vertical serration too wide, and neither is followed
+        by a porch - what comes after them is more sync.
+        """
+        horizontal = (widths > SYNC_DISCRIMINANT) & (widths < VERTICAL_RUN)
+        if horizontal.sum() < 8:
+            return fallback
+        ends = starts[horizontal] + (widths[horizontal] * self.sample_rate)
+        lo = (ends + self.BREEZEWAY[0] * self.sample_rate).astype(np.int64)
+        hi = (ends + self.BREEZEWAY[1] * self.sample_rate).astype(np.int64)
+        span = int(np.median(hi - lo))
+        if span < 2:
+            return fallback
+        lo = lo[hi < x.size]
+        if lo.size < 8:
+            return fallback
+        windows = x[lo[:, None] + np.arange(span)[None, :]]
+        return float(np.median(windows))
 
     # -- sync ------------------------------------------------------------
 
@@ -219,10 +271,29 @@ class NtscDecoder:
         sync, blank = self.levels(x)
         if blank <= sync:
             raise ValueError("no sync found: blanking is not above sync level")
+
+        starts, widths = self.find_pulses(x, sync, blank)
+        # Now that the pulses are known, take blanking off the back porch
+        # rather than off a histogram. The histogram is a guess about where
+        # blanking sits among the picture levels; the porch is the
+        # standard's own reference and does not move with the picture. It
+        # is what sets the IRE scale, and getting it exactly right took the
+        # loopback colour error from 0.0089 to about 1e-11.
+        refined = self.back_porch_level(x, starts, widths, blank)
+        if refined > sync:
+            # Slicing again is almost never worth it, and costs a fifth of
+            # the whole decode. The slice sits at 35% of the way from sync
+            # to blanking, so it stays well inside the pulses even when the
+            # first estimate was off by the 19% that black setup routinely
+            # puts it out by - measured off air, 883 pulses either way.
+            # This is only a guard for an estimate that was wildly wrong.
+            moved = abs(refined - blank) > 0.5 * (blank - sync)
+            blank = refined
+            if moved:
+                starts, widths = self.find_pulses(x, sync, blank)
         # (x - blank) * ire_scale puts blanking at 0 IRE and sync at -40.
         ire_scale = -IRE_SYNC / (blank - sync)
 
-        starts, widths = self.find_pulses(x, sync, blank)
         fields = self.find_fields(starts, widths)
         if len(fields) < 2:
             raise ValueError("could not find two fields - no vertical sync?")
