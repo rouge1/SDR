@@ -205,7 +205,13 @@ class VideoFile(FrameSource):
         self.path = path
         self.width, self.height = int(width), int(height)
         self._bytes = self.width * self.height * 3
-        scale = (f"scale={self.width}:{self.height}"
+        # Square the pixels before fitting. force_original_aspect_ratio
+        # works on the stored width and height, not the shape on screen, so
+        # a .ts at 704x480 with 10:11 pixels - the ATSC test pattern, or
+        # anything the ATSC receiver records - came out 9% too short, with
+        # 22 black rows top and bottom. Square pixels pass through untouched.
+        scale = ("scale=iw*sar:ih,setsar=1,"
+                 f"scale={self.width}:{self.height}"
                  ":force_original_aspect_ratio=decrease,"
                  f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2")
         argv = ['ffmpeg', '-hide_banner', '-loglevel', 'error']

@@ -602,6 +602,20 @@ fixing. Three other things did:
   - `close_stream()` ends ffmpeg once the flowgraph has stopped. Left
     alone it would sit blocked on a full pipe for as long as the launcher
     stays open.
+- **Closing its window took the launcher down with it.** Its `main()` was
+  the one app's not written for the launcher: it called `app.exec_()`
+  regardless, and replaced the window's `closeEvent` with one that called
+  `app.quit()`. Inside the launcher the event loop is already running, so
+  `exec_()` printed "The event loop is already running" and returned -1 at
+  once. Handed -1 instead of a window, the launcher never hooked the close
+  to show itself again - and closing the window then quit the launcher's
+  own loop, so the tile grid never came back because the launcher had
+  exited. It returns the window now, as every other app does, and closing
+  goes through the class's `closeEvent`, which also stops ffmpeg; started
+  on its own it still runs a loop of its own. Verified on TVAdemo with the
+  real flowgraph on the VSG60: the launcher came back, its loop survived,
+  ffmpeg exited and the VSG lock was released. `scripts/test_app_close.py`
+  checks every app for this.
 
 The transport stream must be **constant bit rate at exactly 19.392658 Mbps**,
 since the flowgraph consumes it at a rate fixed by the symbol clock - mux it
@@ -893,6 +907,15 @@ folder.
   one frame held on screen. `dat_files()` also drops the
   `-946x486-18M0FS` from those names: it is the same for every one of them,
   so it says nothing and hides the subject.
+- **Pixels are squared before the picture is fitted.** ffmpeg's
+  `force_original_aspect_ratio` works on the stored width and height, not
+  the shape on screen, so a `.ts` at 704x480 with 10:11 pixels - the ATSC
+  test pattern, or anything the ATSC receiver records - played 9% too
+  short, with 22 black rows top and bottom. `VideoFile` scales to `iw*sar`
+  first, as `apps/atsc_source.py` does. Square-pixel clips come out
+  bit-identical to before. Measured: 10:11 and DVD 8:9 material now fills
+  the frame, DVD 16:9 letterboxes to rows 60-419 as it should, and a file
+  with no aspect ratio recorded still plays.
 - **The clips themselves are public domain or CC BY**, and
   `media/VIDEO-CREDITS.txt` is the record of what each one is, where it came
   from, which segment was taken and how it was encoded. The Blender films
@@ -1285,6 +1308,13 @@ python scripts/test_launcher_gui.py "RDS Receiver"
 python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
 python scripts/test_launcher_gui.py "ATSC Video Receiver"
 ```
+
+`scripts/test_app_close.py` checks the last of those for every app at once,
+with no radio, no display and no launcher to close first. It calls each
+app's real `main()` the way `launch_application` does, with a stand-in
+window for the flowgraph, closes the window, and requires the launcher to be
+visible again with its event loop still running. The ATSC transmitter failed
+it (see its notes); nothing else did.
 
 - **Close any running launcher first.** A launcher process keeps a USB handle
   on the HackRF - `/proc/<pid>/fd` shows `/dev/bus/usb/...` - even while it is

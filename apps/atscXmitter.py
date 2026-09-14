@@ -644,6 +644,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
             self.radio_sink.set_frequency(0, self.cf*1e6)
 
 def main(top_block_cls=atscXmitter2, options=None, app=None, config_values=None):
+    own_app = app is None
     if app is None:
         if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
             style = gr.prefs().get_string('qtgui', 'style', 'raster')
@@ -662,28 +663,29 @@ def main(top_block_cls=atscXmitter2, options=None, app=None, config_values=None)
             tb.stop()
             tb.wait()
             tb.close_stream()
-            app.quit()  # Changed from Qt.QApplication.quit()
-        
+            app.quit()
+
         # Use QTimer to handle the signal in the Qt event loop
         Qt.QTimer.singleShot(0, _signal_handler)
 
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
 
-    # Modified event loop handling
     timer = Qt.QTimer()
     timer.start(500)
     timer.timeout.connect(lambda: None)
 
-    def handle_close():
-        tb.stop()
-        tb.wait()
-        tb.close_stream()
-        app.quit()  # Use app instance instead of Qt.QApplication
-
-    # Connect close event
-    tb.closeEvent = lambda event: handle_close()
-
+    # Inside the launcher, hand the window back instead of running a loop of
+    # our own. This used to call app.exec_() regardless and replace the
+    # window's closeEvent with one that called app.quit(). The launcher's loop
+    # is already running, so exec_() returned -1 at once; the launcher got -1
+    # rather than a window, so it never hooked the close to show itself
+    # again; and closing the window quit the launcher's own event loop, which
+    # took the whole launcher down with it. Closing now goes through the
+    # class's closeEvent, which stops the flowgraph and its ffmpeg, and the
+    # launcher wraps that to come back - as it does for every other app.
+    if not own_app:
+        return tb
     return app.exec_()
 
 if __name__ == '__main__':
