@@ -1492,6 +1492,28 @@ TVAdemo ran the transmitter on 4.3 cores with bars and 5.0 with the clip,
 repeating a frame only while starting, and the no-radio test there held
 the radio's 20 MS/s exactly with no repeats.
 
+**And PAL**, the next morning over the same link at the same power, both
+runs through the app's own flowgraph on its PAL format:
+
+| | FPV, Chevrolet clip with sound | F.405 (625-line curve), colour bars |
+|---|---|---|
+| Carrier-to-noise in 20 MHz | 25.6 dB | 19.6 dB |
+| Clicks | none in 75 frames | none |
+| Frames decoded | 43 of 43 | 43 of 43 |
+| Line rate | 15625.0 Hz | 15625.0 Hz |
+| Sync-to-blanking step, against sent | +0.5% | +1.1% |
+| Picture, p-p over rms across 5 MHz | - | 38.2 dB, colour bars within 0.036 |
+| Sound | both subcarriers the clip's own (0.998); sidebands -27.5 and -27.6 dBc | - |
+
+TVAdemo ran the PAL transmitter on 5.5 cores with the clip and 4.2 with
+bars, repeating frames only while starting, and stopped it cleanly each
+time; the no-radio test there held both formats at exactly the radio's rate.
+The first analysis of the colour-bar capture failed in the alignment rather
+than the link: off the air a 5 ms segment sits anywhere in a reference
+several frames long, so its lag is far bigger than the segment, and a guard
+written for software - skip any lag bigger than half the shorter signal -
+skipped them all. It checks how much the two overlap now.
+
 ### How every dialog gets laid out
 
 Each of the fifteen `ConfigDialog`s is assembled by hand out of

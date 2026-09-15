@@ -253,8 +253,14 @@ def align(reference, recovered, rate=VIDEO_RATES['ntsc'], max_lag=200, line=None
     if line is not None:
         candidates = [coarse + int(round(k * line)) for k in range(-3, 4)]
     best = None
+    shorter = min(reference.size, recovered.size)
     for lag in candidates:
-        if abs(lag) >= min(reference.size, recovered.size) // 2:
+        # Skip a lag only if the two would barely overlap there. Off the air
+        # a 5 ms segment sits anywhere inside a reference several frames
+        # long, so its lag is routinely far bigger than the segment itself.
+        overlap = (min(reference.size, recovered.size - lag) if lag >= 0
+                   else min(reference.size + lag, recovered.size))
+        if overlap < shorter // 2:
             continue
         a, b, where = _fractional(reference, recovered, lag, rate)
         trim = a.size // 20
