@@ -44,7 +44,7 @@ MODULES = [
     'askGenerator', 'fskGenerator', 'pskGenerator', 'amSineGenerator',
     'fmAudioRecordedGenerator', 'amAudioInternalGeneratorLive',
     'ppmookAudioXmitter', 'subcarrierRecordedAudio',
-    'amVideoRecordedXmitter', 'ntscAnalogVideoRecorded', 'ntscReceiver',
+    'fmVideoXmitter', 'ntscAnalogVideoRecorded', 'ntscReceiver',
     'atscXmitter', 'atscReceiver', 'fmRdsTransmitter', 'rdsReceiver',
 ]
 

@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""NTSC composite video decoder - the other half of ``ntsc_encode``.
+"""Composite video decoder, NTSC or PAL - the other half of ``ntsc_encode``.
 
 Takes composite baseband samples and gives back pictures: finds sync, locks
 the line and field structure, samples the active line into pixels, and
 demodulates chroma against the colour burst.
 
 It exists to *check* the encoder, the way ``rds_core`` checks ``rds_encode``.
-``scripts/test_ntsc_loopback.py`` runs a frame through both and compares the
-picture that comes back with the one that went in, so a timing or phase
-mistake shows up as a number rather than as "the TV looked wrong".
+``scripts/test_ntsc_loopback.py`` and ``scripts/test_pal_loopback.py`` run
+frames through both and compare the picture that comes back with the one
+that went in, so a timing or phase mistake shows up as a number rather than
+as "the TV looked wrong". The receivers use it off the air too.
 
 Free of GNU Radio and Qt, so it also runs against a recorded capture.
 
-Two things worth knowing before changing it:
+Three things worth knowing before changing it:
 
-**Sync is found by pulse width, not by level.** Equalizing pulses (2.3 us),
-horizontal sync (4.7 us) and the vertical serrations all sit at exactly the
-same level, so a threshold crossing says nothing about which is which.
-How long the signal stays down is what separates the start of a field from
-the start of a line.
+**Sync is found by pulse width, not by level.** Equalizing pulses, line
+sync and the field-sync serrations all sit at exactly the same level, so a
+threshold crossing says nothing about which is which. How long the signal
+stays down is what separates the start of a field from the start of a line.
 
 **Colour is measured against the burst, never against the sample clock.**
-The burst is nine cycles of the subcarrier at a known phase, sent on every
+The burst is a few cycles of the subcarrier at a known phase, sent on every
 line for exactly this purpose: it says where the subcarrier's zero crossing
 is *on this line*, which is the only way to know what the chroma phase on
 that line means. Decoding against a locally generated subcarrier instead
 gets the hue wrong by however much the sampling origin happened to differ.
+
+**PAL's burst says two things at once.** It sits 45 degrees either side of
+the -U axis, the side swapping every line with the V switch. Averaged over
+neighbouring lines the swing cancels and leaves the reference axis; each
+line's own burst, measured against that, says which way its V was sent.
 """
 
 import numpy as np
@@ -34,12 +39,13 @@ import numpy as np
 from apps.ntsc_encode import (
     ACTIVE_LEN, ACTIVE_START, B_Y_SCALE, BURST_AMPLITUDE, BURST_LEN,
     BURST_START, EQUALIZING_WIDTH, FSC, IRE_SETUP, IRE_SYNC, IRE_WHITE, KB,
-    KG, KR, LINE, R_Y_SCALE, SETUP_GAIN, SYNC_WIDTH,
+    KG, KR, LINE, NTSC, ORDINARY, R_Y_SCALE, SETUP_GAIN, SYNC_WIDTH,
 )
 
 # A pulse longer than this is a horizontal sync rather than an equalizer.
+# (NTSC's value; a decoder works out its own standard's the same way.)
 SYNC_DISCRIMINANT = (EQUALIZING_WIDTH + SYNC_WIDTH) / 2
-# Stay at sync level longer than this and it is a vertical serration.
+# Stay at sync level longer than this and it is a field-sync pulse.
 VERTICAL_RUN = 10e-6
 
 # Where to slice sync from vision, as a fraction of the way from sync tip to
@@ -57,10 +63,20 @@ SYNC_MIN_WIDTH = 1.5e-6
 #: bury the colour subcarrier and the noise, short enough to leave a 4.7 us
 #: pulse its shape.
 SYNC_SEPARATOR = 0.5e-6
+#: Where `levels` reads its first estimates, as percentiles of the samples.
+#: Sync tips are about 8% of all samples - 4.7 us of every line, plus the
+#: field-sync blocks - and blanking-level samples (the porches, the burst
+#: region, the blanked lines) about the next 16%, whatever the picture is
+#: doing, because a legal picture never goes below -20 IRE. So the 4th
+#: percentile sits inside the sync tips and the 20th inside blanking. They
+#: are only first estimates: `decode_frame` refines both on the pulses.
+SYNC_PERCENTILE = 4
+BLANK_PERCENTILE = 20
 
 # How many ordinary lines pass between the first one after a vertical block
-# and the first line of active picture. They differ by one between the two
-# fields - see decode_frame - which is what makes the interlace work.
+# and the first line of active picture, for NTSC. They differ by one between
+# the two fields - see decode_frame - which is what makes the interlace
+# work. A decoder derives its own standard's from the half-line table.
 FIELD1_LINE_OFFSET = 11         # block ends at line 9, picture starts at 21
 FIELD2_LINE_OFFSET = 10         # block ends at line 272, picture starts at 283
 # Annex A equation 10 again, as the decoder needs it: the encoder wrote
@@ -90,88 +106,109 @@ def _box_filter(a, span):
     return (totals[:, hi] - totals[:, lo]) / span
 
 
-def chroma_span(sample_rate, max_cycles=8):
+def chroma_span(sample_rate, max_cycles=8, subcarrier=FSC):
     """Averaging length whose null lands on the colour subcarrier.
 
     Chroma is pulled out with a box filter, and a box of length L has its
     first null at ``sample_rate / L`` - so the length has to be chosen so
-    that a null falls on 3.579545 MHz, not merely near it.
+    that a null falls on the subcarrier, not merely near it.
 
-    The obvious ``round(fs / FSC)`` only works when the sample rate happens
-    to be a whole multiple of the subcarrier. At 4x subcarrier - 14.318 MS/s,
-    which the loopback test uses - it is exact, and the colour comes back
-    within 0.01. At 10 MS/s it gives 3 samples, whose null is at 3.333 MHz,
-    246 kHz adrift, and the error is fifteen times worse. Averaging over
-    several subcarrier cycles instead lets the null land almost exactly: five
-    cycles is 14 samples at 10 MS/s, which is 8 kHz out.
+    The obvious ``round(fs / fsc)`` only works when the sample rate happens
+    to be a whole multiple of the subcarrier. At 4x subcarrier - which the
+    loopback tests use - it is exact, and the colour comes back within 0.01.
+    At 10 MS/s NTSC it gives 3 samples, whose null is at 3.333 MHz, 246 kHz
+    adrift, and the error is fifteen times worse. Averaging over several
+    subcarrier cycles instead lets the null land almost exactly: five cycles
+    is 14 samples at 10 MS/s, which is 8 kHz out.
 
-    The cost is horizontal chroma resolution, and NTSC has little to spare -
-    but the standard already limits chroma to about 1.3 MHz, so a filter
+    The cost is horizontal chroma resolution, and neither standard has much
+    to spare - but both already limit chroma to about 1.3 MHz, so a filter
     this wide is close to what the signal carries anyway.
     """
     best = None
     for cycles in range(1, max_cycles + 1):
-        span = max(1, int(round(cycles * sample_rate / FSC)))
-        error = abs(cycles * sample_rate / span - FSC)
+        span = max(1, int(round(cycles * sample_rate / subcarrier)))
+        error = abs(cycles * sample_rate / span - subcarrier)
         if best is None or error < best[0]:
             best = (error, span)
     return best[1]
 
 
-class NtscDecoder:
-    """Decode composite baseband into frames."""
+def field_line_offsets(standard):
+    """For each field: first active line minus the first ordinary line
+    after its field-sync block, which is where `find_fields` starts counting.
 
-    def __init__(self, sample_rate, width=640, active_lines=240):
+    NTSC is 11 and 10; PAL is 17 and 17. Worked out from the standard's own
+    half-line table rather than written down, so the two cannot disagree.
+    """
+    types = standard.half_line_types().reshape(standard.lines, 2)
+    offsets = []
+    for first in (standard.field1_first_line, standard.field2_first_line):
+        line = first - 1
+        while np.all(types[(line - 1) % standard.lines] == ORDINARY):
+            line -= 1
+        offsets.append(first - standard.first_ordinary_after(line))
+    return tuple(offsets)
+
+
+class NtscDecoder:
+    """Decode composite baseband into frames - NTSC unless told otherwise."""
+
+    #: Where to read blanking once the sync pulses are known: the breezeway,
+    #: between the end of sync and the colour burst - counted from where the
+    #: pulse began plus the standard's sync width, see `back_porch_level`.
+    BREEZEWAY = (0.1e-6, 0.5e-6)
+
+    def __init__(self, sample_rate, width=None, active_lines=None,
+                 standard=None):
+        self.standard = standard or NTSC
+        std = self.standard
         self.sample_rate = float(sample_rate)
-        self.width = int(width)
-        self.active_lines = int(active_lines)
-        self.chroma_span = chroma_span(self.sample_rate)
+        self.width = int(width or std.width)
+        self.active_lines = int(active_lines or std.active_lines_per_field)
+        self.chroma_span = chroma_span(self.sample_rate,
+                                       subcarrier=std.subcarrier)
+        self.sync_discriminant = (std.equalizing_width + std.sync_width) / 2
+        self.field_offsets = field_line_offsets(std)
 
     # -- levels ----------------------------------------------------------
 
     def levels(self, x):
-        """Sync tip and blanking level, read off the signal itself.
+        """First estimates of sync tip and blanking, read off the signal.
 
-        A capture arrives at whatever scale the radio gave it, so nothing can
-        be assumed about absolute level. The sync tip is a low percentile,
-        robust against spikes; blanking is the commonest single level,
-        because the porches occupy about 18% of every line at exactly one
-        value while picture content is spread over many.
+        A capture arrives at whatever scale the radio gave it, so nothing
+        can be assumed about absolute level. Both come from how much of
+        every signal sits at each: see `SYNC_PERCENTILE` and
+        `BLANK_PERCENTILE`. `decode_frame` refines both once the pulses are
+        known - blanking on the porches, sync in the middle of the pulses -
+        which is what a television clamps on.
 
-        **Where blanking sits in the range depends on the picture, and
-        bounding the search by a fraction of that range is what broke it.**
-        The window used to be the 10-60% band of sync-to-white, which is
-        right for an ordinary picture: blanking came out at 45% of the
-        range. But the top of the range is the *brightest thing in this
-        buffer*, so on a dark scene it collapses toward blanking and
-        blanking moves to 89% of what is left - outside the window
-        entirely. The estimate then landed on dark picture content a
-        thousandth above the sync tip, the slicer had nothing to slice, and
-        `find_pulses` returned no pulses at all. Off air that cost about a
-        second of picture every time the clip reached a dark shot: 17
-        consecutive frames, always the same exception, and nothing wrong
-        with the signal - the input level never moved.
-        `scripts/test_ntsc_loopback.py` reproduces it with no radio.
+        **Blanking used to be the histogram's commonest level**, on the
+        grounds that the porches are all exactly one value, and that is only
+        true of a clean signal. Add noise and the porches spread across many
+        bins while any large flat area spreads the same way over more
+        samples: measured with noise of 0.05 of the sync-to-white swing, the
+        commonest level on a white picture was 2.5 times the sync-to-
+        blanking step too high, and on colour bars off an FM link it was
+        the white bar. The slicer then cut at blanking level, every "pulse"
+        was a whole blanking interval, and the picture came out wrong with
+        no error raised. The 20th percentile decoded every picture tried -
+        white, black, grey, dark, 90% white, fully saturated red and blue,
+        each clean and with noise, at 10 MS/s and at 4x subcarrier - and
+        read real off-air signals within 0.96 to 1.09 of their back porch.
 
-        The window is 5-98% now, and `decode_frame` refines the answer on
-        the back porch afterwards, which is what a television clamps on and
-        is independent of the picture altogether.
+        **Before that the histogram window was what failed.** It was the
+        10-60% band of sync-to-white, and on a dark scene the top of that
+        range collapses toward blanking, which then sat outside the window:
+        off air, 17 consecutive frames failed every time the clip reached a
+        dark shot. A percentile has no window to fall out of, and
+        `scripts/test_ntsc_loopback.py` keeps both cases.
         """
         # Every fourth sample is plenty: a frame is a third of a million of
-        # them and this only needs two percentiles and a histogram, while
-        # np.percentile on the lot was a sixth of the whole decode.
+        # them, and np.percentile on the lot was a sixth of the whole decode.
         sample = x[::4] if x.size > 40000 else x
-        sync = float(np.percentile(sample, 0.5))
-        top = float(np.percentile(sample, 99.5))
-        hist, edges = np.histogram(sample, bins=256, range=(sync, top))
-        lo, hi = int(0.05 * len(hist)), int(0.98 * len(hist))
-        blank = float(edges[lo + int(np.argmax(hist[lo:hi]))])
-        return sync, blank
-
-    #: Where to read blanking once the sync pulses are known: the breezeway,
-    #: between the trailing edge of sync and the start of the colour burst.
-    #: The burst begins 0.6 us after sync ends, so this stops well short.
-    BREEZEWAY = (0.1e-6, 0.5e-6)
+        sync, blank = np.percentile(sample, (SYNC_PERCENTILE, BLANK_PERCENTILE))
+        return float(sync), float(blank)
 
     def back_porch_level(self, x, starts, widths, fallback):
         """Blanking, measured where a television measures it.
@@ -182,24 +219,59 @@ class NtscDecoder:
         breezeway just after each one gives blanking directly - no
         histogram, no assumption about how bright the scene is.
 
-        Only full-width horizontal sync counts: an equalizing pulse is too
-        narrow and a vertical serration too wide, and neither is followed
-        by a porch - what comes after them is more sync.
+        **The window is counted from where the pulse began, not where the
+        slicer says it ended.** The breezeway is only 0.6 us - four samples
+        at 10 MS/s - hard against sync's trailing edge, and noise moves the
+        slicer's idea of that edge: on fully saturated red and blue with
+        noise, a window hung off the measured end slid onto the edge and
+        read blanking 0.011 low. The start plus the nominal sync width does
+        not move that way, and read 0.0026. The front porch looks like the
+        obvious alternative and is worse where it matters: through the
+        NTSC transmitter's vestigial-sideband filter the picture rings into
+        it, and colour bars came back 0.102 out against 0.081 for the
+        breezeway. Off an FM link all of them agree to within 0.002.
+
+        Only full-width line sync counts: an equalizing pulse is too
+        narrow and a field-sync pulse too wide, and neither is followed by
+        a porch - what comes after them is more sync.
         """
-        horizontal = (widths > SYNC_DISCRIMINANT) & (widths < VERTICAL_RUN)
+        horizontal = ((widths > self.sync_discriminant)
+                      & (widths < VERTICAL_RUN))
         if horizontal.sum() < 8:
             return fallback
-        ends = starts[horizontal] + (widths[horizontal] * self.sample_rate)
-        lo = (ends + self.BREEZEWAY[0] * self.sample_rate).astype(np.int64)
-        hi = (ends + self.BREEZEWAY[1] * self.sample_rate).astype(np.int64)
+        fs = self.sample_rate
+        ends = starts[horizontal] + self.standard.sync_width * fs
+        lo = (ends + self.BREEZEWAY[0] * fs).astype(np.int64)
+        hi = (ends + self.BREEZEWAY[1] * fs).astype(np.int64)
         span = int(np.median(hi - lo))
         if span < 2:
             return fallback
-        lo = lo[hi < x.size]
+        lo = lo[(lo >= 0) & (lo + span < x.size)]
         if lo.size < 8:
             return fallback
-        windows = x[lo[:, None] + np.arange(span)[None, :]]
-        return float(np.median(windows))
+        return float(np.median(x[lo[:, None] + np.arange(span)[None, :]]))
+
+    def sync_tip_level(self, x, starts, widths, fallback):
+        """The sync tip, measured in the middle of the line sync pulses.
+
+        A low percentile of the whole signal sits below the real tip by
+        however far noise reaches, and the tip is half of what sets the
+        picture's scale. The middle of each line sync pulse, clear of both
+        edges, is at the tip by definition.
+        """
+        horizontal = ((widths > self.sync_discriminant)
+                      & (widths < VERTICAL_RUN))
+        if horizontal.sum() < 8:
+            return fallback
+        edge = int(round(1.0e-6 * self.sample_rate))
+        span = int(round(self.standard.sync_width * self.sample_rate)) - 2 * edge
+        if span < 2:
+            return fallback
+        lo = starts[horizontal] + edge
+        lo = lo[lo + span < x.size]
+        if lo.size < 8:
+            return fallback
+        return float(np.median(x[lo[:, None] + np.arange(span)[None, :]]))
 
     # -- sync ------------------------------------------------------------
 
@@ -208,13 +280,13 @@ class NtscDecoder:
 
         **Slicing the signal as it arrives does not work off the air.** Sync
         is a low-frequency feature but the composite it sits in carries the
-        3.58 MHz colour subcarrier and whatever noise the radio added, and
-        those cross the slice level over and over inside a single pulse. A
-        real capture came back with its longest run at 9.8 us where the
-        vertical block's are 27.1, chopped into fragments, and no field was
-        ever found. Every television has a sync separator in front of its
-        slicer for exactly this reason; half a microsecond of averaging is
-        enough, and it recovers the 27.10 us runs exactly.
+        colour subcarrier and whatever noise the radio added, and those
+        cross the slice level over and over inside a single pulse. A real
+        capture came back with its longest run at 9.8 us where the vertical
+        block's are 27.1, chopped into fragments, and no field was ever
+        found. Every television has a sync separator in front of its slicer
+        for exactly this reason; half a microsecond of averaging is enough,
+        and it recovers the 27.10 us runs exactly.
         """
         span = max(1, int(round(SYNC_SEPARATOR * self.sample_rate)))
         detect = (np.convolve(x, np.ones(span) / span, 'same') if span > 1
@@ -235,12 +307,12 @@ class NtscDecoder:
         return starts[keep], widths[keep]
 
     def find_fields(self, starts, widths):
-        """Index of the first horizontal sync after each vertical block.
+        """Index of the first line sync after each field-sync block.
 
-        The nine-line vertical block is the only place the signal sits at
-        sync level for most of a half-line at a time. Those long runs mark a
+        The field-sync block is the only place the signal sits at sync
+        level for most of a half-line at a time. Those long runs mark a
         field; the first full-width sync after the post-equalizing pulses is
-        line 10, from which the active picture is counted.
+        the first ordinary line, from which the active picture is counted.
         """
         longs = np.flatnonzero(widths > VERTICAL_RUN)
         if longs.size == 0:
@@ -249,7 +321,8 @@ class NtscDecoder:
         fields = []
         for g in groups:
             after = int(g[-1]) + 1
-            while after < widths.size and widths[after] < SYNC_DISCRIMINANT:
+            while (after < widths.size
+                   and widths[after] < self.sync_discriminant):
                 after += 1                    # skip the post-equalizing pulses
             if after < widths.size:
                 fields.append(after)
@@ -268,89 +341,96 @@ class NtscDecoder:
         operations, so they go into one 2-D array instead.
         """
         x = np.asarray(x, dtype=np.float64)
+        std = self.standard
         sync, blank = self.levels(x)
         if blank <= sync:
             raise ValueError("no sync found: blanking is not above sync level")
 
         starts, widths = self.find_pulses(x, sync, blank)
-        # Now that the pulses are known, take blanking off the back porch
-        # rather than off a histogram. The histogram is a guess about where
-        # blanking sits among the picture levels; the porch is the
-        # standard's own reference and does not move with the picture. It
-        # is what sets the IRE scale, and getting it exactly right took the
-        # loopback colour error from 0.0089 to about 1e-11.
+        # Now that the pulses are known, take blanking off the porches and
+        # the sync tip off the pulses themselves, rather than off the first
+        # estimates. Those are guesses from how the samples are distributed;
+        # the porch and the tip are the standard's own references and do
+        # not move with the picture or the noise. They set the scale, and
+        # getting blanking exactly right took the loopback colour error from
+        # 0.0089 to about 1e-11.
         refined = self.back_porch_level(x, starts, widths, blank)
-        if refined > sync:
+        tip = self.sync_tip_level(x, starts, widths, sync)
+        if refined > tip:
             # Slicing again is almost never worth it, and costs a fifth of
             # the whole decode. The slice sits at 35% of the way from sync
             # to blanking, so it stays well inside the pulses even when the
             # first estimate was off by the 19% that black setup routinely
             # puts it out by - measured off air, 883 pulses either way.
             # This is only a guard for an estimate that was wildly wrong.
-            moved = abs(refined - blank) > 0.5 * (blank - sync)
-            blank = refined
+            moved = (abs(refined - blank) + abs(tip - sync)
+                     > 0.5 * (blank - sync))
+            sync, blank = tip, refined
             if moved:
                 starts, widths = self.find_pulses(x, sync, blank)
-        # (x - blank) * ire_scale puts blanking at 0 IRE and sync at -40.
-        ire_scale = -IRE_SYNC / (blank - sync)
+        # (x - blank) * level_scale puts blanking at 0 and sync at the
+        # standard's sync level, in its own units: -40 IRE, or -300 mV.
+        level_scale = (std.blank_level - std.sync_level) / (blank - sync)
 
         fields = self.find_fields(starts, widths)
         if len(fields) < 2:
             raise ValueError("could not find two fields - no vertical sync?")
 
         # **Which field came first has to be worked out, not assumed.** A
-        # capture starts wherever it starts, so the first vertical block in
-        # it is field one about half the time and field two the rest. Put
-        # field two's lines on the even rows and the picture is offset by a
-        # line - every edge grows a comb, and the error roughly trebles.
+        # capture starts wherever it starts, so the first field-sync block
+        # in it is field one about half the time and field two the rest.
+        # Put field two's lines on the even rows and the picture is offset
+        # by a line - every edge grows a comb, and the error roughly trebles.
         #
-        # The two blocks are not evenly spaced: a field is 262.5 lines, so
-        # consecutive vertical blocks are 263 lines apart and then 262. A
-        # gap of 263 to the next one means this block is field one.
+        # The blocks are not evenly spaced: a field is half an odd number of
+        # lines, so consecutive blocks are 263 lines apart and then 262 in
+        # NTSC, 313 and then 312 in PAL. The longer gap to the next one
+        # means this block is field one.
         lines_between = ((starts[fields[1]] - starts[fields[0]])
-                         / (LINE * self.sample_rate))
-        swap = 0 if lines_between > 262.5 else 1
+                         / (std.line * self.sample_rate))
+        swap = 0 if lines_between > std.lines / 2 else 1
 
         rows = np.zeros((2 * self.active_lines, self.width, 3))
         for parity, f in enumerate(fields[:2]):
             parity = (parity + swap) % 2
             # **The two fields do not start the same number of lines after
-            # their vertical block.** Field one's block is lines 1-9 and its
-            # picture starts at line 21, eleven lines later; field two's
-            # block is lines 264-272 and its picture starts at 283, which is
-            # ten. Using eleven for both - which this did - puts half the
-            # picture one line low, so every horizontal edge grows a comb.
-            # Measured against horizontal stripes, 11/10 beats 11/11 by
-            # nearly two to one.
+            # their field-sync block** in NTSC: field one's block is lines
+            # 1-9 and its picture starts at line 21, eleven lines on from the
+            # first ordinary line; field two's block is lines 264-272 and
+            # its picture starts at 283, which is ten. Using eleven for both
+            # - which this once did - puts half the picture one line low, so
+            # every horizontal edge grows a comb. `field_line_offsets` works
+            # them out for either standard.
             k = np.arange(self.active_lines)
-            pulse = f + (FIELD1_LINE_OFFSET if parity == 0
-                         else FIELD2_LINE_OFFSET) + k
+            pulse = f + self.field_offsets[parity] + k
             keep = pulse < starts.size
             k, pulse = k[keep], pulse[keep]
             if k.size == 0:
                 continue
-            y, b_y, r_y = self._sample_lines(x, starts[pulse], blank,
-                                             ire_scale, color)
-            rows[2 * k + parity] = self._to_rgb(y, b_y, r_y)
+            y, u, v = self._sample_lines(x, starts[pulse], blank,
+                                         level_scale, color)
+            rows[2 * k + parity] = self._to_rgb(y, u, v)
         return np.clip(rows, 0, 1)
 
-    def _sample_lines(self, x, h_refs, blank, ire_scale, color):
-        """Y and the colour-difference signals for a whole field of lines.
+    def _sample_lines(self, x, h_refs, blank, level_scale, color):
+        """Y and the two colour-difference signals for a field of lines.
 
         Returns three ``(lines, width)`` arrays.
         """
-        seg_len = int(round(ACTIVE_LEN * self.sample_rate))
-        start = h_refs + int(round(ACTIVE_START * self.sample_rate))
+        std = self.standard
+        fs = self.sample_rate
+        seg_len = int(round(std.active_len * fs))
+        start = h_refs + int(round(std.active_start * fs))
         # A line whose segment would run off the end of the capture reads as
         # black rather than wrapping round to the beginning.
         usable = (start >= 0) & (start + seg_len <= x.size)
         at = np.clip(start[:, None] + np.arange(seg_len)[None, :],
                      0, x.size - 1)
-        seg = (x[at] - blank) * ire_scale
-        seg[~usable] = 0.0
+        seg = (x[at] - blank) * level_scale + std.blank_level
+        seg[~usable] = std.blank_level
 
         # The same resampling positions for every line, so the interpolation
-        # is two gathers and a blend rather than 480 calls to np.interp.
+        # is two gathers and a blend rather than a call per line.
         pos = np.linspace(0, seg_len - 1, self.width)
         lo = np.floor(pos).astype(np.int64)
         hi = np.minimum(lo + 1, seg_len - 1)
@@ -359,43 +439,104 @@ class NtscDecoder:
         def resample(a):
             return a[:, lo] * (1.0 - frac) + a[:, hi] * frac
 
+        gain = std.luma_gain * std.white_level      # 92.5 IRE, or 700 mV
         if not color:
             zero = np.zeros((h_refs.size, self.width))
-            return (resample(seg) - IRE_SETUP) / LUMA_GAIN, zero, zero
+            return (resample(seg) - std.black_level) / gain, zero, zero
 
         # Complex envelope: s(t) = Re{Z e^{jwt}}, so Z = 2*LPF{s e^{-jwt}}.
-        carrier = np.exp(-2j * np.pi * FSC * at / self.sample_rate)
+        carrier = np.exp(-2j * np.pi * std.subcarrier * at / fs)
         z = 2.0 * _box_filter(seg * carrier, self.chroma_span)
 
-        # The burst says what phase this line's subcarrier actually has. The
-        # encoder sent -20*sin(wt), whose complex envelope is +20j, so the
-        # measured envelope divided by its own unit vector and multiplied by
-        # j puts every line back on the same axis.
-        b_len = int(round(BURST_LEN * self.sample_rate))
-        b_at = np.clip(h_refs[:, None] + int(round(BURST_START * self.sample_rate))
-                       + np.arange(b_len)[None, :], 0, x.size - 1)
-        burst = (x[b_at] - blank) * ire_scale
-        zb = 2.0 * np.mean(
-            burst * np.exp(-2j * np.pi * FSC * b_at / self.sample_rate), axis=1)
-        rotate = np.ones(h_refs.size, dtype=np.complex128)
-        found = np.abs(zb) > 1e-9
-        rotate[found] = 1j * np.abs(zb[found]) / zb[found]
-        z = z * rotate[:, None]
-
-        # Z = 92.5*(r_y - j*b_y), from the encoder's sin/cos assignment.
-        r_y = np.real(z) / CHROMA_GAIN
-        b_y = -np.imag(z) / CHROMA_GAIN
+        # **Take chroma out of luma now, before the envelope is turned to
+        # the burst.** Put back on the carrier it came off, the envelope
+        # rebuilds the chroma exactly as it sits in these samples. It used
+        # to be rebuilt *after* the rotation below, which put it out of
+        # phase with the real chroma by the rotation itself - and the
+        # rotation is set by which sample the buffer happens to start on.
+        # So most of the chroma was left behind in luma as a dot pattern,
+        # up to 0.59 at a single pixel: colour bars straight from the
+        # encoder came back anywhere from 0.017 to 0.20 out as the first
+        # sample moved, and off air, where a buffer starts anywhere, on
+        # every frame. The loopback test decoded from the one start where
+        # the rotation is zero, which is how it never showed.
         chroma = np.real(z * np.conj(carrier))          # back to a real signal
         luma = seg - chroma
 
-        return ((resample(luma) - IRE_SETUP) / LUMA_GAIN,
-                resample(b_y), resample(r_y))
+        # The burst says what phase this line's subcarrier actually has.
+        # **Read it a whole cycle in from each end.** The edges of a real
+        # burst carry the ringing of every filter it has been through, and
+        # the slicer places a pulse a sample or so late, so a window over
+        # the whole burst takes in some of both. Measured against the whole
+        # burst: through the vestigial-sideband transmitter colour bars came
+        # back 0.081 out against 0.086, off the FM link 0.062 against 0.068
+        # and 0.026 against 0.030, and PAL at 4x subcarrier went from 0.012
+        # to exact - its burst, 45 degrees either side of -U, does not start
+        # on a zero crossing the way NTSC's does. On clean synthetic signals
+        # at rates that are not a multiple of the subcarrier the whole burst
+        # was 0.002-0.009 better, which real signals outweigh.
+        cycle = 1.0 / std.subcarrier
+        b_len = int(round((std.burst_cycles - 2) * cycle * fs))
+        b_at = np.clip(h_refs[:, None] + int(round((std.burst_start + cycle) * fs))
+                       + np.arange(b_len)[None, :], 0, x.size - 1)
+        burst = (x[b_at] - blank) * level_scale
+        zb = 2.0 * np.mean(
+            burst * np.exp(-2j * np.pi * std.subcarrier * b_at / fs), axis=1)
+        found = np.abs(zb) > 1e-9
 
-    def _to_rgb(self, y, b_y, r_y):
+        if std.v_switch:
+            u, v = self._pal_axes(z, zb, found, gain)
+        else:
+            # The NTSC encoder sent -20*sin(wt), whose complex envelope is
+            # +20j, so the measured envelope divided by its own unit vector
+            # and multiplied by j puts every line back on the same axis.
+            rotate = np.ones(h_refs.size, dtype=np.complex128)
+            rotate[found] = 1j * np.abs(zb[found]) / zb[found]
+            z = z * rotate[:, None]
+            # Z = 92.5*(r_y - j*b_y), from the encoder's sin/cos assignment.
+            v = np.real(z) / gain
+            u = -np.imag(z) / gain
+
+        return ((resample(luma) - std.black_level) / gain,
+                resample(u), resample(v))
+
+    @staticmethod
+    def _pal_axes(z, zb, found, gain, window=4):
+        """U and V for a field of PAL lines, V un-switched.
+
+        The encoder sent chroma as U sin(wt) + s V cos(wt), envelope
+        ``-jU + sV``, and the burst as (-sin(wt) + s cos(wt))/sqrt(2), envelope
+        at 45 degrees when s is +1 and 135 when it is -1 - both turned by
+        the same unknown angle from where this buffer started. Four
+        neighbouring lines hold two of each, so their bursts' mean points
+        exactly between, 90 degrees round from that angle: that is the
+        reference. Each line's own burst, 45 degrees to one side of it or
+        the other, gives s. Four lines is 256 us, too short for the two
+        radios' clocks to turn the subcarrier measurably, which a whole
+        field's average would not be.
+        """
+        n = zb.size
+        unit = np.zeros(n, dtype=np.complex128)
+        unit[found] = zb[found] / np.abs(zb[found])
+        totals = np.concatenate([[0], np.cumsum(unit)])
+        lo = np.clip(np.arange(n) - window // 2 + 1, 0, max(n - window, 0))
+        hi = np.minimum(lo + window, n)
+        axis = totals[hi] - totals[lo]
+        size = np.abs(axis)
+        axis = np.where(size > 1e-9, axis / np.maximum(size, 1e-12), 1j)
+        s = np.where(np.angle(unit * np.conj(axis)) < 0, 1.0, -1.0)
+        z = z * (1j * np.conj(axis))[:, None]          # turn the reference to 90
+        return -np.imag(z) / gain, s[:, None] * np.real(z) / gain
+
+    def _to_rgb(self, y, u, v):
         """Undo the reduction factors and the luminance matrix."""
-        bmy = b_y / B_Y_SCALE
-        rmy = r_y / R_Y_SCALE
+        bmy = u / self.standard.u_scale
+        rmy = v / self.standard.v_scale
         b = bmy + y
         r = rmy + y
         g = (y - KR * r - KB * b) / KG
         return np.stack([r, g, b], axis=-1)
+
+
+#: The same decoder, by a name that does not pretend it only does NTSC.
+CompositeDecoder = NtscDecoder

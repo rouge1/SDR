@@ -95,8 +95,9 @@ APP_TILES = [
     (3, 1, [("NTSC Analog Video", "ntscAnalogVideoRecorded",
              "ntsc.jpg", "tx"),
             ("NTSC Video Receiver", "ntscReceiver", "ntscRx.jpg", "rx")]),
-    (3, 2, [("AM Video Transmitter", "amVideoRecordedXmitter",
-             "amVideo.jpg", "tx")]),
+    # FM video replaced AM video, which matched nothing a real transmitter
+    # sends; this one is what an analog FPV drone puts out on 5.8 GHz.
+    (3, 2, [("FM Video Transmitter", "fmVideoXmitter", "fmVideo.jpg", "tx")]),
 ]
 
 

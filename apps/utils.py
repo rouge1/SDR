@@ -167,6 +167,25 @@ class FrequencyChooser(Qt.QWidget):
         if centre is not None:
             self.setValue(centre)
 
+    def set_channels(self, channels):
+        """Swap in another channel plan, for a dialog whose standard changes.
+
+        Only a chooser built with a plan has a channel row to fill; an empty
+        plan greys the row out rather than removing it, so the dialog does
+        not jump about as the standard changes.
+        """
+        if self.channel_combo is None:
+            return
+        self.channel_combo.blockSignals(True)
+        self.channel_combo.clear()
+        self.channel_combo.addItem(
+            "(not on a channel)" if channels else "(no channel plan)", None)
+        for _number, centre, caption in channels or ():
+            self.channel_combo.addItem(caption, float(centre))
+        self.channel_combo.setEnabled(bool(channels))
+        self.channel_combo.blockSignals(False)
+        self._refresh()
+
 
 class DialogGeometryTracker(QObject):
     """Event filter that captures dialog geometry the moment it is hidden.

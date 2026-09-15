@@ -225,14 +225,16 @@ def main():
             worst = max(worst, err)
             print(f"  {name:8s} sent {np.round(want, 2)}  back {np.round(got, 2)}"
                   f"  error {err:.4f}")
-        # An order of magnitude looser than the 0.01 the composite-only
-        # loopback requires, and it should be: chroma sits at 3.58 MHz,
-        # which is outside the vestigial region, so only one of its
-        # sidebands is transmitted. A television recovers it with the same
-        # inaccuracy - this is what vestigial sideband costs, not a fault
-        # in the modulator.
+        # Looser than the composite-only loopback, and it should be: chroma
+        # sits at 3.58 MHz, outside the vestigial region, so only one of its
+        # sidebands is transmitted, and a television recovers it with the
+        # same inaccuracy. **But not all of the 0.13 this used to read was
+        # the vestigial sideband.** Part was the decoder leaving chroma in
+        # luma whenever the buffer did not start on the one sample where
+        # that cancelled (see ntsc_decode); fixed, this reads 0.081. The
+        # tolerance was 0.15 and would have hidden that.
         close("worst colour error through the whole transmit chain", worst,
-              0.0, 0.15)
+              0.0, 0.10)
     else:
         err = float(np.abs(out - frame).mean())
         close("mean error through the whole transmit chain", err, 0.0, 0.15)

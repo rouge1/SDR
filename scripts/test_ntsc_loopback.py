@@ -160,6 +160,64 @@ for name, picture in pictures.items():
 close(f"back porch gives blanking to within this of {truth:.4f} "
       f"(worst: {worst_name})", worst_level, 0.0, 0.005)
 
+
+def bar_error(out, src):
+    worst = 0.0
+    for k in range(7):
+        col = (k * src.shape[1] // 7 + (k + 1) * src.shape[1] // 7) // 2
+        got = out[100:140, col - 10:col + 10].mean(axis=(0, 1))
+        worst = max(worst, float(np.abs(got - src[100, col]).max()))
+    return worst
+
+
+print("\ncolour does not depend on which sample decoding starts on")
+# The decoder rebuilt chroma to subtract it from luma *after* turning its
+# envelope to the burst, so the rebuilt chroma was out of phase by that
+# rotation - which is set by where the buffer starts. At 4x subcarrier from
+# sample 0, as above, the rotation is exactly zero and nothing showed; at
+# 10 MS/s colour bars came back anywhere from 0.017 to 0.20 out.
+fs = 10e6
+enc = NtscEncoder(fs)
+sig = np.concatenate([enc.encode_frame(colour_bars()) for _ in range(2)])
+dec = NtscDecoder(fs, width=640, active_lines=240)
+errors = [bar_error(dec.decode_frame(sig[start:]), colour_bars())
+          for start in range(12)]
+print(f"       starting on samples 0-11: {min(errors):.4f} to {max(errors):.4f}")
+close("worst colour error from any of them, 10 MS/s", max(errors), 0.0, 0.03)
+
+print("\nsync and blanking are found through noise, whatever the picture")
+# Blanking was the histogram's commonest level, which is only true of a
+# clean signal: with noise the porches spread across many bins and a large
+# flat area spreads over more samples. On a white picture it read 2.5 times
+# the sync-to-blanking step too high; the slicer then cut at blanking level,
+# and the picture came back wrong with no error raised at all.
+fs = 10e6
+noisy_pictures = {
+    '75% colour bars': colour_bars(),
+    'all white': np.ones((480, 640, 3)),
+    'saturated red/blue': np.concatenate([np.tile([1.0, 0.0, 0.0], (480, 320, 1)),
+                                          np.tile([0.0, 0.0, 1.0], (480, 320, 1))],
+                                         axis=1),
+}
+rng = np.random.RandomState(1)
+decoder = NtscDecoder(fs, width=640, active_lines=240)
+for name, picture in noisy_pictures.items():
+    clean = np.concatenate([NtscEncoder(fs).encode_frame(picture) for _ in range(2)])
+    sig = clean + rng.normal(0, 0.05, clean.size)
+    sync, blank = decoder.levels(sig)
+    starts, widths = decoder.find_pulses(sig, sync, blank)
+    porch = decoder.back_porch_level(sig, starts, widths, blank)
+    tip = decoder.sync_tip_level(sig, starts, widths, sync)
+    try:
+        err = float(np.abs(decoder.decode_frame(sig) - decoder.decode_frame(clean)).mean())
+        detail = f"picture within {err:.3f} of the clean decode"
+    except Exception as exc:
+        err, detail = 1.0, f"FAILED: {exc}"
+    print(f"  {name:20s} noise 0.05: tip {tip:+.4f}, blanking {porch:.4f}; {detail}")
+    close(f"{name}: blanking through noise", porch, truth, 0.01)
+    close(f"{name}: sync tip through noise", tip, 0.0, 0.01)
+    close(f"{name}: the picture through noise", err, 0.0, 0.06)
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {', '.join(failures)}")

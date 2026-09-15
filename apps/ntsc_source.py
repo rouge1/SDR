@@ -41,7 +41,7 @@ from queue import Empty, Full, Queue
 import numpy as np
 from gnuradio import gr  # type: ignore
 
-from apps.ntsc_encode import FRAME, NtscEncoder, IRE_BLANK, ire_to_unit
+from apps.ntsc_encode import FRAME, NTSC, NtscEncoder, IRE_BLANK, ire_to_unit
 
 #: The instructor's ``*-18M0FS.dat`` captures are composite at this rate.
 DAT_SAMPLE_RATE = 18e6
@@ -198,7 +198,10 @@ class VideoFile(FrameSource):
     """
 
     def __init__(self, path, width=ACTIVE_WIDTH, height=ACTIVE_HEIGHT,
-                 loop=True):
+                 loop=True, frame_rate=FRAME_RATE):
+        # ``frame_rate`` is the standard's, not the clip's: ffmpeg drops or
+        # repeats frames to make the clip's rate this one - 29.97 for NTSC,
+        # 25 for PAL, 768x576 then being PAL's square-pixel picture.
         if not have_ffmpeg():
             raise RuntimeError(
                 "Playing video needs ffmpeg on PATH, and it is not installed.")
@@ -218,7 +221,7 @@ class VideoFile(FrameSource):
         if loop:
             argv += ['-stream_loop', '-1']
         argv += ['-i', path, '-an', '-vf', scale,
-                 '-r', f"{FRAME_RATE:.6f}", '-f', 'rawvideo',
+                 '-r', f"{frame_rate:.6f}", '-f', 'rawvideo',
                  '-pix_fmt', 'rgb24', 'pipe:1']
         self._proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL)
@@ -423,14 +426,19 @@ class ntsc_source(gr.sync_block):
     #: second before it had built any cushion at all.
     QUEUE_DEPTH = 6
 
-    def __init__(self, frames, sample_rate, color=True, workers=None):
+    def __init__(self, frames, sample_rate, color=True, workers=None,
+                 standard=None):
         gr.sync_block.__init__(self, name='ntsc_source', in_sig=None,
                                out_sig=[np.float32])
         self.sample_rate = float(sample_rate)
         self.frames = frames
         self.color = bool(color)
+        #: NTSC unless told otherwise; PAL frames have to come in at 768x576
+        #: and 25 a second, which is the caller's to arrange.
+        self.standard = standard or NTSC
         self.workers = encode_workers(workers)
-        self.encoder = NtscEncoder(self.sample_rate, color=color)
+        self.encoder = NtscEncoder(self.sample_rate, color=color,
+                                   standard=self.standard)
         self._queue = Queue(maxsize=self.QUEUE_DEPTH)
         self._thread = None
         self._running = threading.Event()
@@ -442,7 +450,7 @@ class ntsc_source(gr.sync_block):
         #: The last complete frame, replayed when the encoder has not kept
         #: up. A frozen picture holds sync; blanking does not.
         self._last = None
-        self._blank = np.float32(ire_to_unit(IRE_BLANK))
+        self._blank = np.float32(self.standard.blank)
 
     # -- lifecycle -------------------------------------------------------
 
@@ -496,7 +504,8 @@ class ntsc_source(gr.sync_block):
                                   thread_name_prefix='ntsc-encode')
         free = Queue()
         for _ in range(self.workers):
-            free.put(NtscEncoder(self.sample_rate, color=self.color))
+            free.put(NtscEncoder(self.sample_rate, color=self.color,
+                                 standard=self.standard))
         pending = deque()
         n = self.encoder._n
         try:

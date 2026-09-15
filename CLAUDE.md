@@ -180,7 +180,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `amAudioInternalGeneratorLive.py` | AM with live/recorded audio | ✅ |
 | `ppmookAudioXmitter.py` | PPM-OOK live audio transmitter | ✅ |
 | `subcarrierRecordedAudio.py` | Subcarrier with recorded audio | ✅ |
-| `amVideoRecordedXmitter.py` | AM video transmitter | ⏳ |
+| `fmVideoXmitter.py` | FM video transmitter - analog FPV on 5.8 GHz, or ITU-R F.405 relay/satellite; NTSC or PAL | ✅ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ✅ |
 | `ntscReceiver.py` | NTSC analog video receiver - pictures and sound | ✅ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
@@ -791,14 +791,17 @@ Five things worth knowing before changing it:
 
 ### NTSC composite video
 
-`apps/ntsc_encode.py` builds a 525-line, 2:1 interlaced composite signal to
-SMPTE 170M-2004 - sync, blanking, equalizing pulses, serrations, colour burst
-and a quadrature-modulated chroma subcarrier - and `apps/ntsc_decode.py`
-takes it apart again. Both are free of GNU Radio and Qt, like the RDS pair, so
-they can be checked with no radio at all:
+`apps/ntsc_encode.py` builds a 2:1 interlaced composite signal - sync,
+blanking, equalizing pulses, serrations, colour burst and a
+quadrature-modulated chroma subcarrier - and `apps/ntsc_decode.py` takes it
+apart again: NTSC to SMPTE 170M-2004, and PAL to ITU-R BT.1700 Part B (see
+[PAL](#pal-625-lines) below; the modules kept their names). Both are free of
+GNU Radio and Qt, like the RDS pair, so they can be checked with no radio at
+all:
 
 ```sh
 python scripts/test_ntsc_loopback.py       # encoder -> decoder, no radio
+python scripts/test_pal_loopback.py        # ... the same for PAL
 python scripts/test_ntsc_transmit.py       # ... and through the modulator
 python scripts/test_ntsc_transmit.py --video clip.mp4   # picture and sound
 ```
@@ -812,26 +815,61 @@ grey ramp within 0.002 - it was 0.0089 and 0.0092 until blanking started
 coming off the back porch (below). `docs/S170m-2004.pdf` holds the timing
 tables (2 and 3), the levels (table 1) and the encoding equations (annex A).
 
-- **Blanking must be measured on the back porch, not guessed from a
-  histogram.** `levels()` reads the sync tip as a low percentile and
-  blanking as the commonest single level, since the porches occupy about
-  18% of every line at exactly one value. Bounding that search by a
-  fraction of the signal's own range is what broke it: the window was the
-  10-60% band of sync-to-white, which is right for an ordinary picture
-  (blanking lands at 45% of the range), but the top of that range is *the
-  brightest thing in this buffer*. On a dark scene it collapses toward
-  blanking, blanking moves to 89% of what is left, and the search window no
-  longer contains it - the estimate landed on dark picture content a
-  thousandth above the sync tip, and `find_pulses` returned **no pulses at
-  all**. The window is 5-98% now, which is what stops it failing; and
-  `decode_frame` then re-reads blanking on the breezeway between sync and
-  the colour burst, which is where a television clamps and is independent
-  of the picture entirely. That second reading is also what made the
-  loopback exact: off air the histogram sits about 19% high, because black
-  setup is 7.5 IRE above blanking and a dark picture makes *that* the
-  commonest level. Re-slicing with the corrected level is not worth the
-  fifth of a decode it costs - measured, 883 pulses either way - so it only
-  happens if the first estimate was out by more than half the span.
+- **Sync and blanking come off the pulses, not off how the samples are
+  distributed.** `levels()` makes a first guess and `decode_frame` refines
+  it: blanking on the breezeway after each line sync, which is where a
+  television clamps, and the sync tip in the middle of the pulses. The first
+  guess has failed twice, both times silently.
+  - It was the histogram's commonest level inside the 10-60% band of
+    sync-to-white. On a dark scene the top of that range collapses toward
+    blanking, which then sat outside the window: `find_pulses` found **no
+    pulses at all**, and off air 17 frames in a row failed every time a clip
+    reached a dark shot.
+  - Widened to 5-98% it held until there was noise. Then the porches spread
+    across many bins and any large flat area spread the same way over more
+    samples: with noise of 0.05 of the swing the commonest level on a white
+    picture was 2.5 times the sync-to-blanking step too high, and on colour
+    bars off the FM link it was the white bar. The slicer cut at blanking
+    level, every "pulse" was a whole blanking interval, and the picture came
+    out wrong **with no error raised**.
+  - Now it is two percentiles. Sync tips are about 8% of all samples and
+    blanking-level samples about the next 16%, whatever the picture does,
+    so the 4th percentile sits in the tips and the 20th in blanking. That
+    decoded every picture tried - white, black, grey, dark, 90% white,
+    saturated red and blue, clean and noisy, at 10 MS/s and 4x subcarrier -
+    and read real off-air signals within 0.96-1.09 of their back porch.
+  - The refinement matters as much. A low percentile of noisy samples sits
+    below the real tip by however far the noise reaches - the FM off-air
+    captures read 0.02-0.05 low - where the middle of the pulses reads
+    within 0.001, and the tip is half of what sets the picture's scale.
+  - **The breezeway is counted from where each pulse began plus the sync
+    width, not from where the slicer says it ended.** That end moves with
+    noise: on saturated red and blue a window hung off it slid onto the
+    edge and read blanking 0.011 low, against 0.0026. The front porch is
+    the obvious alternative and is worse where it matters - through the
+    vestigial-sideband transmitter the picture rings into it, and colour
+    came back 0.102 out against the breezeway's 0.081.
+
+  Getting blanking exactly right is also what made the loopback exact.
+  Re-slicing with the refined levels is not worth the fifth of a decode it
+  costs - measured, 883 pulses either way - so it only happens if the first
+  guesses were out by more than half the span.
+- **Chroma is taken out of luma before its envelope is turned to the
+  burst.** Decoded colour used to depend on which sample a buffer happened
+  to start on: colour bars straight from the encoder, never near a radio,
+  came back anywhere from 0.017 to 0.20 out as the first sample moved, and
+  0.59 out at a single pixel. To subtract chroma from luma the decoder
+  rebuilds the chroma waveform from its complex envelope, and it did that
+  *after* rotating the envelope to line up with the burst - so the rebuilt
+  chroma was out of phase with the real one by exactly that rotation, which
+  is set by where the buffer starts. Most of the chroma stayed in luma as a
+  dot pattern that a 40-row average mostly hid. `test_ntsc_loopback.py`
+  decoded from sample 0 at 4x subcarrier, the one start where the rotation
+  is zero, so it never showed; off air, where a buffer starts anywhere, it
+  was every frame. Fixed, twelve different starts all read the same, and
+  the NTSC transmit test's colour error - which had been put down to the
+  vestigial sideband - fell from 0.13 to 0.081. Both loopbacks now decode
+  from twelve starts.
 
 - **Every sample of a frame is computed at once.** The encoder used to walk
   the 525 lines in a Python loop, picking each line's samples out with
@@ -851,6 +889,54 @@ tables (2 and 3), the levels (table 1) and the encoding equations (annex A).
   to -20..+120 IRE. It is a no-op on 75% bars, which is why 75% is the
   standard test signal. Real 1950s material peaks around 0.94-1.01 against
   the 1.143 ceiling and never touches it.
+
+#### PAL, 625 lines
+
+The same encoder and decoder make and read 625-line PAL to ITU-R BT.1700
+Part B (`docs/1700-e.pdf`), which the FM video transmitter offers because
+FPV cameras send either. What differs between the standards is a table,
+`VideoStandard`: timing, levels, colour axes, and which half-lines of the
+frame carry equalizing pulses, broad pulses or nothing - the only
+structural difference. **NTSC's output is bit for bit what it was before
+PAL existed**, at every rate, colour and legalizer setting tried, and it
+encodes exactly as fast (32.3 ms a frame against 32.5).
+
+- **The numbers**, Tables 1-3: lines at 15,625 Hz, subcarrier
+  (1135/4 + 1/625) x fH = 4,433,618.75 Hz, a 64 us line with 12 us blanked,
+  sync 4.7 us, a ten-cycle burst from 5.6 us; sync -300 mV, blanking 0,
+  white 700 mV and no set-up; 576 active lines, sampled into 768x576 square
+  pixels at 25 frames a second. Each field-sync block is five equalizing,
+  five broad and five equalizing pulses, two and a half lines each. The
+  first field's block begins half-way through line 623, so its broad pulses
+  start exactly on line 1; the second's begins on 311. `test_pal_loopback.py`
+  finds 610 line syncs, 20 equalizing and 10 broad pulses in a frame.
+- **The V switch.** V, and the V half of the burst, change sign every line.
+  The encoder takes the sign from the absolute line count's parity, which
+  with an odd 625 lines repeats every two frames, as the standard's
+  eight-field sequence needs. The decoder cannot know it in advance: the
+  burst sits 45 degrees either side of -U, so four neighbouring lines'
+  bursts average to the reference axis, and each line's own burst, measured
+  against that, gives its sign. Four lines is 256 us, too short for two
+  radios' clocks to turn the subcarrier measurably. Reading the switch
+  backwards turns green magenta, which the test checks.
+- **The burst is left off the field-sync lines only.** BT.1700 blanks it on
+  a sequence that moves from field to field (Figs. 8 and 9) so that the
+  first burst after field sync always has the same phase. Here it is off on
+  the 16 lines with equalizing or broad pulses and on the other 609. A
+  receiver locked to the line-by-line swing does not need the sequence, and
+  a decoder that reads each line's own burst would lose colour on any active
+  line the sequence blanked.
+- **The legalizer's floor is -180 mV, not NTSC's scaled.** PAL's own 75%
+  bars swing down to -175 mV in red and blue, where NTSC's bottom out at
+  -16 IRE inside a -20 floor. A floor scaled from NTSC's (-140 mV) clipped
+  them, and bars came back 0.032 out; -180 passes them and stays above the
+  decoder's sync slice at -195.
+- **It costs more to encode**: a 768x576 frame at 12.5 MS/s takes 50.9 ms
+  of its 40 on one thread, 0.79x real time against NTSC's 1.03x, in
+  proportion to its 1.5 times as many samples.
+- **Every row lands on its row** whichever field a buffer opens on: a
+  six-row band decodes onto exactly rows 300-305 from buffers starting a
+  quarter, a half and four fifths of the way into a frame.
 
 ### NTSC video sources
 
@@ -957,10 +1043,11 @@ as `(row, column, [face, ...])`, where a face is
 `(label, module, icon, direction)` and direction is `'tx'` or `'rx'`.
 A tile with more than one face is a **flip tile**: a badge in its corner
 turns it over, and the icon and the caption both change with it. That is
-how the two ends of one standard share a square - the ATSC transmitter and
-receiver, the FM + RDS transmitter and the RDS receiver - instead of
-sitting apart as though they were unrelated apps. NTSC and AM video are
-single-faced for now and gain a second face when they have receivers.
+how the two ends of one standard share a square - the ATSC, NTSC and
+FM + RDS transmitters and their receivers - instead of sitting apart as
+though they were unrelated apps. FM video is single-faced for now and gains
+a second face when it has a receiver; `icons/fmVideoRx.jpg` is drawn
+already.
 
 **The grid follows the radio.** `RADIO_DIRECTIONS` says which way each of
 the four can go, and `apply_radio_directions()` runs on startup and again
@@ -1088,7 +1175,10 @@ to full 0.75 MHz above and falling to nothing 0.75 MHz below. Below that,
 both sidebands survive and add; above it only one does. Rectifying without
 the slope gives luma at twice chroma's strength - whites too bright, colours
 washed toward grey - which reads as a broken modulator and is not one. It
-took the measured colour error from 0.43 to 0.13.
+took the measured colour error from 0.43 to 0.13 - and much of what was
+left was the decoder, not the vestigial sideband: with its chroma
+separation fixed (see [NTSC composite video](#ntsc-composite-video)) the
+same test reads 0.081, and its tolerance came down from 0.15 to 0.10.
 
 **Verified with real material**: 1950s Prelinger advertising and the Blender
 open movies through the whole chain and back, **0.00002-0.0099 mean error**
@@ -1231,6 +1321,157 @@ tracks the programme between 1.7 and 6.5 kHz rms, the picture goes on
 decoding at 17.6 frames a second beside it, and the recovered audio
 correlates **0.999** with the same clip decoded locally, the next-best
 alignment scoring 8% of that.
+
+### FM Video Transmitter
+
+`fmVideoXmitter.py` frequency-modulates a carrier with composite video and
+puts the sound on FM subcarriers above the picture, in the same baseband.
+That is what an analog FPV drone sends on 5.8 GHz, and what analog
+microwave relay and satellite links sent. It replaced the AM video
+transmitter, which matched nothing a real transmitter sends.
+
+**One app, with a Standard pull-down.** FPV and a microwave relay are the
+same transmitter with different numbers, so the dialog's first choice fills
+in the rest - channel plan, deviation, pre-emphasis - and leaves them
+editable, so an FPV transmitter that turns out to deviate differently from
+the datasheet's hint can be matched without touching code. The numbers live
+in `apps/fm_video_core.py`, free of GNU Radio and Qt:
+
+| | FPV drone (RTC6705) | Microwave relay / satellite (ITU-R F.405) |
+|---|---|---|
+| Deviation | 5 MHz p-p for 1 V, at every frequency | 8 MHz p-p for 1 V at the curve's crossover - 0.7616 MHz for 525 lines, 1.512 for 625 - which is 2.53 or 2.255 MHz at low frequencies |
+| Picture pre-emphasis | none | F.405's shelf for the picture's line count: 525 lines, zero at 187 kHz, pole at 875 kHz, 10 dB down at DC; 625 lines, zero at 313 kHz, pole at 1.565 MHz, 11 dB down |
+| Sound | FM subcarriers at 6.0 MHz (left) and 6.5 MHz (right), -27.5 dBc, +-25 kHz, 12 kHz corner | one at 6.8 MHz, -20 dBc, +-50 kHz, 75 us |
+| Channels | 40, bands A, B, E, F and R | a typed frequency |
+| 99% bandwidth, colour bars | 9.1 MHz in NTSC, 10.4 in PAL | 14.7 MHz in NTSC, 14.6 in PAL |
+
+**And a Format pull-down: NTSC or PAL.** FPV cameras and goggles do either,
+and a transmitter sends whatever its camera gives it. The format picks the
+encoder's standard, the picture's size and rate (640x480 at 29.97, 768x576
+at 25), the rate the picture is encoded at, and which of F.405's curves
+applies; changing the format moves an F.405 choice onto the curve for the
+new line count. The standard itself is described under [PAL](#pal-625-lines).
+
+The sources are in `docs/`: `RTC6705-DST-001.pdf` and `RTC6715-DST-001.pdf`
+(the transmitter and receiver chips nearly all analog FPV gear is built on)
+and `R-REC-F.405-1-197007-W.pdf`. Two of the numbers are this project's
+choices rather than a document's, and are worth measuring against real
+equipment before they are trusted:
+
+- **Neither RichWave datasheet gives the video deviation or any video
+  pre-emphasis.** 5 MHz p-p is the receiver's sensitivity test condition
+  (+-2.5 MHz), the only video deviation either mentions. FPV transmitter
+  modules add an R/C pre-emphasis of their own whose values nobody
+  publishes, so there is none here.
+- **F.405 says nothing about sound.** One subcarrier at 6.8 MHz with 75 us
+  is what analog C-band satellite channels commonly carried; its level and
+  deviation are chosen.
+
+```sh
+python scripts/test_fm_video_transmit.py                  # both standards, no radio
+python scripts/test_fm_video_transmit.py --video clip.mp4 # ... picture and sound
+```
+
+Things worth knowing before changing it:
+
+- **A sampled FM modulator over-deviates the top of the baseband.**
+  `frequency_modulator_fc` sums phase a sample at a time, and a running sum
+  is not an integral: for a tone of w radians per sample it has
+  w/(2 sin(w/2)) times the gain - +0.64 dB at 4.2 MHz of 20 MS/s, +1.72 dB
+  at 6.8 MHz. A spectrum analyser, or a real goggle's discriminator, sees
+  the true swing, so the subcarriers' sidebands read 0.5-1.3 dB high until
+  the transmitter took it out: an FIR on the picture
+  (`integrator_compensation_taps`), an exact correction in each
+  subcarrier's level. Afterwards they measure -27.50 and -20.00 dBc, as
+  specified. A receiver that differences phase reads the same amount
+  *low*, which `discriminator_compensation_taps` puts back.
+- **The subcarriers are added after the pre-emphasis.** F.405's curve is for
+  the picture.
+- **The picture is encoded slower than the radio runs and interpolated up.**
+  The encoder cannot keep up at 20 MS/s. NTSC is encoded at 10 MS/s and
+  interpolated by 2. PAL cannot be: its chroma sidebands reach 5.7 MHz,
+  which at 10 MS/s would fold back onto the chroma itself, so it is encoded
+  at 12.5 and interpolated by 8/5 (`VIDEO_RATES`). The interpolator's
+  passband is 0.45 of the video rate (`INTERPOLATOR_BW`); GNU Radio's
+  default 0.4 is flat only to 4 MHz at NTSC's rate.
+- **20 MS/s for every radio**, the HackRF's ceiling, and both standards fit
+  inside it in both formats. The USRP here has a WBX, which stops at
+  2.2 GHz, so it cannot reach 5.8 GHz at all.
+- **F.405's networks are bilinear transforms whose one free constant is
+  searched for.** The transform keeps a network's gain at DC and at the top
+  exactly and moves the frequency axis in between. With the textbook
+  constant the 525-line curve came out 0.048 dB off at 4.2 MHz, 35% of the
+  recommendation's tolerance - but the 625-line curve's pole is nearly twice
+  as high, and it came out 0.145 dB off at 5 MHz, 101%, just outside.
+  Pre-warping the zero and pole, the other textbook answer, doubled both.
+  So `coefficients` tries the constants that match the curve exactly at
+  each of 160 frequencies and keeps whichever lands the worst point furthest
+  inside the tolerance: 32% for 525 lines, 90% for 625.
+  `iir_filter_ffd(b, a, False)` reads the taps the way scipy writes them,
+  checked to 4e-7.
+- **FM has a threshold, and the test shows it.** With noise added to the FPV
+  signal, every dB of carrier is a dB of picture down to about 12 dB
+  carrier-to-noise in 20 MHz - 42.8 dB of picture at 30, 32.8 at 20, 24.7
+  at 12 - with no clicks at all from 15 dB up. Below that the damage
+  arrives as clicks, the sparkles of a weak FM picture: 26 a frame at
+  10 dB, 456 at 8, 3,588 at 6, 15,055 at 4. An AM picture fades into snow
+  instead.
+
+Four things about measuring it cost time, and none of them was in the
+transmitter:
+
+- **Judge the link by waveform, not by decoded colour.** Decoded colour
+  measures the decoder as well as the link, and at the time the decoder's
+  colour depended on which sample a buffer started on - a bug, since fixed
+  (see [NTSC composite video](#ntsc-composite-video)). It read as the FM
+  chain being 0.168 wrong for both standards, to six figures - identical for
+  two different modulations, which is what gave it away.
+- **Compare against the composite through the same video filters, not the
+  untouched original.** The encoder's bars switch in a single sample and
+  carry energy up to the video rate's Nyquist that no real video path
+  passes; against the original that alone reads 21 dB. Against the
+  filters-only reference the FM chain is 118-136 dB transparent in NTSC and
+  83-88 dB in PAL, whose 8/5 resampling is the difference.
+- **Find the alignment on the luma, and not too far away.** Colour bars
+  repeat every line and their chroma every other frame or so, so a match a
+  whole line away scores nearly as well as the right one - and lands the
+  chroma upside down. And at PAL's 12.5 MS/s the 4.43 MHz chroma is 2.8
+  samples a cycle, so a full-band correlation swings from 0.30 to 0.94
+  between neighbouring lags while the true delay, through 8/5 resampling, is
+  a fraction of a sample no whole lag lands on: the best whole lag was two
+  lines away, and PAL bars read 24 dB where they are 83. The lag is found on
+  a copy low-passed to 1.5 MHz, whose peak is broad; searched only 200
+  samples either way in software; tried three lines either side off the
+  air, keeping the smallest residual; and the fraction is fitted from the
+  phase below 3 MHz.
+- **The median of the swing is not the carrier's offset.** Colour bars spend
+  their time a little above the rest frequency and read as 80 kHz, 13.7 ppm,
+  off. Sync tip and blanking are the levels the standard fixes, so the
+  off-air analysis slices at its own sync-to-blanking step and reads both
+  off the pulses - which the decoder itself now does too.
+
+**Verified off air**, the VSG60 on TVAdemo transmitting on FPV channel F4
+(5800 MHz) at -9.5 dBm into the BB60D here at 60% gain and 20 MS/s, the
+app's own flowgraph run headless. A sweep of 5645-5945 MHz beforehand found
+WiFi at 5742-5763 MHz and nothing else.
+
+| | FPV, colour bars | FPV, Chevrolet clip with sound | F.405, colour bars |
+|---|---|---|---|
+| Carrier-to-noise in 20 MHz | 18.6 dB | 18.7 dB | 17.6 dB |
+| Clicks | none in 90 frames | none | none |
+| Frames decoded | 51 of 51 | 51 of 51 | 51 of 51 |
+| Line rate | 15734.2-15734.3 Hz | the same | the same |
+| Sync-to-blanking step, against sent | -2.9% | -0.4% | -0.6% |
+| Picture, p-p over rms in 4.2 MHz | 29.0 dB | - | 35.4 dB |
+| Sound | - | both subcarriers the clip's own (0.992, 0.991); sidebands -27.5 and -27.7 dBc | - |
+
+The carrier sat 0.1-0.3 ppm from where it was tuned, both radios together,
+which is the BB60D's own reference as before. At the same power F.405's
+larger deviation and its pre-emphasis bought about 7 dB more picture than
+FPV for 1.6 times the bandwidth, which is FM's whole trade in one line.
+TVAdemo ran the transmitter on 4.3 cores with bars and 5.0 with the clip,
+repeating a frame only while starting, and the no-radio test there held
+the radio's 20 MS/s exactly with no repeats.
 
 ### How every dialog gets laid out
 
