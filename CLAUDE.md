@@ -937,6 +937,25 @@ encodes exactly as fast (32.3 ms a frame against 32.5).
 - **Every row lands on its row** whichever field a buffer opens on: a
   six-row band decodes onto exactly rows 300-305 from buffers starting a
   quarter, a half and four fifths of the way into a frame.
+- **A PAL frame is a whole number of samples, so frame boundaries are worked
+  in samples.** The encoder found where each frame ends in seconds - floor
+  the start time over the frame period, step one, ceil back to samples -
+  which is harmless while a frame is never a whole number of samples, and
+  NTSC's never is. PAL's is: 500,000 at 12.5 MS/s, 800,000 at 20. Frames
+  came out a sample long, then a sample short, and at frame 30, 1.2 s in, a
+  quotient that should have been a whole number came out a hair under it:
+  that frame ended where it began, and so did every frame after it. The
+  source block took an empty frame as the one to replay when the encoder
+  fell behind, and looped on it without producing a sample - so the
+  transmitter went quiet after 1.2 s and **could not be stopped**:
+  `tb.wait()` never returned, and the FM video test sat on TVAdemo for ten
+  hours with three threads spinning. Boundaries now snap to a whole sample
+  when they are within rounding of one, a frame is never empty, and the
+  source refuses one if it ever is. PAL then runs at exactly the radio's
+  rate, repeats nothing after warm-up, and stops at once; NTSC's stream is
+  bit for bit unchanged. The loopbacks never saw it because they encode two
+  or three frames and the fault needed thirty, so `test_pal_loopback.py`
+  now walks 100,000 frame boundaries.
 
 ### NTSC video sources
 
@@ -1733,6 +1752,13 @@ video clips are 322 MB and took 47 seconds.
   sits in the repo and `VSG_API_LIB=/data/python/SDR/vendor` points
   `vsg_sink` at it, so nothing needs Sceptre. The udev rule is already in
   place and the device node comes up mode 0666.
+- **Put a timeout on anything run there that could hang.** A test run over
+  SSH with its output filtered through `grep` shows nothing until it exits,
+  so a hang looks exactly like a slow run: the FM video test hung there on a
+  PAL frame-boundary fault (see [PAL](#pal-625-lines)) and ran for ten hours
+  with three threads spinning, holding up the off-air job waiting behind
+  it. `timeout` on the remote command turns that into a failure within
+  minutes.
 - **Launch the transmitter and start the receiver as two commands.** A job
   put in the background inside an SSH command can hold that command open
   until the job ends: with `setsid nohup bash -ic ... > log 2>&1 < /dev/null

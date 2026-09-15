@@ -103,6 +103,23 @@ check("the burst is left off the field-sync lines only - 609 lines carry it",
 check("the decoder counts 17 lines to the picture in both fields",
       dec.field_offsets == (17, 17), str(dec.field_offsets))
 
+print("\nframes stay whole frames for as long as it runs")
+# At 12.5 MS/s a PAL frame is exactly 500,000 samples. Boundaries worked out
+# in seconds came out a sample long, then a sample short, then - at frame 30,
+# 1.2 s in - empty, and every frame after that was empty too: the
+# transmitter went quiet and could not be stopped. The checks here encode
+# two or three frames, which never reaches it, so walk a long run.
+for rate in (12.5e6, 20e6):
+    enc = CompositeEncoder(rate, standard=PAL)
+    n, sizes = 0, set()
+    for _ in range(100000):
+        start, end = enc.frame_bounds(n)
+        sizes.add(end - start)
+        n = end
+    want = int(round(PAL.frame * rate))
+    check(f"100,000 frames at {rate / 1e6:g} MS/s, every one exactly {want} samples",
+          sizes == {want}, str(sorted(sizes)[:4]))
+
 print("\ncolour bars at 4x subcarrier")
 enc = CompositeEncoder(fs, standard=PAL)
 src = colour_bars()

@@ -518,6 +518,14 @@ class ntsc_source(gr.sync_block):
                               file=sys.stderr)
                         return
                     start, end = self.encoder.frame_bounds(n)
+                    if end <= start:
+                        # A frame with no samples in it can only come from a
+                        # timing fault, and it must never reach work(): the
+                        # queue would fill with them and nothing would ever
+                        # come out. Stop instead, and say why.
+                        print(f"NTSC source: empty frame at sample {start}; "
+                              "stopping", file=sys.stderr)
+                        return
                     pending.append(pool.submit(self._encode_one, free, frame,
                                                start))
                     n = end
@@ -578,9 +586,14 @@ class ntsc_source(gr.sync_block):
         while done < want:
             if self._buf is None or self._pos >= self._buf.size:
                 try:
-                    self._buf = self._queue.get(timeout=0.002)
-                    self._pos = 0
-                    self._last = self._buf
+                    buf = self._queue.get(timeout=0.002)
+                    if buf.size == 0:
+                        # Never adopt an empty frame, and never keep one to
+                        # replay: replaying it is a loop that makes no
+                        # progress, and the block would never return.
+                        continue
+                    self._buf, self._pos = buf, 0
+                    self._last = buf
                 except Empty:
                     if not self._running.is_set():
                         return -1 if done == 0 else done

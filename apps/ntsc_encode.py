@@ -359,10 +359,27 @@ class NtscEncoder:
         caller encoding frames on several threads has to know where the next
         frame starts *before* this one has finished - see ``ntsc_source``.
         """
-        frame = self.standard.frame
-        start_time = int(n0) / self.sample_rate
-        end_time = (np.floor(start_time / frame) + 1) * frame
-        return int(n0), int(np.ceil(end_time * self.sample_rate))
+        # **In samples, with rounding kept out of it.** This was worked in
+        # seconds - floor the start time over the frame period, step one
+        # frame, ceil back to samples - which is harmless while a frame is
+        # never a whole number of samples, as NTSC's is not. PAL's is: at
+        # 12.5 MS/s exactly 500,000. Then a boundary lands exactly on a
+        # sample, a quotient that should be a whole number comes out a hair
+        # under it, and the "next" frame ends where it starts. The start then
+        # never advances, every frame after it is empty, and the source block
+        # replayed empty frames in a loop that never filled its output - the
+        # PAL transmitter produced 1.2 s of signal in 4 and then could not be
+        # stopped, which is how a test on TVAdemo ran for ten hours.
+        n0 = int(n0)
+        per_frame = self.standard.frame * self.sample_rate
+        k = int(np.floor(n0 / per_frame + 1e-9))
+        while True:
+            edge = (k + 1) * per_frame
+            nearest = round(edge)
+            end = int(nearest) if abs(edge - nearest) < 1e-3 else int(np.ceil(edge))
+            if end > n0:
+                return n0, end
+            k += 1
 
     def _frame_slice(self):
         """Sample indices whose time falls in the next frame."""
