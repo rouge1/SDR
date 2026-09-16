@@ -19,6 +19,15 @@ On Windows it is `start_app.ps1` instead, and the environment comes from
 `environment-windows.yml` rather than `environment.yml` - see
 [Running on Windows](#running-on-windows).
 
+There is also a browser front end onto the same grid and the same settings,
+which starts the same apps as separate processes - see
+[Web launcher](#web-launcher-a-second-front-end):
+
+```sh
+conda activate gnu
+python web/server.py                 # http://127.0.0.1:8730
+```
+
 ## Architecture
 
 This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applications. The launcher presents a grid of buttons, each opening a config dialog before launching a GNU Radio flowgraph.
@@ -1633,6 +1642,94 @@ it (see its notes); nothing else did.
   hunting for its pixels. Window close buttons sit at `(X + WIDTH - 33,
   Y + 30)` from the frame geometry xdotool reports, *not* at its corner.
 
+### Web launcher (a second front end)
+
+`web/server.py` serves the grid, the settings and the icons to a browser and
+starts each app as its own process. The flowgraph and its configuration
+dialog are the ones that already exist, unchanged: this is a second front end
+onto the same `APP_TILES` table and the same `window_settings.json`, not a
+replacement, and `gnuradio_launcher.py` is untouched. Run either, or both.
+
+```sh
+conda activate gnu
+python web/server.py                 # http://127.0.0.1:8730
+python web/server.py --host 0.0.0.0  # prints a URL with a token in it
+```
+
+| File | Does |
+|------|------|
+| `web/server.py` | Serves the page and icons, reads and writes the settings file, starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
+| `web/index.html` | The page: grid, settings, and what is running. |
+| `apps/_run.py` | Runs one app module with its own Qt event loop. |
+| `scripts/probe_radio.py` | Asks whether a radio is there, in a process that then exits. |
+| `web/prototype/index.html` | A mockup of a browser *panel* for a running app, drawn from simulated AM. Nothing behind it - it is the design reference for that step, not part of the launcher. |
+
+The window opens on the display the **server** can reach, not in the browser,
+so start the server from the desktop session that owns the screen and it
+inherits `DISPLAY` and `XAUTHORITY`. That makes the useful shape phone as the
+control surface, bench monitor as the display - it is not remote operation.
+The page says so plainly when `DISPLAY` is missing rather than launching apps
+into nothing. On Windows this is the session-0 problem already described
+under [Running on Windows](#running-on-windows).
+
+Things worth knowing before changing it:
+
+- **The server must never open a radio.** `launch_application` enumerates the
+  HackRF before launching, and the process that asks keeps a USB handle
+  afterwards - which is why a launcher sitting on a config dialog already
+  makes the app that follows fail with `Device::make() no match`. The desktop
+  launcher gets away with it because it is the same process that goes on to
+  build the flowgraph. A server that lives for days would hold that handle
+  for days and break every launch after the first. So every presence check -
+  HackRF, BB60D, VSG - runs in `scripts/probe_radio.py`, a process that exits
+  and takes its handles with it. Its refusals repeat the desktop launcher's
+  wording so both front ends say the same thing.
+- **`apps/_run.py` exists because a module cannot run itself.** Each app's
+  `main()` ends `if app.instance(): return tb else: return app.exec_()`,
+  which is the launcher contract above - the launcher already owns a
+  QApplication and its loop. But `app.instance()` is truthy the moment a
+  QApplication exists, so a module run directly takes that same branch: it
+  builds the flowgraph, shows the window, returns, and the window never gets
+  an event loop. `_run.py` is the piece the desktop launcher usually
+  supplies. It also does the `XInitThreads()` each app's own `__main__` block
+  does, since importing a module skips that block.
+- **Single mode means something different here.** The desktop launcher hides
+  its window while an app runs and shows it again on close, which a browser
+  cannot do. The server holds the processes instead, so the page lists what
+  is running with a Stop button - something the desktop launcher cannot do -
+  and single mode is an enforced one-at-a-time rather than an implicit one.
+  Stop is `terminate`, which lands on the `SIGTERM` handler every app already
+  installs.
+- **Loopback is open, wider is not.** Sitting at the machine is already the
+  permission, so `127.0.0.1` needs no token. `--host` anything else mints one
+  and puts it in the printed URL. Every tile keys a transmitter and 0 % power
+  is not off, so treat that URL as the key it is.
+- **The grid is `APP_TILES`, read with `ast`.** The server never imports the
+  launcher - that would open a window and pull in PyQt5. It reads the table
+  out of the source the same way `scripts/test_launcher_gui.py` does and for
+  the same reason, so keep `APP_TILES` a plain literal and all three keep
+  working.
+- **Settings are merged, not replaced.** `window_position`, `dialog_position`
+  and the tile-face state the desktop app keeps in the same file all survive
+  being edited from a browser. Which side a tile is showing is per-viewer
+  here, in `localStorage`, rather than fought over in the shared file.
+
+Exercised so far: the tile table parsing, the settings round trip and its
+merge, every launch refusal (wrong direction, single mode, unknown module,
+radio absent), spawn, the running list, reaping, Stop, and the token. All of
+it against a stubbed interpreter, because it was written on a machine without
+the `gnu` environment. **Not yet exercised: anything involving real GNU Radio
+or a real radio** - in particular the assumption the whole design rests on,
+that the probe subprocess releases the USB handle in time for the app that
+follows.
+
+The per-app configuration dialogs are still Qt, and appear on the server's
+display like the flowgraph does. Moving them into the browser needs no app
+edits: `apps/_run.py` already takes `--config values.json` and skips the
+dialog when given one. What it needs is a parameter manifest per app, which
+would also retire the duplication where a range is stated once in
+`ConfigDialog` and again in the flowgraph's `RangeWidget`.
+
 ### Signal Hound BB60D as a receiver
 
 The BB60D works well for RDS (0.0 % block errors on a strong station) but is
@@ -1874,7 +1971,9 @@ go looking for it there.
    app transmits or receives. To give an existing app a second side instead
    of a square of its own - a receiver for a transmitter, say - add a face
    to that tile's list rather than a row. The direction is all the grid
-   needs to dim it, flip it and refuse it on the wrong radio.
+   needs to dim it, flip it and refuse it on the wrong radio. Both front ends and
+   `scripts/test_launcher_gui.py` read that one table, so a row added there
+   appears in all three.
 
 ## Environment
 

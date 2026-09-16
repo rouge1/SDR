@@ -1,0 +1,853 @@
+<title>RF Bench Console</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">
+<style>
+:root{
+  --ground:#10151a;
+  --panel:#1a2228;
+  --panel-2:#212b32;
+  --well:#0c1013;
+  --rule:#2e3a43;
+  --rule-soft:#222c33;
+  --ink:#e6ecef;
+  --ink-2:#93a3ad;
+  --ink-3:#5d6d78;
+  --live:#ff9b21;
+  --live-dim:#8a5511;
+  --trace:#cfe0e8;
+
+  --f-num:"Barlow Semi Condensed","Helvetica Neue",Arial,sans-serif;
+  --f-ui:"Barlow","Helvetica Neue",Arial,sans-serif;
+
+  --s-xs:.75rem; --s-sm:.8125rem; --s-md:.9375rem;
+  --s-lg:1.125rem; --s-xl:1.5rem; --s-2xl:2.25rem;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--f-ui); font-size:var(--s-md); line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:0 48px}
+
+/* ---------------------------------------------------------------- rail */
+.rail{
+  position:sticky; top:env(safe-area-inset-top,0px); z-index:20;
+  background:var(--ground); border-bottom:1px solid var(--rule);
+}
+.rail-in{
+  max-width:1180px;margin:0 auto;padding-inline:16px;
+  display:flex;align-items:center;gap:16px;min-height:52px;flex-wrap:wrap;
+}
+.mark{font-family:var(--f-num);font-weight:600;font-size:var(--s-lg);letter-spacing:.01em}
+.back{
+  display:flex;align-items:center;gap:7px;color:var(--ink-2);
+  font-size:var(--s-sm);padding:5px 9px;margin-left:-9px;border-radius:2px;
+}
+.back:hover{color:var(--ink);background:var(--panel)}
+.back svg{flex:none}
+.rail-r{margin-left:auto;display:flex;align-items:center;gap:14px}
+
+.radio-pick{display:flex;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:2px}
+.radio-pick button{
+  padding:5px 10px;font-size:var(--s-xs);color:var(--ink-2);background:var(--panel);
+}
+.radio-pick button[aria-pressed="true"]{background:var(--panel-2);color:var(--ink)}
+.radio-pick button:hover{color:var(--ink)}
+
+.lamp{display:flex;align-items:center;gap:8px;font-size:var(--s-xs);color:var(--ink-3);
+  font-family:var(--f-num);font-weight:600;letter-spacing:.12em}
+.lamp .bulb{width:9px;height:9px;border-radius:50%;background:var(--rule);flex:none}
+body.live .lamp{color:var(--live)}
+body.live .lamp .bulb{background:var(--live);box-shadow:0 0 10px var(--live)}
+
+/* ------------------------------------------------------------- launcher */
+.grid-intro{padding-block:28px 4px;max-width:58ch}
+.grid-intro h1{font-family:var(--f-num);font-weight:600;font-size:var(--s-2xl);margin:0 0 6px;text-wrap:balance}
+.grid-intro p{margin:0;color:var(--ink-2)}
+
+.bank{padding-block:26px 0}
+.bank-name{
+  font-size:var(--s-sm);color:var(--ink-2);margin:0 0 10px;
+  display:flex;align-items:baseline;gap:12px;
+}
+.bank-name::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
+.bank-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:10px}
+
+.tile{
+  position:relative;background:var(--panel);border:1px solid var(--rule);border-radius:2px;
+  padding:14px 12px 12px;text-align:left;display:flex;flex-direction:column;gap:10px;
+  min-height:132px;transition:border-color .12s,background .12s;
+}
+.tile:hover{border-color:var(--ink-3);background:var(--panel-2)}
+.tile .face{display:flex;flex-direction:column;gap:10px;flex:1;
+  transition:transform .19s ease-in,opacity .19s ease-in}
+.tile.turning .face{transform:scaleX(.02);opacity:.15}
+.tile svg{color:var(--ink-2)}
+.tile:hover svg{color:var(--ink)}
+.tile .name{font-size:var(--s-sm);line-height:1.25;margin-top:auto}
+.tile .dir{
+  font-family:var(--f-num);font-size:var(--s-xs);color:var(--ink-3);
+  letter-spacing:.1em;font-weight:600;
+}
+.tile.rx .dir{color:var(--ink-3)}
+.flip{
+  position:absolute;top:6px;right:6px;width:26px;height:26px;border-radius:2px;
+  display:grid;place-items:center;color:var(--ink-3);border:1px solid transparent;
+}
+.flip:hover{color:var(--ink);border-color:var(--rule);background:var(--well)}
+.status{
+  margin-top:22px;padding:11px 13px;border-left:2px solid var(--rule);
+  color:var(--ink-2);font-size:var(--s-sm);min-height:44px;
+}
+.status b{color:var(--ink);font-weight:500}
+
+/* ---------------------------------------------------------------- panel */
+.hero{
+  display:flex;align-items:flex-end;gap:32px;flex-wrap:wrap;
+  padding-block:30px 26px;border-bottom:1px solid var(--rule);
+}
+.readout-block{flex:1 1 380px;min-width:0}
+.readout-label{font-size:var(--s-sm);color:var(--ink-2);margin:0 0 2px}
+.readout{display:flex;align-items:baseline;gap:.12em;font-family:var(--f-num);
+  font-weight:700;font-size:clamp(3.2rem,11vw,6rem);line-height:.92;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.digit{
+  padding:0 .01em;border-bottom:3px solid transparent;color:var(--ink);
+  border-radius:0;
+}
+.digit.lead{color:var(--ink-3)}
+.digit:hover{border-bottom-color:var(--rule)}
+.digit:focus-visible{outline:none;border-bottom-color:var(--ink);color:var(--ink)}
+.dot{color:var(--ink-3)}
+.unit{font-size:clamp(1.1rem,3.2vw,1.7rem);font-weight:500;color:var(--ink-2);margin-left:.22em}
+.readout-hint{margin:8px 0 0;font-size:var(--s-xs);color:var(--ink-3)}
+
+.key{
+  flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  width:132px;height:88px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:2px;font-family:var(--f-num);font-weight:600;letter-spacing:.06em;
+  color:var(--ink-2);transition:background .16s,border-color .16s,color .16s;
+}
+.key:hover{border-color:var(--ink-3);color:var(--ink)}
+.key .k-sub{font-family:var(--f-ui);font-size:var(--s-xs);letter-spacing:0;font-weight:400;color:var(--ink-3)}
+body.live .key{background:var(--live);border-color:var(--live);color:#1a1004}
+body.live .key .k-sub{color:#4a2f08}
+
+.cols{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:26px;padding-block:24px}
+@media (max-width:820px){.cols{grid-template-columns:1fr;gap:22px}}
+
+.plot{background:var(--well);border:1px solid var(--rule);border-radius:2px;overflow:hidden}
+.plot-head{
+  display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  padding:9px 12px 8px;border-bottom:1px solid var(--rule-soft);
+}
+.plot-head h2{margin:0;font-size:var(--s-sm);font-weight:500}
+.plot-head span{font-size:var(--s-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.plot canvas{display:block;width:100%;max-width:100%}
+.plot-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+@media (max-width:520px){.plot-pair{grid-template-columns:1fr}}
+
+.ctrl-stack{display:flex;flex-direction:column;gap:2px}
+.ctrl{padding:13px 0;border-bottom:1px solid var(--rule-soft)}
+.ctrl:first-child{padding-top:0}
+.ctrl-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.ctrl-top label{font-size:var(--s-sm);color:var(--ink-2)}
+.ctrl-val{font-family:var(--f-num);font-weight:600;font-size:var(--s-xl);
+  font-variant-numeric:tabular-nums;line-height:1.1}
+.ctrl-val small{font-family:var(--f-ui);font-size:var(--s-xs);font-weight:400;color:var(--ink-2);margin-left:5px}
+.ctrl-sub{font-size:var(--s-xs);color:var(--ink-3);margin-top:1px;font-variant-numeric:tabular-nums}
+
+input[type=range]{
+  -webkit-appearance:none;appearance:none;width:100%;height:22px;background:none;margin-top:6px;
+}
+input[type=range]::-webkit-slider-runnable-track{height:2px;background:var(--rule)}
+input[type=range]::-moz-range-track{height:2px;background:var(--rule)}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:12px;height:22px;background:var(--ink-2);border-radius:1px;margin-top:-10px;
+}
+input[type=range]::-moz-range-thumb{width:12px;height:22px;background:var(--ink-2);border:none;border-radius:1px}
+input[type=range]:hover::-webkit-slider-thumb{background:var(--ink)}
+input[type=range]:hover::-moz-range-thumb{background:var(--ink)}
+
+.seg{display:flex;gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:2px;margin-top:8px}
+.seg button{flex:1;padding:6px 8px;font-size:var(--s-sm);background:var(--panel);color:var(--ink-2)}
+.seg button[aria-pressed="true"]{background:var(--panel-2);color:var(--ink)}
+.seg button:hover{color:var(--ink)}
+.ctrl[data-off="1"]{opacity:.42}
+.ctrl[data-off="1"] .seg button{cursor:not-allowed}
+
+.note{
+  margin-top:20px;padding:12px 14px;background:var(--panel);border:1px solid var(--rule);
+  border-radius:2px;font-size:var(--s-sm);color:var(--ink-2);
+}
+.note b{color:var(--ink);font-weight:500}
+.foot{padding-block:34px 0;border-top:1px solid var(--rule);margin-top:34px;
+  color:var(--ink-3);font-size:var(--s-sm);max-width:66ch}
+.foot p{margin:0 0 9px}
+.foot code{font-family:var(--f-ui);color:var(--ink-2)}
+
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+</style>
+
+<header class="rail">
+  <div class="rail-in">
+    <button class="back" id="nav" type="button">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+        <path d="M8 2.5L4 6.5l4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span id="nav-text">All apps</span>
+    </button>
+    <span class="mark" id="mark">AM Sine Generator</span>
+    <div class="rail-r">
+      <div class="radio-pick" id="radio-pick" role="group" aria-label="Radio">
+        <button type="button" data-radio="hackrf" aria-pressed="true">HackRF One</button>
+        <button type="button" data-radio="usrp" aria-pressed="false">Ettus USRP</button>
+        <button type="button" data-radio="vsg" aria-pressed="false">VSG60</button>
+      </div>
+      <span class="lamp"><span class="bulb"></span>ON AIR</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- ======================================================= launcher view -->
+<section id="view-grid" hidden>
+  <div class="grid-intro">
+    <h1>Pick a signal</h1>
+    <p>Twelve flowgraphs, grouped the way the bench is: plain generators, then audio, then video. A tile with a badge has two sides — the transmitter and the receiver for one standard share a square.</p>
+  </div>
+  <div id="banks"></div>
+  <p class="status" id="status">Only the AM Sine panel is built in this prototype. Every other tile shows what the grid does.</p>
+</section>
+
+<!-- ========================================================== panel view -->
+<section id="view-panel">
+  <div class="hero">
+    <div class="readout-block">
+      <p class="readout-label">Center frequency</p>
+      <div class="readout" id="readout" role="group" aria-label="Center frequency in megahertz"></div>
+      <p class="readout-hint">Click a digit, then <b>↑↓</b> to step that decade, <b>←→</b> to move, or type a number. 50 to 2200 MHz.</p>
+    </div>
+    <button class="key" id="rf-key" type="button" aria-pressed="false">
+      <span id="rf-key-text">RF OFF</span>
+      <span class="k-sub" id="rf-key-sub">Nothing radiating</span>
+    </button>
+  </div>
+
+  <div class="cols">
+    <div>
+      <div class="plot">
+        <div class="plot-head">
+          <h2>Modulated spectrum</h2>
+          <span id="span-label">span 200 kHz · 2 MS/s</span>
+        </div>
+        <canvas id="spec" height="280"></canvas>
+      </div>
+      <div class="plot-pair">
+        <div class="plot">
+          <div class="plot-head"><h2>Baseband time domain</h2><span>I · Q</span></div>
+          <canvas id="scope" height="168"></canvas>
+        </div>
+        <div class="plot">
+          <div class="plot-head"><h2>IQ polar plot</h2><span id="locus-label">locus</span></div>
+          <canvas id="polar" height="168"></canvas>
+        </div>
+      </div>
+      <p class="note" id="floor-note"></p>
+    </div>
+
+    <div class="ctrl-stack">
+      <div class="ctrl">
+        <div class="ctrl-top">
+          <label for="pwr">RF output power</label>
+          <span class="ctrl-val" id="pwr-val">50<small>%</small></span>
+        </div>
+        <div class="ctrl-sub" id="pwr-sub"></div>
+        <input type="range" id="pwr" min="0" max="100" step="1" value="50">
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-top">
+          <label for="mod">Modulation index</label>
+          <span class="ctrl-val" id="mod-val">1.000</span>
+        </div>
+        <div class="ctrl-sub" id="mod-sub"></div>
+        <input type="range" id="mod" min="0" max="10" step="0.001" value="1">
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-top">
+          <label for="sine">Sine frequency</label>
+          <span class="ctrl-val" id="sine-val">1000<small>Hz</small></span>
+        </div>
+        <div class="ctrl-sub">0.1 Hz to 20 kHz</div>
+        <input type="range" id="sine" min="1" max="200000" step="1" value="10000">
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-top"><label>Carrier</label></div>
+        <div class="seg" id="carrier" role="group" aria-label="Carrier condition">
+          <button type="button" data-v="full" aria-pressed="true">Full</button>
+          <button type="button" data-v="supp" aria-pressed="false">Suppressed</button>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <div class="ctrl-top"><label>Sideband</label></div>
+        <div class="seg" id="sideband" role="group" aria-label="Sideband condition">
+          <button type="button" data-v="double" aria-pressed="true">Double</button>
+          <button type="button" data-v="single" aria-pressed="false">Single</button>
+        </div>
+      </div>
+
+      <div class="ctrl" id="sbtype-ctrl" data-off="1">
+        <div class="ctrl-top"><label>Sideband type</label></div>
+        <div class="seg" id="sbtype" role="group" aria-label="Sideband type">
+          <button type="button" data-v="lower" aria-pressed="true">Lower</button>
+          <button type="button" data-v="upper" aria-pressed="false">Upper</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <p>Nothing here touches a radio. The traces are drawn from the AM the controls describe — suppress the carrier and the centre line goes, switch to single sideband and one skirt goes with it — so the panel responds the way the flowgraph would.</p>
+    <p>Parameters, ranges and plot names are read off <code>apps/amSineGenerator.py</code>. Power resolves through <code>scale_power()</code> into whichever unit the selected radio actually takes.</p>
+  </div>
+</section>
+
+</main>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ state */
+const RADIOS = {
+  hackrf:{name:"HackRF One", lo:0,   hi:47,  unit:"dB VGA gain", dp:1},
+  usrp  :{name:"Ettus USRP", lo:0,   hi:31.5,unit:"dB gain",     dp:1},
+  vsg   :{name:"Signal Hound VSG60", lo:-120, hi:10, unit:"dBm output", dp:1}
+};
+
+const S = {
+  view:"panel",
+  radio:"hackrf",
+  freq:300,            // MHz
+  power:50,            // percent
+  mod:1,               // modulation index
+  sine:1000,           // Hz
+  carrier:"full",
+  sideband:"double",
+  sbtype:"lower",
+  rf:false
+};
+
+// The flowgraph's sink runs samp_rate/10 = 200 kHz wide, which cannot resolve a
+// 1 kHz sideband. Span follows the tone instead, the way you'd set it on an analyser.
+function span(){ return Math.min(200000, Math.max(5000, S.sine * 12)); }
+function fmtHz(hz){
+  return hz >= 1000 ? (hz / 1000).toFixed(hz % 1000 ? 1 : 0) + " kHz"
+                    : hz.toFixed(hz < 10 ? 1 : 0) + " Hz";
+}
+const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ------------------------------------------------------- tiles, from APP_TILES */
+const BANKS = [
+  ["Signal generators", [
+    [["AM Sine Generator","am","tx"]],
+    [["ASK Generator","ask","tx"]],
+    [["FSK Signal Generator","fsk","tx"]],
+    [["PSK Signal Generator","psk","tx"]],
+    [["PPM-OOK Generator","ppm","tx"]]
+  ]],
+  ["Audio", [
+    [["AM Audio Generator","amaudio","tx"]],
+    [["FM Audio Generator","fmaudio","tx"]],
+    [["FM Subcarrier","subc","tx"]],
+    [["FM + RDS Transmitter","fmrds","tx"],["RDS Receiver","dial","rx"]]
+  ]],
+  ["Video", [
+    [["ATSC Video Transmitter","atsc","tx"],["ATSC Video Receiver","screen","rx"]],
+    [["NTSC Analog Video","ntsc","tx"],["NTSC Video Receiver","screen","rx"]],
+    [["FM Video Transmitter","fmvideo","tx"]]
+  ]]
+];
+
+/* Waveform glyphs, sampled from the modulation each app actually sends. */
+const WAVES = {
+  am:      t => (1 + .62*Math.cos(2*Math.PI*1.5*t)) * Math.sin(2*Math.PI*17*t) / 1.62,
+  ask:     t => (Math.floor(t*6)%2 ? .25 : 1) * Math.sin(2*Math.PI*17*t),
+  fsk:     t => Math.sin(2*Math.PI*(Math.floor(t*4)%2 ? 24 : 11)*t + (Math.floor(t*4)%2?1.3:0)),
+  psk:     t => Math.sin(2*Math.PI*15*t + Math.PI*(Math.floor(t*4)%2)),
+  ppm:     t => { const p=(t*5)%1, o=[.15,.55,.3,.75,.45][Math.floor(t*5)%5];
+                  return Math.exp(-Math.pow((p-o)/.035,2)) * 1.9 - .95; },
+  amaudio: t => (1 + .55*(Math.sin(2*Math.PI*1.3*t)+.5*Math.sin(2*Math.PI*3.7*t+1))/1.5)
+                * Math.sin(2*Math.PI*19*t) / 1.6,
+  fmaudio: t => Math.sin(2*Math.PI*14*t + 2.4*Math.sin(2*Math.PI*1.6*t)),
+  subc:    t => (Math.sin(2*Math.PI*2*t)*.62 + Math.sin(2*Math.PI*21*t)*.34),
+  fmrds:   t => (Math.sin(2*Math.PI*1.8*t)*.55 + Math.sin(2*Math.PI*9*t)*.2
+                 + Math.sin(2*Math.PI*27*t)*.28),
+  atsc:    t => (Math.sin(2*Math.PI*23*t)*.5 + Math.sin(2*Math.PI*31*t+2)*.5)
+                * (t>.06 && t<.94 ? 1 : .12),
+  ntsc:    t => { const p=(t*3)%1;
+                  return p<.09 ? -.85 : (p<.16 ? .1 : .1 + .7*Math.abs(Math.sin(2*Math.PI*3*p))); },
+  fmvideo: t => Math.sin(2*Math.PI*16*t + 3.1*((t*3)%1 < .12 ? -1 : Math.sin(2*Math.PI*2.4*t)))
+};
+
+function glyph(kind){
+  if (kind === "screen")
+    return '<svg width="40" height="28" viewBox="0 0 40 28" fill="none" aria-hidden="true">'
+      + '<rect x="2.5" y="3.5" width="35" height="21" rx="1.5" stroke="currentColor" stroke-width="1.3"/>'
+      + [7,11,15,19].map(y=>'<path d="M6 '+y+'h28" stroke="currentColor" stroke-width="1" opacity=".42"/>').join("")
+      + '</svg>';
+  if (kind === "dial")
+    return '<svg width="40" height="28" viewBox="0 0 40 28" fill="none" aria-hidden="true">'
+      + '<path d="M6 21a14 14 0 0 1 28 0" stroke="currentColor" stroke-width="1.3"/>'
+      + '<path d="M20 21L27.5 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'
+      + [0,1,2,3,4].map(i=>{const a=Math.PI*(1+i/4);
+          return '<circle cx="'+(20+13*Math.cos(a)).toFixed(1)+'" cy="'+(21+13*Math.sin(a)).toFixed(1)
+               + '" r="1.1" fill="currentColor" opacity=".55"/>';}).join("")
+      + '</svg>';
+  const f = WAVES[kind] || WAVES.am, pts = [];
+  for (let i=0;i<=120;i++){ const t=i/120;
+    pts.push((1.5+t*37).toFixed(1)+","+(14 - Math.max(-1,Math.min(1,f(t)))*10.5).toFixed(1)); }
+  return '<svg width="40" height="28" viewBox="0 0 40 28" fill="none" aria-hidden="true">'
+    + '<polyline points="'+pts.join(" ")+'" stroke="currentColor" stroke-width="1.3" '
+    + 'stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
+function buildGrid(){
+  const host = document.getElementById("banks");
+  host.innerHTML = "";
+  BANKS.forEach(([name, tiles]) => {
+    const bank = document.createElement("section");
+    bank.className = "bank";
+    bank.innerHTML = '<h2 class="bank-name">'+name+'</h2>';
+    const row = document.createElement("div");
+    row.className = "bank-row";
+    tiles.forEach(faces => {
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "tile";
+      tile.dataset.face = "0";
+      tile.faces = faces;
+      paintTile(tile);
+      tile.addEventListener("click", e => {
+        if (e.target.closest(".flip")) return;
+        const [label] = tile.faces[+tile.dataset.face];
+        if (label === "AM Sine Generator") { go("panel"); return; }
+        say("<b>"+label+"</b> — panel not built in this prototype. Open the AM Sine Generator to see one.");
+      });
+      row.appendChild(tile);
+    });
+    bank.appendChild(row);
+    host.appendChild(bank);
+  });
+}
+
+function paintTile(tile){
+  const i = +tile.dataset.face, [label, kind, dir] = tile.faces[i];
+  tile.classList.toggle("rx", dir === "rx");
+  const badge = tile.faces.length > 1
+    ? '<span class="flip" role="button" tabindex="0" aria-label="Turn this tile over">'
+      + '<svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">'
+      + '<path d="M2 5.2A4.4 4.4 0 0 1 10.6 6M11 7.8A4.4 4.4 0 0 1 2.4 7" stroke="currentColor" '
+      + 'stroke-width="1.3" stroke-linecap="round"/>'
+      + '<path d="M1.2 2.6v2.6h2.6M11.8 10.4V7.8H9.2" stroke="currentColor" stroke-width="1.3" '
+      + 'stroke-linecap="round" stroke-linejoin="round"/></svg></span>'
+    : "";
+  tile.innerHTML = badge + '<span class="face">' + glyph(kind)
+    + '<span class="dir">' + (dir === "tx" ? "TRANSMIT" : "RECEIVE") + '</span>'
+    + '<span class="name">' + label + '</span></span>';
+  const flip = tile.querySelector(".flip");
+  if (flip){
+    const turn = e => { e.stopPropagation(); e.preventDefault(); flipTile(tile); };
+    flip.addEventListener("click", turn);
+    flip.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") turn(e); });
+  }
+}
+
+/* The squeeze-through-zero turn the launcher's FlipTile already does. */
+function flipTile(tile, to){
+  const next = to !== undefined ? to : (+tile.dataset.face + 1) % tile.faces.length;
+  if (next === +tile.dataset.face) return;
+  if (reduce){ tile.dataset.face = next; paintTile(tile); return; }
+  tile.classList.add("turning");
+  setTimeout(() => {
+    tile.dataset.face = next;
+    paintTile(tile);
+    tile.classList.remove("turning");
+  }, 190);
+}
+
+function say(html){ document.getElementById("status").innerHTML = html; }
+
+/* --------------------------------------------------------- the readout */
+const WEIGHTS = [1000, 100, 10, 1, 0.1, 0.01];
+const FMIN = 50, FMAX = 2200;
+
+function buildReadout(){
+  const host = document.getElementById("readout");
+  host.innerHTML = "";
+  WEIGHTS.forEach((w, i) => {
+    if (i === 4){
+      const dot = document.createElement("span");
+      dot.className = "dot"; dot.textContent = "."; dot.setAttribute("aria-hidden","true");
+      host.appendChild(dot);
+    }
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "digit"; b.dataset.i = i;
+    b.setAttribute("aria-label", "Digit worth " + w + " megahertz");
+    b.addEventListener("keydown", onDigitKey);
+    host.appendChild(b);
+  });
+  const u = document.createElement("span");
+  u.className = "unit"; u.textContent = "MHz";
+  host.appendChild(u);
+  paintReadout();
+}
+
+function digitsOf(v){
+  const n = Math.round(v * 100).toString().padStart(6, "0");
+  return n.split("").map(Number);
+}
+
+function paintReadout(){
+  const d = digitsOf(S.freq);
+  let leading = true;
+  document.querySelectorAll(".digit").forEach((el, i) => {
+    el.textContent = d[i];
+    if (d[i] !== 0 || i >= 3) leading = false;
+    el.classList.toggle("lead", leading && d[i] === 0);
+  });
+  document.getElementById("readout").setAttribute("aria-label",
+    "Center frequency " + S.freq.toFixed(2) + " megahertz");
+}
+
+function setFreq(v){
+  S.freq = Math.min(FMAX, Math.max(FMIN, Math.round(v * 100) / 100));
+  paintReadout(); draw();
+}
+
+function onDigitKey(e){
+  const i = +e.currentTarget.dataset.i, w = WEIGHTS[i], all = [...document.querySelectorAll(".digit")];
+  if (e.key === "ArrowUp"){ e.preventDefault(); setFreq(S.freq + w); }
+  else if (e.key === "ArrowDown"){ e.preventDefault(); setFreq(S.freq - w); }
+  else if (e.key === "ArrowLeft"){ e.preventDefault(); (all[i-1] || all[i]).focus(); }
+  else if (e.key === "ArrowRight"){ e.preventDefault(); (all[i+1] || all[i]).focus(); }
+  else if (/^[0-9]$/.test(e.key)){
+    e.preventDefault();
+    const cur = digitsOf(S.freq)[i];
+    setFreq(S.freq + (Number(e.key) - cur) * w);
+    (all[i+1] || all[i]).focus();
+  }
+}
+
+/* -------------------------------------------------------------- controls */
+function scalePower(pct, r){ return r.lo + (pct / 100) * (r.hi - r.lo); }
+
+function paintControls(){
+  const r = RADIOS[S.radio];
+  document.getElementById("pwr-val").innerHTML = S.power + "<small>%</small>";
+  document.getElementById("pwr-sub").textContent =
+    scalePower(S.power, r).toFixed(r.dp).replace("-", "−") + " " + r.unit
+    + "  ·  range " + String(r.lo).replace("-", "−") + " to " + r.hi;
+
+  document.getElementById("mod-val").textContent = S.mod.toFixed(3);
+  document.getElementById("mod-sub").textContent =
+    S.mod === 0 ? "unmodulated carrier"
+    : S.mod <= 1 ? Math.round(S.mod * 100) + "% modulation depth"
+    : "overmodulated — sidebands clipped in this view";
+
+  const sv = document.getElementById("sine-val");
+  sv.innerHTML = S.sine >= 1000
+    ? (S.sine / 1000).toFixed(S.sine % 1000 ? 2 : 1) + "<small>kHz</small>"
+    : S.sine.toFixed(S.sine < 10 ? 1 : 0) + "<small>Hz</small>";
+
+  const single = S.sideband === "single";
+  const ctl = document.getElementById("sbtype-ctrl");
+  ctl.dataset.off = single ? "0" : "1";
+  ctl.querySelectorAll("button").forEach(b => b.disabled = !single);
+
+  document.getElementById("span-label").textContent =
+    "span " + fmtHz(span()) + " \u00b7 2 MS/s";
+
+  document.getElementById("locus-label").textContent =
+    single ? "circle" : (S.carrier === "full" ? "line, offset" : "line, through zero");
+
+  const floorDb = carrierTop() - (-96);
+  document.getElementById("floor-note").innerHTML = S.power === 0
+    ? "<b>0% is not off.</b> At the minimum setting this still reads about "
+      + floorDb.toFixed(0) + " dB above the noise floor — on the bench a HackRF at minimum VGA "
+      + "decoded at 100% several feet away. Pick an empty channel."
+    : "Carrier sits <b>" + floorDb.toFixed(0) + " dB</b> above the noise floor. "
+      + "Power moves the signal, not the floor — which is why more gain alone never buys SNR.";
+}
+
+function seg(id, key, after){
+  document.getElementById(id).addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b || b.disabled) return;
+    S[key] = b.dataset.v;
+    [...b.parentElement.children].forEach(x =>
+      x.setAttribute("aria-pressed", String(x === b)));
+    if (after) after();
+    paintControls(); draw();
+  });
+}
+
+/* ------------------------------------------------------------- the plots */
+const cvs = {};
+function sizeCanvas(c){
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.getBoundingClientRect().width || c.parentElement.clientWidth;
+  const h = +c.getAttribute("height");
+  c.width = Math.max(1, Math.round(w * dpr));
+  c.height = Math.round(h * dpr);
+  c.style.height = h + "px";
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, w, h };
+}
+
+const TOK = {};
+function css(n){
+  if (!(n in TOK)) TOK[n] = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  return TOK[n];
+}
+function traceColor(){ return S.rf ? css("--live") : css("--trace"); }
+
+function carrierTop(){ return -58 + (S.power / 100) * 53; }   // dBFS at the peak
+
+/* Every spectral line the AM actually produces, in dBFS. */
+function lines(){
+  const out = [], top = carrierTop(), m = Math.min(S.mod, 2);
+  const sb = top + 20 * Math.log10(Math.max(m, 0.0005) / 2);
+  if (S.carrier === "full") out.push({ f: 0, db: top });
+  if (m > 0.0005){
+    const lower = S.sideband === "double" || S.sbtype === "lower";
+    const upper = S.sideband === "double" || S.sbtype === "upper";
+    if (lower) out.push({ f: -S.sine, db: sb });
+    if (upper) out.push({ f:  S.sine, db: sb });
+  }
+  return out;
+}
+
+function drawSpectrum(){
+  const c = cvs.spec, { g, w, h } = sizeCanvas(c);
+  const L = 46, R = 10, T = 10, B = 24;
+  const pw = w - L - R, ph = h - T - B;
+  const DB_TOP = 0, DB_BOT = -100;
+  const y = db => T + ph * (DB_TOP - db) / (DB_TOP - DB_BOT);
+
+  g.clearRect(0, 0, w, h);
+
+  g.strokeStyle = css("--rule-soft"); g.lineWidth = 1;
+  g.fillStyle = css("--ink-3");
+  g.font = '11px "Barlow", sans-serif'; g.textAlign = "right"; g.textBaseline = "middle";
+  for (let db = -20; db >= -80; db -= 20){
+    const yy = Math.round(y(db)) + .5;
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(L + pw, yy); g.stroke();
+    g.fillText(db + " dB", L - 7, yy);
+  }
+  for (let i = 1; i < 8; i++){
+    const xx = Math.round(L + pw * i / 8) + .5;
+    g.beginPath(); g.moveTo(xx, T); g.lineTo(xx, T + ph); g.stroke();
+  }
+
+  const N = Math.max(160, Math.round(pw));
+  const SP = span();
+  const peaks = lines(), bw = SP / 150;
+  const noise = Math.pow(10, -96 / 10);
+  g.beginPath();
+  for (let i = 0; i <= N; i++){
+    const f = -SP / 2 + SP * i / N;
+    let p = noise * (0.55 + 0.9 * Math.random());
+    for (const pk of peaks){
+      const d = (f - pk.f) / bw;
+      p += Math.pow(10, pk.db / 10) * Math.exp(-d * d * 3.2);
+    }
+    const yy = y(Math.max(-100, 10 * Math.log10(p)));
+    const xx = L + pw * i / N;
+    i ? g.lineTo(xx, yy) : g.moveTo(xx, yy);
+  }
+  g.strokeStyle = traceColor(); g.lineWidth = 1.2; g.lineJoin = "round"; g.stroke();
+
+  g.strokeStyle = css("--rule"); g.lineWidth = 1;
+  g.strokeRect(L + .5, T + .5, pw - 1, ph - 1);
+
+  g.fillStyle = css("--ink-3"); g.textBaseline = "top";
+  const edge = fmtHz(SP / 2);
+  g.textAlign = "left";   g.fillText("−" + edge, L, T + ph + 7);
+  g.textAlign = "right";  g.fillText("+" + edge, L + pw, T + ph + 7);
+  g.textAlign = "center";
+  g.fillStyle = css("--ink-2");
+  g.fillText(S.freq.toFixed(2) + " MHz", L + pw / 2, T + ph + 7);
+}
+
+/* Complex baseband the flowgraph would hand the sink. */
+function iq(th){
+  const m = S.mod, dc = S.carrier === "full" ? 1 : 0;
+  if (S.sideband === "single"){
+    const s = S.sbtype === "upper" ? 1 : -1;
+    return [dc + (m / 2) * Math.cos(th), s * (m / 2) * Math.sin(th)];
+  }
+  return [dc + m * Math.cos(th), 0];
+}
+
+function iqScale(){
+  let mx = 0.001;
+  for (let i = 0; i < 128; i++){
+    const [I, Q] = iq(2 * Math.PI * i / 128);
+    mx = Math.max(mx, Math.abs(I), Math.abs(Q), Math.hypot(I, Q));
+  }
+  return mx;
+}
+
+function drawScope(){
+  const c = cvs.scope, { g, w, h } = sizeCanvas(c);
+  const L = 10, R = 10, T = 10, B = 10;
+  const pw = w - L - R, ph = h - T - B, mid = T + ph / 2, sc = iqScale();
+  g.clearRect(0, 0, w, h);
+
+  g.strokeStyle = css("--rule-soft"); g.lineWidth = 1;
+  for (let i = 1; i < 4; i++){
+    const yy = Math.round(T + ph * i / 4) + .5;
+    g.beginPath(); g.moveTo(L, yy); g.lineTo(L + pw, yy); g.stroke();
+  }
+  for (let i = 1; i < 6; i++){
+    const xx = Math.round(L + pw * i / 6) + .5;
+    g.beginPath(); g.moveTo(xx, T); g.lineTo(xx, T + ph); g.stroke();
+  }
+
+  const N = 240, CYC = 3, n = () => (Math.random() - .5) * 0.035;
+  [[1, traceColor(), 1.3], [0, css("--ink-3"), 1.1]].forEach(([ch, col, lw]) => {
+    g.beginPath();
+    for (let i = 0; i <= N; i++){
+      const v = iq(2 * Math.PI * CYC * i / N)[ch ? 0 : 1] / sc + n();
+      const xx = L + pw * i / N, yy = mid - v * (ph / 2) * 0.86;
+      i ? g.lineTo(xx, yy) : g.moveTo(xx, yy);
+    }
+    g.strokeStyle = col; g.lineWidth = lw; g.lineJoin = "round"; g.stroke();
+  });
+
+  g.strokeStyle = css("--rule"); g.lineWidth = 1;
+  g.strokeRect(L + .5, T + .5, pw - 1, ph - 1);
+}
+
+function drawPolar(){
+  const c = cvs.polar, { g, w, h } = sizeCanvas(c);
+  const cx = w / 2, cy = h / 2, rad = Math.min(w, h) / 2 - 14, sc = iqScale();
+  g.clearRect(0, 0, w, h);
+
+  g.strokeStyle = css("--rule-soft"); g.lineWidth = 1;
+  [rad, rad * .5].forEach(r => { g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke(); });
+  g.beginPath(); g.moveTo(cx - rad, cy); g.lineTo(cx + rad, cy);
+  g.moveTo(cx, cy - rad); g.lineTo(cx, cy + rad); g.stroke();
+
+  g.fillStyle = traceColor();
+  const N = 200;
+  for (let i = 0; i < N; i++){
+    const [I, Q] = iq(2 * Math.PI * i / N);
+    const jx = (Math.random() - .5) * 0.03, jy = (Math.random() - .5) * 0.03;
+    g.beginPath();
+    g.arc(cx + (I / sc + jx) * rad * .86, cy - (Q / sc + jy) * rad * .86, 1.35, 0, 2 * Math.PI);
+    g.fill();
+  }
+
+  g.strokeStyle = css("--rule"); g.lineWidth = 1;
+  g.beginPath(); g.arc(cx, cy, rad, 0, 2 * Math.PI); g.stroke();
+}
+
+function draw(){ drawSpectrum(); drawScope(); drawPolar(); }
+
+/* ------------------------------------------------------------ navigation */
+function go(view){
+  S.view = view;
+  document.getElementById("view-grid").hidden  = view !== "grid";
+  document.getElementById("view-panel").hidden = view !== "panel";
+  document.getElementById("mark").textContent =
+    view === "grid" ? "RF Bench Console" : "AM Sine Generator";
+  document.getElementById("nav-text").textContent = view === "grid" ? "Overview" : "All apps";
+  document.getElementById("nav").hidden = view === "grid";
+  window.scrollTo(0, 0);
+  if (view === "panel") draw();
+}
+
+function setRf(on){
+  S.rf = on;
+  document.body.classList.toggle("live", on);
+  const k = document.getElementById("rf-key");
+  k.setAttribute("aria-pressed", String(on));
+  document.getElementById("rf-key-text").textContent = on ? "RF ON" : "RF OFF";
+  const r = RADIOS[S.radio];
+  document.getElementById("rf-key-sub").textContent = on
+    ? S.freq.toFixed(2) + " MHz, " + scalePower(S.power, r).toFixed(r.dp).replace("-","−")
+      + " " + r.unit.split(" ")[0]
+    : "Nothing radiating";
+  draw();
+}
+
+/* ----------------------------------------------------------------- wiring */
+buildGrid();
+buildReadout();
+cvs.spec = document.getElementById("spec");
+cvs.scope = document.getElementById("scope");
+cvs.polar = document.getElementById("polar");
+
+document.getElementById("nav").addEventListener("click", () => go(S.view === "grid" ? "panel" : "grid"));
+document.getElementById("rf-key").addEventListener("click", () => setRf(!S.rf));
+
+document.getElementById("pwr").addEventListener("input", e => {
+  S.power = +e.target.value; paintControls(); if (S.rf) setRf(true); else draw();
+});
+document.getElementById("mod").addEventListener("input", e => {
+  S.mod = +e.target.value; paintControls(); draw();
+});
+document.getElementById("sine").addEventListener("input", e => {
+  S.sine = +e.target.value / 10; paintControls(); draw();
+});
+seg("carrier", "carrier");
+seg("sideband", "sideband");
+seg("sbtype", "sbtype");
+
+document.getElementById("radio-pick").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  S.radio = b.dataset.radio;
+  [...b.parentElement.children].forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  // A VSG60 only transmits, so every tile turns to a side it can run.
+  if (S.radio === "vsg"){
+    document.querySelectorAll(".tile").forEach(t => {
+      const tx = t.faces.findIndex(f => f[2] === "tx");
+      if (tx >= 0) flipTile(t, tx);
+    });
+    say("<b>Signal Hound VSG60</b> transmits only — every tile turned to a side it can run.");
+  }
+  paintControls();
+  if (S.rf) setRf(true); else draw();
+});
+
+let pending;
+window.addEventListener("resize", () => {
+  clearTimeout(pending);
+  pending = setTimeout(() => { if (S.view === "panel") draw(); }, 120);
+});
+
+paintControls();
+go("panel");
+
+if (!reduce){
+  let last = 0;
+  (function tick(ts){
+    if (ts - last > 66 && S.view === "panel"){ last = ts; draw(); }
+    requestAnimationFrame(tick);
+  })(0);
+}
+</script>
