@@ -1399,6 +1399,40 @@ decoding at 17.6 frames a second beside it, and the recovered audio
 correlates **0.999** with the same clip decoded locally, the next-best
 alignment scoring 8% of that.
 
+**And verified again on 2026-09-17, after the decoder changed underneath
+it.** The blanking percentiles, the chroma separation and - most of all -
+`CompositeFrameSink`, which this receiver now shares with the FM video
+receiver and which grew a writer thread of its own for Watch, had all been
+checked in software and none of them against real RF on this path. Same
+link, same clip, the app's own flowgraph run headless for 220 seconds,
+which is two full passes of the clip and of the dark shot that once broke
+the blanking estimate:
+
+- **3,868 pictures, 17.63 a second of the 17.63 the buffer allows, 0
+  dropped, 0 failed, 0 BB60D overflows.** Line rate 15,734.2-15,734.5 Hz
+  (-6 to +16 ppm), input -45 to -37 dBFS, colour throughout.
+- **Watch delivered every picture, whole.** Over a 60-second window 1,059
+  pictures were decoded and **1,059 arrived at the player - 975,974,400
+  bytes, not one byte of a partial frame** - at 17.63 a second, with
+  nothing superseded in the holder and the process's memory moving from
+  497 to 522 MB across the minute. The same path with the old
+  non-blocking write delivered 7.1% of the bytes and 183 MB of backlog.
+- **The sound is the clip's own**: 0.9987-0.9997 at four points across the
+  run, against the next-best alignment's 0.04-0.12. The clip offset it
+  finds advances exactly with the clock at every one of them - 62.99 s at
+  40 s in, 6.79 at 90, 56.79 at 140, 96.79 at 180 - which is the 106.206 s
+  loop tracked for nearly four minutes without a slip. Sound carrier
+  -48.0 to -47.2 dBFS, deviation 0.7-11.0 kHz rms.
+
+One measuring trap, again nothing to do with the receiver: **an FFT
+cross-correlation peaks at minus the offset.** `irfft(A * conj(B))` peaks
+where `a[j] = b[j-m]`, so a slice taken at clip offset t puts the peak at
+-t. Reading that index as the offset picks the wrong segment of the
+reference to normalise against, and scored a recovery that was in fact
+perfect at **0.007** - which looks exactly like sound that never arrived.
+Delaying the slice by a known amount is what catches it: the reported
+offset moved by 1234 samples the wrong way.
+
 ### FM Video Transmitter
 
 `fmVideoXmitter.py` frequency-modulates a carrier with composite video and
@@ -2002,6 +2036,12 @@ Things worth knowing before changing it:
   ignored both `SIGTERM` and `SIGINT`: five minutes after the first one it
   was still on the air on 419% of a core across 53 threads, its main thread
   parked in Qt's poll, and only `SIGKILL` ended it - on two separate runs.
+  **It is not that app.** The NTSC transmitter, launched the same way for
+  the receiver's off-air re-test, did exactly the same thing: still on the
+  air six seconds after `SIGTERM`, 479% of a core across 61 threads, gone
+  on `SIGKILL`. So whatever swallows the signal is in the shared path -
+  `_run.py`, the app contract's `main()`, or Qt - and not in one
+  flowgraph.
   It is *not* the obvious cause: each `main()` starts a 500 ms timer so the
   interpreter gets control to run the handler, and then returns, dropping
   the only reference to it - but a stripped-down reproduction with the timer
