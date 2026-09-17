@@ -33,7 +33,8 @@ import numpy as np # type: ignore
 # Local imports 
 from apps.utils import (apply_launcher_theme, apply_dark_theme,
                        DialogGeometryTracker, geometry_is_reachable,
-                       read_settings)
+                       read_settings, restore_window_geometry,
+                       save_window_geometry)
 from apps.settings_dialog import SettingsDialog
 
 # Which way each radio goes. Two of the four are one-way instruments, and
@@ -97,7 +98,8 @@ APP_TILES = [
             ("NTSC Video Receiver", "ntscReceiver", "ntscRx.jpg", "rx")]),
     # FM video replaced AM video, which matched nothing a real transmitter
     # sends; this one is what an analog FPV drone puts out on 5.8 GHz.
-    (3, 2, [("FM Video Transmitter", "fmVideoXmitter", "fmVideo.jpg", "tx")]),
+    (3, 2, [("FM Video Transmitter", "fmVideoXmitter", "fmVideo.jpg", "tx"),
+            ("FM Video Receiver", "fmVideoReceiver", "fmVideoRx.jpg", "rx")]),
 ]
 
 
@@ -730,14 +732,29 @@ class GNURadioLauncher(QMainWindow):
                 
                 # Start the GNU Radio application
                 tb = module.main(app=self.app, config_values=config_values)
-                
-                # Modify close event only in single mode
-                if radio_mode == 'single' and hasattr(tb, 'closeEvent'):
+
+                # Put the flowgraph window back where it was left, the same
+                # way the launcher and the config dialog are - and *after*
+                # main() has shown it. Each app also calls Qt's own
+                # restoreGeometry, but at the top of its __init__ before the
+                # widgets exist, and Qt refuses to restore at all once the
+                # screen width has changed by more than a quarter. See
+                # apps/utils.py: restore_window_geometry.
+                if hasattr(tb, 'move'):
+                    restore_window_geometry(tb, module_name, self.app)
+
+                if hasattr(tb, 'closeEvent'):
                     original_close_event = tb.closeEvent
                     def new_close_event(event):
+                        # Read the geometry before the app's own closeEvent,
+                        # which stops the flowgraph and accepts the event.
+                        save_window_geometry(tb, module_name)
                         original_close_event(event)
-                        self.load_window_position()
-                        self.show()
+                        # Bringing the launcher back is single mode's job; in
+                        # multi mode it never went away.
+                        if radio_mode == 'single':
+                            self.load_window_position()
+                            self.show()
                     tb.closeEvent = new_close_event
 
         except Exception as e:

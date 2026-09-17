@@ -273,6 +273,67 @@ class NtscDecoder:
             return fallback
         return float(np.median(x[lo[:, None] + np.arange(span)[None, :]]))
 
+    def burst_ratio(self, x, starts, widths, sync, blank):
+        """How big the colour burst comes back, against the standard's own.
+
+        Both standards make the burst exactly as big peak-to-peak as the
+        step from sync tip to blanking - 40 IRE, or 300 mV. So one is the
+        path's gain at the colour subcarrier and the other its gain at DC,
+        and their ratio is the frequency response of everything in between
+        measured against nothing but the signal itself: 1.0 is flat, and
+        anything else is a lift that has not been undone.
+
+        That is what makes it worth having. An FM video link pre-emphasises
+        the picture before transmitting and the receiver takes it out
+        again, and if the two curves do not match the picture is wrong in a
+        way that looks like bad colour rather than like a wrong setting.
+        Nobody publishes what an FPV transmitter module's own R/C network
+        does, and this reads it off the air without a test signal and
+        without knowing what is being televised.
+
+        Returns None when there is no burst to measure - a monochrome
+        signal has none, which is a fact about the signal and not a
+        failure.
+        """
+        std = self.standard
+        horizontal = starts[(widths > self.sync_discriminant)
+                            & (widths < VERTICAL_RUN)]
+        if horizontal.size < 8 or blank <= sync:
+            return None
+        level_scale = (std.blank_level - std.sync_level) / (blank - sync)
+        # The same window decode_frame reads the burst phase in: a whole
+        # cycle in from each end, clear of the ringing every filter leaves
+        # on the edges of a real burst.
+        cycle = 1.0 / std.subcarrier
+        span = int(round((std.burst_cycles - 2) * cycle * self.sample_rate))
+        if span < 4:
+            return None
+        at = horizontal[:, None] + int(round((std.burst_start + cycle)
+                                             * self.sample_rate))
+        at = at[(at[:, 0] >= 0) & (at[:, 0] + span < x.size)]
+        if at.shape[0] < 8:
+            return None
+        at = at + np.arange(span)[None, :]
+        burst = (x[at] - blank) * level_scale
+        # **Window the burst before averaging it.** Mixing down and taking
+        # the mean leaves a term at twice the subcarrier, which only cancels
+        # when the window is a whole number of cycles - and it is not at any
+        # ordinary sample rate. Seven cycles of NTSC's subcarrier is 19.56
+        # samples at 10 MS/s: rounded to 20, the leftover read a *perfect*
+        # loopback as 0.974, which is a 0.23 dB lift that is not there and
+        # would be quoted as a transmitter's pre-emphasis. A Hann window
+        # puts it back to 1.0000 at every rate tried - 10, 12.5 and 20 MS/s
+        # in both standards.
+        taper = np.hanning(span + 2)[1:-1]
+        envelope = 2.0 * np.abs(
+            np.sum(burst * taper
+                   * np.exp(-2j * np.pi * std.subcarrier * at / self.sample_rate),
+                   axis=1) / taper.sum())
+        # The median over the lines, not the mean: a line whose burst was
+        # hit by noise should not drag the reading, and half the lines of a
+        # frame are enough to settle it.
+        return float(np.median(envelope) / std.burst_amplitude)
+
     # -- sync ------------------------------------------------------------
 
     def find_pulses(self, x, sync, blank):

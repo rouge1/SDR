@@ -502,7 +502,7 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
             # not leave an ffmpeg running behind it.
             self.ts_stream = TransportStream(atscFileName)
             self.blocks_file_source_0 = blocks.file_descriptor_source(
-                gr.sizeof_char*1, self.ts_stream.fileno(), False)
+                gr.sizeof_char*1, self.ts_stream.descriptor(), False)
         else:
             self.ts_stream = None
             self.blocks_file_source_0 = blocks.file_source(gr.sizeof_char*1, atscFileName, True, 0, 0)

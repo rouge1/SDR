@@ -928,7 +928,7 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
                 try:
                     self.audio_track = AudioTrack(video_path)
                     head = blocks.file_descriptor_source(
-                        gr.sizeof_float, self.audio_track.fileno())
+                        gr.sizeof_float, self.audio_track.descriptor())
                     rate = self.audio_track.rate
                     self.soundDescription = self.audio_track.description
                 except Exception as exc:

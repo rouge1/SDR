@@ -24,7 +24,9 @@ What this pins down:
 - **It keeps up with the air** at the radio's rate, in both formats.
 """
 import argparse
+import gc
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -39,8 +41,9 @@ from fractions import Fraction  # noqa: E402
 from gnuradio import analog, blocks, gr  # noqa: E402
 from gnuradio import filter as gr_filter  # noqa: E402
 
-from apps.fm_video_core import (F405_525, F405_625, FPV, RELAY,  # noqa: E402
-                                VIDEO_CENTRE, compensation_band,
+from apps.fm_video_core import (F405_525, F405_625, FPV, RECEIVE_CUTOFF,  # noqa: E402
+                                RELAY, VIDEO_CENTRE, click_threshold_hz,
+                                compensation_band,
                                 discriminator_compensation_taps,
                                 fm_integrator_gain, fpv_channel_items,
                                 instantaneous_frequency,
@@ -57,9 +60,6 @@ from apps.ntsc_source import (AUDIO_RATE, AudioTrack, TestPattern,  # noqa: E402
 
 failures = []
 TMP = tempfile.mkdtemp(prefix='fmvideo-')
-#: Where a receiver's picture filter stops, per format: past the top of the
-#: video band, short of the first sound subcarrier at 6.0 MHz.
-RECEIVE_CUTOFF = {'ntsc': 4.6e6, 'pal': 5.6e6}
 
 
 def check(name, ok, detail=''):
@@ -340,6 +340,66 @@ def check_f405():
           diff < 1e-4, f"largest difference {diff:.2e}")
 
 
+def check_second_launch():
+    """The clip's sound must survive the app being opened a second time.
+
+    ``AudioTrack`` hands a pipe to ``blocks.file_descriptor_source``, which
+    closes what it is given in its destructor - and ``AudioTrack.close``
+    closes it too. Two owners, one descriptor, closed twice. The second
+    close lands on whatever was opened in between, and what is opened in
+    between is the *next* run of the same app: its pipe is handed the
+    lowest free number, which is the one just released. So the sequence
+    that breaks is launch, close, launch again, and it breaks the moment
+    Python collects the first run's flowgraph - ``file_descriptor_source:
+    error: [read]: Bad file descriptor``, and the second run goes out
+    silent. Reported from TVAdemo, reproduced exactly, fixed by handing out
+    a duplicate. The same pattern is in the NTSC and ATSC transmitters.
+    """
+    print("\nthe clip's sound survives a second launch")
+    clip = os.path.join(TMP, 'two-seconds.mp4')
+    made = subprocess.run(
+        ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+         '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=30:duration=2',
+         '-f', 'lavfi', '-i', 'sine=frequency=1000:duration=2',
+         '-c:v', 'mpeg4', '-c:a', 'aac', '-shortest', clip],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if made.returncode != 0 or not has_audio(clip):
+        print("  .. skipped: ffmpeg could not make a clip with sound here")
+        return
+
+    def one_run():
+        track = AudioTrack(clip)
+        tb = gr.top_block("second launch", catch_exceptions=True)
+        src = blocks.file_descriptor_source(gr.sizeof_float,
+                                            track.descriptor())
+        head = blocks.head(gr.sizeof_float, AUDIO_RATE // 2)
+        snk = blocks.vector_sink_f()
+        tb.connect(src, head, snk)
+        tb.run()
+        return track, tb, (src, head, snk), len(snk.data())
+
+    first, tb1, blocks1, got1 = one_run()
+    check("the first launch reads the clip's sound", got1 > 0, f"{got1} samples")
+    first.close()                                   # what closeEvent does
+    second, tb2, blocks2, _ = AudioTrack(clip), None, None, 0
+    # Build the second run's source *before* the first run's blocks are
+    # collected, which is the order that used to pull the descriptor.
+    tb2 = gr.top_block("second launch", catch_exceptions=True)
+    src2 = blocks.file_descriptor_source(gr.sizeof_float, second.descriptor())
+    head2 = blocks.head(gr.sizeof_float, AUDIO_RATE // 2)
+    snk2 = blocks.vector_sink_f()
+    tb2.connect(src2, head2, snk2)
+    del tb1, blocks1
+    gc.collect()
+    time.sleep(0.2)
+    tb2.run()
+    got2 = len(snk2.data())
+    second.close()
+    print(f"  first launch {got1} samples, second {got2}")
+    check("and so does the second, after the first has been collected",
+          got2 > 0, f"{got2} samples - the descriptor was pulled")
+
+
 def check_fpv_datasheet():
     print("\nthe FPV standard against the RTC6705 and RTC6715 datasheets")
     check("sound on 6.0 and 6.5 MHz", FPV.subcarriers == (6.0e6, 6.5e6))
@@ -348,8 +408,14 @@ def check_fpv_datasheet():
     close("audio pre-emphasis corner, kHz", 1 / (2 * np.pi * FPV.audio_tau) / 1e3,
           12.0, 1e-6)
     close("audio deviation, kHz", FPV.audio_deviation / 1e3, 25.0, 1e-9)
-    close("video deviation, MHz peak - the RTC6715's sensitivity condition",
-          FPV.deviation_pp / 2e6, 2.5, 1e-9)
+    # The one FPV number that is not the datasheet's, because the datasheet
+    # has none: measured off air on 2026-09-16 from a real transmitter on
+    # A3, 7.93 MHz peak to peak over 237 frames. The RTC6715's sensitivity
+    # condition, +-2.5 MHz, is the only video deviation either document
+    # mentions and it is not what a module actually does - see the FPV
+    # profile's own note.
+    close("video deviation, MHz p-p - measured, not from the datasheet",
+          FPV.deviation_pp / 1e6, 7.93, 1e-9)
     items = {name: mhz for name, mhz, _ in fpv_channel_items()}
     check("forty channels", len(items) == 40, str(len(items)))
     for name, mhz in (('A1', 5865), ('A8', 5725), ('B1', 5733), ('E1', 5705),
@@ -414,7 +480,7 @@ def check_deviation():
     print("\nhow far the picture swings the carrier")
     n = 400000
     for profile, standard, want, what in (
-            (FPV, NTSC, 5.0e6, "sync tip to white, no pre-emphasis"),
+            (FPV, NTSC, FPV.deviation_pp, "sync tip to white, no pre-emphasis"),
             (RELAY, NTSC, 2.530e6, "1 V at low frequencies, F.405 525 lines"),
             (RELAY, PAL, 2.2544e6, "1 V at low frequencies, F.405 625 lines")):
         rate = VIDEO_RATES[standard.key]
@@ -497,7 +563,7 @@ def check_threshold(clean):
     rf, composite = clean[FPV.key]
     rng = np.random.default_rng(7)
     power = float(np.mean(np.abs(rf) ** 2))
-    legit = FPV.deviation_pp / 2 + 2 * subcarrier_index(FPV.subcarrier_dbc) * 6.5e6
+    legit = click_threshold_hz(FPV) - 3e6
     by = {}
     for cnr in (30, 25, 20, 15, 12, 10, 8, 6, 4):
         sigma = np.sqrt(power / 10 ** (cnr / 10) / 2)
@@ -634,6 +700,7 @@ def main():
 
     check_f405()
     check_fpv_datasheet()
+    check_second_launch()
     check_integrator()
     check_sidebands()
     check_deviation()

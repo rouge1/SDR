@@ -99,6 +99,7 @@ def main(argv=None):
     _init_x11_threads()
 
     from PyQt5 import Qt  # after XInitThreads, before any widget exists
+    from apps.utils import restore_window_geometry, save_window_geometry
 
     # argv[:1] so the app module never re-parses our arguments as Qt's.
     qapp = Qt.QApplication(sys.argv[:1])
@@ -111,6 +112,21 @@ def main(argv=None):
     tb = module.main(app=qapp, config_values=values)
     if tb is None:
         return 0
+
+    # The same window geometry the desktop launcher keeps, so an app opened
+    # from the browser comes back where it was left too. After main(), which
+    # is what shows the window - see apps/utils.py: restore_window_geometry.
+    if hasattr(tb, 'move'):
+        restore_window_geometry(tb, args.module, qapp)
+    if hasattr(tb, 'closeEvent'):
+        original_close_event = tb.closeEvent
+
+        def closed(event):
+            save_window_geometry(tb, args.module)
+            original_close_event(event)
+
+        tb.closeEvent = closed
+
     return qapp.exec_()
 
 

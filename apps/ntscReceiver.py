@@ -28,7 +28,7 @@ from PyQt5 import Qt, QtCore  # type: ignore
 
 from apps.atsc_rx_core import channel_center_mhz, channel_for_center, tv_channel_items
 from apps.ntsc_decode import NtscDecoder, SYNC_DISCRIMINANT
-from apps.ntsc_encode import FH, FRAME, IRE_SYNC
+from apps.ntsc_encode import FH, FRAME, IRE_SYNC, NTSC as NTSC_STANDARD
 # The two ends of the link must agree about where the carriers sit, so the
 # receiver takes those numbers from the transmitter rather than repeating
 # them. Importing the app module is cheap - it only defines things.
@@ -263,13 +263,20 @@ class ntsc_frame_sink(gr.sync_block):
     #: came back black.
     BUFFER_FRAMES = 1.7
 
-    def __init__(self, sample_rate, width=ACTIVE_WIDTH,
-                 active_lines=ACTIVE_LINES):
+    def __init__(self, sample_rate, width=None, active_lines=None,
+                 standard=None):
         gr.sync_block.__init__(self, name='ntsc_frame_sink',
                                in_sig=[np.float32], out_sig=None)
         self.sample_rate = float(sample_rate)
-        self.decoder = NtscDecoder(self.sample_rate, width, active_lines)
-        self._need = int(self.BUFFER_FRAMES * FRAME * self.sample_rate)
+        # The standard is a parameter because the FM video receiver decodes
+        # PAL as well, off the same block - see `CompositeFrameSink` below.
+        # Left out it is NTSC, whose width and lines per field are exactly
+        # the constants this file used before, so nothing here changes.
+        self.standard = standard or NTSC_STANDARD
+        self.decoder = NtscDecoder(self.sample_rate, width, active_lines,
+                                   standard=self.standard)
+        self._need = int(self.BUFFER_FRAMES * self.standard.frame
+                         * self.sample_rate)
         self._buf = np.empty(self._need, dtype=np.float32)
         self._fill = 0
         self._pending = None
@@ -284,7 +291,12 @@ class ntsc_frame_sink(gr.sync_block):
         self.failures = 0
         self.status = {}
         self._player = None
-        self._pending_bytes = bytearray()
+        self._player_lock = threading.Lock()
+        self._to_send = None
+        self._send_wake = threading.Event()
+        self._sending = False
+        self._writer = None
+        self.frames_unsent = 0
 
     # -- lifecycle -------------------------------------------------------
 
@@ -361,18 +373,29 @@ class ntsc_frame_sink(gr.sync_block):
             # Within 10% of a line, so the half-line spacing of the vertical
             # block's broad pulses cannot drag the average down - which read
             # 15866 Hz when the window was wider.
-            nominal = self.sample_rate / FH
+            nominal = self.sample_rate / self.standard.line_rate
             one_line = gaps[(gaps > 0.9 * nominal) & (gaps < 1.1 * nominal)]
             if one_line.size > 10:
                 period = float(one_line.mean()) / self.sample_rate
                 status['line_rate'] = 1.0 / period if period > 0 else 0.0
 
+        self.measure(x, starts, widths, sync, blank, status)
         frame = decoder.decode_frame(x, color=True)
         self.frame = frame
         self.frames_decoded += 1
         status['locked'] = True
         self.status = status
         self._to_player(frame)
+
+    def measure(self, x, starts, widths, sync, blank, status):
+        """Anything else worth reading off this buffer, into ``status``.
+
+        Nothing here: a television receiver wants a picture. The FM video
+        receiver overrides it, because an FM link's deviation and its
+        pre-emphasis are numbers a transmitter's datasheet may not give and
+        this is where they can be measured - the pulses have already been
+        found by the time it is called, which is most of the work.
+        """
 
     # -- handing the picture to a player ---------------------------------
 
@@ -381,13 +404,28 @@ class ntsc_frame_sink(gr.sync_block):
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL)
-        os.set_blocking(proc.stdin.fileno(), False)
         self._player = proc
-        self._pending_bytes = bytearray()
+        self._to_send = None
+        self._sending = True
+        self._send_wake.clear()
+        self._writer = threading.Thread(target=self._write_loop, daemon=True,
+                                        name='ntsc-player')
+        self._writer.start()
         return proc
 
     def stop_player(self):
+        # The writer is asked to stop *before* the pipe is taken away from
+        # it, so that a picture still waiting goes out rather than being
+        # thrown away on the last frame of every session.
+        self._sending = False
+        self._send_wake.set()
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            # A writer parked on a player that stopped reading is freed by
+            # closing the pipe below, so do not wait long for it here.
+            writer.join(timeout=1.0)
         proc, self._player = self._player, None
+        self._to_send = None
         if proc is None:
             return
         try:
@@ -401,42 +439,79 @@ class ntsc_frame_sink(gr.sync_block):
         return self._player is not None and self._player.poll() is None
 
     def _to_player(self, frame):
-        """Raw RGB down a non-blocking pipe, dropping rather than stalling.
+        """Hand the newest picture to the writer thread, and drop the rest.
 
-        NTSC has no container to hand over the way ATSC has a transport
-        stream, so what goes to the player is the pictures themselves.
+        NTSC has no container to pass on the way ATSC has a transport
+        stream, so what goes to the player is the pictures themselves - and
+        a picture is large: 640x480 in RGB is 921,600 bytes, PAL's is
+        1,327,104.
+
+        **That size is why this needs a thread of its own.** It used to
+        write straight down a non-blocking pipe from here, once per decoded
+        frame. A non-blocking write to a pipe delivers at most what fits in
+        the pipe buffer - 65,536 bytes - so each frame handed over lost
+        fourteen fifteenths of itself, and the remainder queued in memory
+        against a cap that only applied in the branch that never ran.
+        Measured against a real transmitter: of 214 pictures decoded in
+        12 seconds, **7.1% of the bytes reached the player** - 1.25 pictures
+        a second, which is what "the video is not updating" looks like -
+        while the unsent backlog grew to **183 MB**.
+
+        So the write is a blocking one on its own thread, and what is held
+        for it is a single frame rather than a queue: a player that has
+        fallen behind gets the newest picture, never a backlog of stale
+        ones, which is what the old comment here claimed and did not do.
         """
-        proc = self._player
-        if proc is None:
+        if self._player is None:
             return
-        self._pending_bytes += (np.clip(frame, 0, 1) * 255).astype(
-            np.uint8).tobytes()
-        try:
-            written = os.write(proc.stdin.fileno(), self._pending_bytes)
-            del self._pending_bytes[:written]
-        except BlockingIOError:
-            # One frame of slack; a player that has stalled gets the newest
-            # picture next time rather than a backlog of stale ones.
-            if len(self._pending_bytes) > 3 * frame.size:
-                self._pending_bytes = bytearray()
-        except (OSError, ValueError, AttributeError):
-            self.stop_player()
+        data = (np.clip(frame, 0, 1) * 255).astype(np.uint8).tobytes()
+        with self._player_lock:
+            if self._to_send is not None:
+                self.frames_unsent += 1
+            self._to_send = data
+        self._send_wake.set()
+
+    def _write_loop(self):
+        while True:
+            self._send_wake.wait(0.2)
+            self._send_wake.clear()
+            with self._player_lock:
+                data, self._to_send = self._to_send, None
+            proc = self._player
+            if data is not None and proc is not None:
+                try:
+                    proc.stdin.write(data)
+                    proc.stdin.flush()
+                except (OSError, ValueError, AttributeError, BrokenPipeError):
+                    return
+            # Checked after the write, not before it, so that the picture
+            # waiting when Stop was pressed is the one on screen.
+            if not self._sending:
+                return
 
 
-def find_player(width=ACTIVE_WIDTH, height=2 * ACTIVE_LINES):
+def find_player(width=ACTIVE_WIDTH, height=2 * ACTIVE_LINES,
+                frame_rate=None, title='NTSC Video'):
     """A player that will take raw RGB frames on stdin, or None."""
     size = f"{width}x{height}"
+    rate = frame_rate or 1.0 / FRAME
     if shutil.which('ffplay'):
         return ['ffplay', '-hide_banner', '-loglevel', 'error',
                 '-f', 'rawvideo', '-pixel_format', 'rgb24',
-                '-video_size', size, '-framerate', f"{1.0 / FRAME:.4f}",
-                '-window_title', 'NTSC Video', '-i', 'pipe:0']
+                '-video_size', size, '-framerate', f"{rate:.4f}",
+                '-window_title', title, '-i', 'pipe:0']
     if shutil.which('mpv'):
-        return ['mpv', '--title=NTSC Video', '--demuxer=rawvideo',
+        return ['mpv', f'--title={title}', '--demuxer=rawvideo',
                 f'--demuxer-rawvideo-w={width}',
                 f'--demuxer-rawvideo-h={height}',
                 '--demuxer-rawvideo-mp-format=rgb24', '-']
     return None
+
+
+#: The same block by a name that does not pretend it only does NTSC, as
+#: ``CompositeDecoder`` is for ``NtscDecoder``. The FM video receiver uses
+#: it for PAL as well.
+CompositeFrameSink = ntsc_frame_sink
 
 
 # --------------------------------------------------------------------------
@@ -974,7 +1049,11 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
             self.watch_btn.setText("Watch")
             self.action_note.setText("")
             return
-        argv = find_player()
+        # The rate pictures actually arrive at, not the standard's frame
+        # rate: a buffer holds BUFFER_FRAMES frames and yields one picture,
+        # so they come 1.7 frames apart in real time. Telling a player
+        # 29.97 when it is being fed 17.6 leaves it starved between frames.
+        argv = find_player(frame_rate=1.0 / (FRAME * ntsc_frame_sink.BUFFER_FRAMES))
         if argv is None:
             Qt.QMessageBox.warning(
                 self, "No Media Player",

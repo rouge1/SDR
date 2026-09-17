@@ -367,6 +367,24 @@ class AudioTrack:
     def fileno(self):
         return self._proc.stdout.fileno()
 
+    def descriptor(self):
+        """A duplicate of the pipe, for a block that will close what it is given.
+
+        **Never hand `fileno()` straight to `blocks.file_descriptor_source`.**
+        That block closes the descriptor in its destructor, and `close`
+        above closes it too, so the two of them close one number twice. The
+        second close lands on whatever has been opened in between - and
+        what opens in between is the *next* run of the same app, whose
+        pipe is handed the lowest free number, which is the one just
+        released. So: launch, close, launch again, and the second run's
+        sound dies the moment Python collects the first run's flowgraph,
+        with ``file_descriptor_source: error: [read]: Bad file
+        descriptor``. Reproduced exactly that way.
+
+        A duplicate gives each owner its own number to close.
+        """
+        return os.dup(self.fileno())
+
     def close(self):
         proc, self._proc = getattr(self, '_proc', None), None
         if proc is None:

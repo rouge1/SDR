@@ -36,7 +36,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def apps_with_main():
     found = []
     for name in sorted(os.listdir(os.path.join(ROOT, 'apps'))):
-        if not name.endswith('.py'):
+        # A leading underscore means a helper rather than an app. `_run.py`
+        # has a `main()` of its own - it is the thing that *runs* an app for
+        # the web launcher - and taking it for one failed here on every run
+        # with a signature error that said nothing about any app.
+        if not name.endswith('.py') or name.startswith('_'):
             continue
         with open(os.path.join(ROOT, 'apps', name)) as f:
             if re.search(r'^def main\(', f.read(), re.MULTILINE):

@@ -264,6 +264,52 @@ def subcarrier_index(dbc):
     return 0.5 * (lo + hi)
 
 
+def click_threshold_hz(profile, deviation_pp=None, sample_rate=20e6,
+                       margin=3e6):
+    """Further from the carrier than the signal could legitimately go.
+
+    The picture swings it half the peak-to-peak deviation either way and
+    each subcarrier adds its own; past that, plus a margin, an excursion is
+    a *click* - the discriminator slipping a whole cycle, which is what FM
+    below its threshold does and what puts the sparkles on a weak picture.
+
+    **The margin matters more than it looks.** A discriminator that
+    differences phase cannot read further than half the sample rate
+    whatever the signal does - 10 MHz at 20 MS/s. Quote the threshold
+    against the *peak-to-peak* deviation instead of the peak and it lands
+    at 10.1 MHz for FPV, which is beyond that ceiling: the count then reads
+    zero on a link that is tearing itself apart, and looks exactly like a
+    clean one. Measured, that read 0 clicks a frame at 6 dB
+    carrier-to-noise where there should have been thousands.
+    """
+    deviation = float(deviation_pp or profile.deviation_pp)
+    sound = (2 * subcarrier_index(profile.subcarrier_dbc)
+             * max(profile.subcarriers, default=0.0))
+    legitimate = deviation / 2 + sound
+    # The margin is 3 MHz where there is room for it and halfway to the
+    # ceiling where there is not. F.405 is the case that needs the second:
+    # it swings 4 MHz for the picture and 1.4 for its subcarrier, so a flat
+    # 3 MHz on top lands at 9.7 of the 10 a discriminator can read and
+    # leaves 3% of range for every click to be found in. FPV, which has
+    # room, is unchanged by this.
+    return legitimate + min(margin, 0.5 * (sample_rate / 2 - legitimate))
+
+
+def subcarrier_dbc(index):
+    """What a modulation index shows as - the inverse of `subcarrier_index`.
+
+    A receiver measures the swing a subcarrier puts on the carrier and wants
+    the number the datasheet quotes, which is the first sideband against the
+    carrier. That is what tells you whether a real transmitter's sound sits
+    where its datasheet says.
+    """
+    j0 = _bessel_j(0, index)
+    j1 = _bessel_j(1, index)
+    if j0 == 0 or j1 <= 0:
+        return float('nan')
+    return 20 * math.log10(j1 / j0)
+
+
 # --- profiles ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -319,15 +365,30 @@ def subcarrier_amplitude(profile, freq, deviation_pp):
 #: - audio pre-emphasis with its 3 dB corner at 12 kHz.
 #:
 #: **Neither datasheet gives the video deviation or any video
-#: pre-emphasis.** The receiver's sensitivity is measured at +-2.5 MHz, the
-#: only video deviation either document mentions, so that is the default.
-#: Transmitter modules add a simple R/C pre-emphasis of their own whose
-#: values nobody publishes, so there is none here until a real transmitter
-#: has been measured.
+#: pre-emphasis**, so both were guesses until a real transmitter was
+#: measured. On 2026-09-16 one was, on A3 (5825 MHz) into the BB60D, using
+#: the FM video receiver's own readout over 237 frames:
+#:
+#: - **deviation 7.93 MHz peak to peak** (spread 7.89-7.96), read off the
+#:   sync-to-blanking step, which the television standard fixes. That is
+#:   what is here now. The datasheet's own figure would have been 5.0 - the
+#:   RTC6715's sensitivity is measured at +-2.5 MHz, the only video
+#:   deviation either document mentions - and a transmitter set to that
+#:   under-deviates a real link by 4 dB.
+#: - **no pre-emphasis, confirmed**: the colour burst came back +0.14 dB
+#:   against DC (spread 0.08-0.18), so whatever R/C network the module has
+#:   does nothing measurable at 3.58 MHz. The guess was right.
+#: - **no sound subcarriers at all.** That unit sends none - the 6.0 and
+#:   6.5 MHz bands were the FM noise floor, 53 dB under the carrier - but
+#:   they stay in the profile, because the datasheet defines them and gear
+#:   with a microphone does use them.
+#:
+#: One unit is one unit, and the dialog's Deviation box is editable for
+#: exactly that reason.
 FPV = Profile(
     key='fpv',
     label="FPV drone - 5.8 GHz analog (RTC6705)",
-    deviation_pp=5.0e6,
+    deviation_pp=7.93e6,
     preemphasis='none',
     subcarriers=(6.0e6, 6.5e6),
     subcarrier_dbc=-27.5,
@@ -361,6 +422,28 @@ DEFAULT_PROFILE = FPV.key
 
 
 # --- the receiving end -------------------------------------------------------------
+
+#: Where a receiver's picture filter stops, per format: past the top of the
+#: video band, short of the lowest sound subcarrier at 6.0 MHz. It has to be
+#: a real filter rather than a gentle roll-off, because what lies just above
+#: it is a subcarrier at a tenth of the picture's own swing - and decimating
+#: to the format's video rate would fold 6.0 MHz onto 4.0 in NTSC, right
+#: beside the colour subcarrier. PAL's own band reaches 5.0 MHz, which
+#: leaves only 400 kHz to do it in.
+RECEIVE_CUTOFF = {'ntsc': 4.6e6, 'pal': 5.6e6}
+
+
+def lowest_subcarrier():
+    """The lowest frequency any profile puts sound on.
+
+    A receiver's picture filter has to stop by here, and by here for every
+    profile rather than only for the one selected - see the note on
+    ``FmVideoReceiver``'s picture taps for what a filter that relaxed when
+    the sound sat higher did to a measurement.
+    """
+    return min((f for p in PROFILES.values() for f in p.subcarriers),
+               default=6.0e6)
+
 
 def instantaneous_frequency(iq, sample_rate):
     """Hertz, one sample shorter than the input: the angle between neighbours.

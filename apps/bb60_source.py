@@ -31,8 +31,10 @@ Gain is two elements, an attenuator and an RF stage, presented as one
 0-100% control like every other radio here.
 """
 
+import ctypes
 import glob
 import os
+import re
 import sys
 import threading
 
@@ -76,13 +78,211 @@ def _log_handler(level, text):
     print(f"BB60: {message}", file=sys.stderr)
 
 
+#: The C callback type, and the callbacks themselves - which must outlive
+#: every library they are given to, or the driver calls freed memory.
+_C_LOG_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
+_c_handlers = []
+_registered = set()
+
+
+def _c_log_handler(level, message):
+    _log_handler(level, message.decode('utf-8', 'replace') if message else '')
+
+
+def _soapy_libraries():
+    """Every libSoapySDR mapped into this process, plus the usual system one.
+
+    There is normally more than one. The BB60 module is a *system* module
+    and links against the system ``libSoapySDR``; the Python binding here
+    is conda's and carries its own. Both end up in the process.
+    """
+    paths = []
+    try:
+        with open('/proc/self/maps') as fh:
+            for line in fh:
+                path = line.rstrip().rpartition(' ')[2]
+                if 'libSoapySDR.so' in path and path not in paths:
+                    paths.append(path)
+    except Exception:
+        pass
+    for path in ('/lib/x86_64-linux-gnu/libSoapySDR.so.0.8',
+                 '/usr/lib/x86_64-linux-gnu/libSoapySDR.so.0.8',
+                 '/usr/local/lib/libSoapySDR.so.0.8'):
+        if os.path.exists(path) and path not in paths:
+            paths.append(path)
+    return paths
+
+
 def install_log_handler():
+    """Catch the driver's logging, whichever libSoapySDR it goes into.
+
+    **Registering through the Python binding is not enough, and that was
+    not obvious.** ``SoapySDR.registerLogHandler`` does work - a message
+    logged from Python goes straight to `_log_handler` - but the BB60
+    module's own messages came out anyway, in SoapySDR's default format,
+    several lines per retune. The reason is that there are two copies of
+    the library in the process: the module links against the system
+    ``libSoapySDR.so.0.8`` (318 kB, /lib/x86_64-linux-gnu) while the conda
+    binding carries its own (629 kB). Each keeps its own handler registry,
+    so registering through the binding leaves the one the driver actually
+    logs into still holding the default handler.
+
+    That cost more than a tidy terminal. ``adc_overflows`` counts *only*
+    what this handler sees, and the converter being overdriven is logged
+    and nothing else - the samples come back filtered and decimated, so it
+    never shows as clipping. With the messages going elsewhere the count
+    stayed at zero however hard the front end was driven, and the ATSC
+    receiver's "Input overloaded - turn the RF gain down" could not fire.
+    (The separate ``overflows`` counter, for samples actually lost, comes
+    from ``readStream``'s return code and was never affected.)
+
+    So the handler goes into every one of them, through the C API. Calling
+    this more than once is cheap and is meant to happen: the module - and
+    with it the system library - is not loaded until the first enumerate.
+    """
+    installed = False
     try:
         import SoapySDR  # type: ignore
         SoapySDR.registerLogHandler(_log_handler)
-        return True
+        installed = True
     except Exception:
-        return False
+        pass
+    for path in _soapy_libraries():
+        if path in _registered:
+            continue
+        try:
+            lib = ctypes.CDLL(path)
+            register = lib.SoapySDR_registerLogHandler
+            register.argtypes = [_C_LOG_HANDLER]
+            register.restype = None
+            callback = _C_LOG_HANDLER(_c_log_handler)
+            _c_handlers.append(callback)
+            register(callback)
+            _registered.add(path)
+            installed = True
+        except Exception:
+            _registered.add(path)          # do not keep retrying a bad one
+    return installed
+
+
+_ANSI = re.compile(r'\x1b\[[0-9;]*m')
+_LEVEL = re.compile(r'^\[(?:TRACE|DEBUG|INFO|NOTICE|WARNING|ERROR|CRITICAL|'
+                    r'FATAL|SSI)\]\s*')
+
+
+class _DriverOutput:
+    """Filter what the BB60 module prints, at the one place it appears.
+
+    **A log handler does not catch it, and finding that out took a while.**
+    The module logs through libSoapySDR - the ``[INFO] %s`` formatting on
+    its lines comes out of that library's own default handler, not out of
+    the module - and `install_log_handler` registers on every copy of the
+    library in the process. A message logged through either copy's C API
+    does reach `_log_handler`, both of them, checked. And yet during a real
+    open and two retunes our handler was called **zero times** while the
+    module printed fifteen lines. ``SoapySDR_setLogLevel`` on the other
+    hand does silence them, so the level is consulted somewhere the handler
+    is not. Whatever the reason, the only place the module's words reliably
+    turn up is file descriptor 2.
+
+    That matters beyond a tidy terminal: ``adc_overflows`` counts what the
+    handler sees, and an overdriven converter is *only* ever reported in a
+    message - the samples come back filtered and decimated, so it never
+    shows as clipping. With nothing reaching the handler that count stayed
+    at zero however hard the front end was driven, and the ATSC receiver's
+    "Input overloaded - turn the RF gain down" could never fire.
+
+    So this takes fd 2 for as long as a BB60 is streaming, drops the
+    chatter, counts the overflows and passes everything else - GNU Radio's
+    warnings, Python's tracebacks - straight through to the real stderr.
+    """
+
+    def __init__(self):
+        self._saved = os.dup(2)
+        read_fd, write_fd = os.pipe()
+        try:
+            os.dup2(write_fd, 2)
+        finally:
+            os.close(write_fd)
+        self._read = read_fd
+        self._thread = threading.Thread(target=self._pump, daemon=True,
+                                        name='bb60-stderr')
+        self._thread.start()
+
+    def _pump(self):
+        pending = b''
+        while True:
+            try:
+                chunk = os.read(self._read, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break                      # fd 2 restored: nothing can write
+            pending += chunk
+            while b'\n' in pending:
+                line, _, pending = pending.partition(b'\n')
+                self._line(line)
+        if pending:
+            self._line(pending)
+
+    def _line(self, raw):
+        try:
+            text = raw.decode('utf-8', 'replace')
+            plain = _LEVEL.sub('', _ANSI.sub('', text)).strip()
+            if 'overflow' in plain.lower():
+                _overflows[0] += 1
+                _last_message[0] = plain
+                return
+            if any(k in plain for k in _EXPECTED_CHATTER):
+                return
+            os.write(self._saved, raw + b'\n')
+        except Exception:
+            # Never let filtering stderr be the thing that breaks a run.
+            pass
+
+    def close(self):
+        # Putting the real stderr back removes the pipe's last writer, so
+        # the pump sees end of file and finishes on its own.
+        try:
+            os.dup2(self._saved, 2)
+        except OSError:
+            pass
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=1.0)
+        for fd in (self._read, self._saved):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+#: The filter, and how many sources are using it.
+_driver_output = [None, 0]
+
+
+def capture_driver_output():
+    """Start filtering the driver's output; safe to call more than once."""
+    if _driver_output[0] is None:
+        try:
+            _driver_output[0] = _DriverOutput()
+        except Exception as exc:
+            print(f"BB60: could not filter the driver's output: {exc}",
+                  file=sys.stderr)
+            return False
+    _driver_output[1] += 1
+    return True
+
+
+def release_driver_output():
+    """Give the real stderr back once the last source has stopped."""
+    if _driver_output[0] is None:
+        return
+    _driver_output[1] -= 1
+    if _driver_output[1] <= 0:
+        stream, _driver_output[0] = _driver_output[0], None
+        _driver_output[1] = 0
+        stream.close()
 
 
 def overflow_count():
@@ -233,6 +433,7 @@ class bb60_source(gr.sync_block):
     def start(self):
         ensure_plugin_path()
         install_log_handler()
+        capture_driver_output()
         reset_overflows()
         import SoapySDR  # type: ignore
         from SoapySDR import SOAPY_SDR_RX, SOAPY_SDR_CF32  # type: ignore
@@ -242,6 +443,10 @@ class bb60_source(gr.sync_block):
                 "No Signal Hound BB60 was found on USB. Check it is "
                 "connected, and that no other application - Sceptre, or "
                 "another flowgraph - already has it open.")
+        # Enumerating is what loads the module, and with it the system
+        # libSoapySDR that the module logs into. Before this call that
+        # library may not have been in the process at all.
+        install_log_handler()
         # Opened by driver name alone: the arguments enumerate() returns
         # are refused, serial with "no match" and the whole dict with
         # "device_id is not a number".
@@ -263,6 +468,7 @@ class bb60_source(gr.sync_block):
             except Exception as exc:
                 print(f"BB60 source: error closing the stream: {exc}",
                       file=sys.stderr)
+        release_driver_output()
         return True
 
     # -- settings --------------------------------------------------------

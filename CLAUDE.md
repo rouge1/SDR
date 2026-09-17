@@ -190,6 +190,7 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 | `ppmookAudioXmitter.py` | PPM-OOK live audio transmitter | ✅ |
 | `subcarrierRecordedAudio.py` | Subcarrier with recorded audio | ✅ |
 | `fmVideoXmitter.py` | FM video transmitter - analog FPV on 5.8 GHz, or ITU-R F.405 relay/satellite; NTSC or PAL | ✅ |
+| `fmVideoReceiver.py` | FM video receiver - pictures, sound, and what the transmitter's own numbers actually are | ✅ |
 | `ntscAnalogVideoRecorded.py` | NTSC analog video transmitter | ✅ |
 | `ntscReceiver.py` | NTSC analog video receiver - pictures and sound | ✅ |
 | `atscXmitter.py` | ATSC digital TV transmitter | ✅ |
@@ -798,6 +799,38 @@ Five things worth knowing before changing it:
   in whole 188-byte packets so the player resyncs on the next sync byte
   instead of hunting.
 
+**The analog receivers' Watch is a different problem, and got this wrong.**
+A transport stream is a river of small packets, so writing what fits and
+dropping the rest works. A picture is one object of 921,600 bytes in NTSC
+and 1,327,104 in PAL, where a pipe holds 65,536 - and `_to_player` wrote
+once per decoded frame. A non-blocking write to a pipe delivers at most one
+pipe buffer, so **each picture lost fourteen fifteenths of itself**, and the
+remainder queued against a cap that only applied inside the branch that
+never ran. Measured against a real FPV transmitter: of 214 pictures decoded
+in 12 seconds, 7.1% of the bytes reached the player - **1.25 pictures a
+second** - while the unsent backlog grew to **183 MB**. On screen that is a
+picture that updates about once a second and falls further behind, which is
+exactly what it was reported as.
+
+`CompositeFrameSink` writes from a thread of its own now, blocking, and
+holds a single frame rather than a queue: a player that has fallen behind
+gets the newest picture and never a backlog, which is what the comment
+above always claimed. Afterwards, 100% of decoded pictures arrive, whole,
+at 17.57 a second with memory flat. Two details that matter:
+
+- **The stop drains.** Asking the writer to finish before taking the pipe
+  away from it is what stops the last picture of every session being
+  thrown out; checked after the write rather than before it, the count is
+  exactly the number decoded.
+- **Tell the player the rate pictures actually arrive at**, which is one
+  per buffer - 17.6 a second in NTSC, 14.7 in PAL - not the standard's
+  29.97 or 25. A player told 29.97 and fed 17.6 starves between frames.
+
+`scripts/test_fm_video_receive.py` checks the whole path now, because
+nothing did: it runs the decoder at the radio's pace into a stand-in player
+and requires every decoded picture to arrive whole. Against the old write
+it reads 1.0 pictures of 14.
+
 ### NTSC composite video
 
 `apps/ntsc_encode.py` builds a 2:1 interlaced composite signal - sync,
@@ -1007,6 +1040,23 @@ folder.
 - **The `.dat` captures do not go through it.** They are already composite,
   at 18 MS/s, so they are played by a file source and resampled 5/9 - see
   `dat_resample_ratio`.
+- **A pipe handed to `file_descriptor_source` must be a duplicate, or the
+  *second* launch of the app goes out silent.** That block closes the
+  descriptor it was given in its destructor, and `AudioTrack.close` - which
+  `close_sources` calls on closeEvent - closes it too. Two owners, one
+  number, closed twice. The second close lands on whatever was opened in
+  between, and what opens in between is the next run of the same app: its
+  pipe is handed the lowest free descriptor, which is the one just
+  released. So launch, close, launch again, and the moment Python collects
+  the first run's flowgraph the second run's sound dies with
+  `file_descriptor_source: error: [read]: Bad file descriptor`. Reported
+  from TVAdemo against a clip, reproduced exactly, and both descriptors
+  read 3 in the reproduction. `AudioTrack.descriptor()` and
+  `TransportStream.descriptor()` hand out `os.dup` of it now, so each owner
+  closes its own; the NTSC transmitter, the FM video transmitter and the
+  ATSC transmitter all went through `fileno()` and all had it.
+  `scripts/test_fm_video_transmit.py` runs the launch-close-launch sequence
+  in the order that used to break.
 - **One clip, one entry in the picker.** The media folder holds each clip
   twice - a `.mp4` for here and a `.ts` of the same picture and sound, which
   the ATSC transmitter plays without having to encode it - so offering every
@@ -1073,9 +1123,8 @@ A tile with more than one face is a **flip tile**: a badge in its corner
 turns it over, and the icon and the caption both change with it. That is
 how the two ends of one standard share a square - the ATSC, NTSC and
 FM + RDS transmitters and their receivers - instead of sitting apart as
-though they were unrelated apps. FM video is single-faced for now and gains
-a second face when it has a receiver; `icons/fmVideoRx.jpg` is drawn
-already.
+though they were unrelated apps. All three video standards
+now have both ends on one tile, FM video included.
 
 **The grid follows the radio.** `RADIO_DIRECTIONS` says which way each of
 the four can go, and `apply_radio_directions()` runs on startup and again
@@ -1367,11 +1416,11 @@ in `apps/fm_video_core.py`, free of GNU Radio and Qt:
 
 | | FPV drone (RTC6705) | Microwave relay / satellite (ITU-R F.405) |
 |---|---|---|
-| Deviation | 5 MHz p-p for 1 V, at every frequency | 8 MHz p-p for 1 V at the curve's crossover - 0.7616 MHz for 525 lines, 1.512 for 625 - which is 2.53 or 2.255 MHz at low frequencies |
+| Deviation | 7.93 MHz p-p for 1 V, at every frequency - **measured off air**, not a datasheet figure | 8 MHz p-p for 1 V at the curve's crossover - 0.7616 MHz for 525 lines, 1.512 for 625 - which is 2.53 or 2.255 MHz at low frequencies |
 | Picture pre-emphasis | none | F.405's shelf for the picture's line count: 525 lines, zero at 187 kHz, pole at 875 kHz, 10 dB down at DC; 625 lines, zero at 313 kHz, pole at 1.565 MHz, 11 dB down |
 | Sound | FM subcarriers at 6.0 MHz (left) and 6.5 MHz (right), -27.5 dBc, +-25 kHz, 12 kHz corner | one at 6.8 MHz, -20 dBc, +-50 kHz, 75 us |
 | Channels | 40, bands A, B, E, F and R | a typed frequency |
-| 99% bandwidth, colour bars | 9.1 MHz in NTSC, 10.4 in PAL | 14.7 MHz in NTSC, 14.6 in PAL |
+| 99% bandwidth, colour bars | 10.8 MHz in NTSC, 12.1 in PAL | 14.7 MHz in NTSC, 14.6 in PAL |
 
 **And a Format pull-down: NTSC or PAL.** FPV cameras and goggles do either,
 and a transmitter sends whatever its camera gives it. The format picks the
@@ -1387,10 +1436,17 @@ choices rather than a document's, and are worth measuring against real
 equipment before they are trusted:
 
 - **Neither RichWave datasheet gives the video deviation or any video
-  pre-emphasis.** 5 MHz p-p is the receiver's sensitivity test condition
-  (+-2.5 MHz), the only video deviation either mentions. FPV transmitter
-  modules add an R/C pre-emphasis of their own whose values nobody
-  publishes, so there is none here.
+  pre-emphasis**, so both were this project's guesses until 2026-09-16,
+  when a real FPV transmitter was measured on A3 (5825 MHz) into the BB60D
+  with the FM video receiver's own readout - see its section for the whole
+  set. The deviation was **7.93 MHz p-p** over 237 frames (spread
+  7.89-7.96), not the 5.0 the datasheets imply: +-2.5 MHz is the RTC6715's
+  *sensitivity test condition*, the only video deviation either mentions,
+  and it under-deviates a real link by 4 dB. The profile carries the
+  measured figure now, and the dialog's Deviation box is editable because
+  one unit is one unit. The pre-emphasis guess was right: the colour burst
+  came back +0.14 dB against DC (spread 0.08-0.18), so whatever R/C network
+  that module has does nothing measurable at the colour subcarrier.
 - **F.405 says nothing about sound.** One subcarrier at 6.8 MHz with 75 us
   is what analog C-band satellite channels commonly carried; its level and
   deviation are chosen.
@@ -1439,11 +1495,13 @@ Things worth knowing before changing it:
   checked to 4e-7.
 - **FM has a threshold, and the test shows it.** With noise added to the FPV
   signal, every dB of carrier is a dB of picture down to about 12 dB
-  carrier-to-noise in 20 MHz - 42.8 dB of picture at 30, 32.8 at 20, 24.7
+  carrier-to-noise in 20 MHz - 46.8 dB of picture at 30, 36.8 at 20, 28.7
   at 12 - with no clicks at all from 15 dB up. Below that the damage
-  arrives as clicks, the sparkles of a weak FM picture: 26 a frame at
-  10 dB, 456 at 8, 3,588 at 6, 15,055 at 4. An AM picture fades into snow
-  instead.
+  arrives as clicks, the sparkles of a weak FM picture: 88 a frame at
+  10 dB, 708 at 8, 3,937 at 6, 13,608 at 4. An AM picture fades into snow
+  instead. (Those picture figures are 4 dB better than they were before the
+  deviation was measured, which is the whole of FM's trade in one line: the
+  datasheet's 5 MHz p-p was throwing 4 dB away.)
 
 Four things about measuring it cost time, and none of them was in the
 transmitter:
@@ -1522,6 +1580,246 @@ than the link: off the air a 5 ms segment sits anywhere in a reference
 several frames long, so its lag is far bigger than the segment, and a guard
 written for software - skip any lag bigger than half the shorter signal -
 skipped them all. It checks how much the two overlap now.
+
+### FM Video Receiver
+
+`fmVideoReceiver.py` is the other end of `fmVideoXmitter.py` and the other
+side of its tile. It discriminates the carrier, takes the pre-emphasis back
+out, decodes the composite into pictures and demodulates the sound off the
+subcarriers riding above them. **Watch** hands the decoded pictures to
+`ffplay` (or `mpv`), as the ATSC and NTSC receivers do; there is no
+transport stream to pass on, so what goes across the pipe is raw frames.
+
+**It is also a measuring instrument, which is why it was worth building
+before the real FPV hardware arrived.** The FPV profile's 5 MHz deviation
+and its "no pre-emphasis" are this project's guesses - neither RichWave
+datasheet gives either - so a receiver pointed at a real FPV transmitter has
+to be able to say what that transmitter actually does rather than assume the
+guesses and show a picture that is quietly wrong. Everything under
+**Measured** is read against levels the television standard fixes, so none
+of it needs a test signal or any knowledge of what is being televised:
+
+- **Video Deviation**, from the step between sync tip and blanking. That
+  step is 40 IRE of 140, or 300 mV of 1000, whatever the picture is doing,
+  so how big it comes back says how far the transmitter really swings the
+  carrier for a volt. It does not depend on the pre-emphasis: both are flat
+  parts of the signal, so the curve and its inverse cancel on them exactly.
+- **Carrier Offset**, from where the sync tip landed, which is half the
+  swing below the carrier.
+- **Response at Subcarrier**, from the colour burst. Both standards make the
+  burst exactly as big peak-to-peak as the sync-to-blanking step, so one is
+  the path's gain at 3.58 or 4.43 MHz and the other its gain at DC: their
+  ratio is the frequency response of everything in between, with no
+  reference signal at all. 1.0 is flat and anything else is a lift that has
+  not been undone - which is how an FPV module's own undocumented R/C
+  pre-emphasis can be read off the air.
+
+```sh
+python scripts/test_fm_video_receive.py          # both standards, both formats
+python scripts/test_fm_video_receive.py --quick  # FPV in NTSC, no sound
+```
+
+drives the app's own receiving blocks against the app's own transmitting
+ones with no radio, and concentrates on those measurements rather than on
+the picture alone.
+
+**Getting the deviation wrong does not cost the picture. Getting the
+pre-emphasis wrong does.** `CompositeDecoder` reads sync and blanking off
+the signal and scales by the step between them, so a deviation setting that
+is out by a factor simply rescales what it is handed - told half the real
+deviation it decodes colour bars to the same 0.017 worst error. That is what
+makes the instrument usable against a transmitter whose numbers nobody
+knows. Pre-emphasis is the one that does not forgive: with F.405's curve on
+the air and none taken out, the low frequencies arrive 10 dB down, which is
+the sync pulses, and the picture will not decode at all.
+
+**Verified off air**, the VSG60 on TVAdemo transmitting FPV colour bars in
+NTSC on channel F4 (5800 MHz) at -9.5 dBm into the BB60D here at 60% and
+20 MS/s, the app's own flowgraph run headless:
+
+| | told the truth (5 MHz) | told 5 MHz, sending 8 |
+|---|---|---|
+| Status | Locked - picture decoding | Locked - picture decoding |
+| Frames | 17.7-17.8 a second of 17.6, **0 dropped, 0 failed** | 17.8 a second, 0 dropped |
+| BB60D overflows | 0 in 30 s | 0 |
+| Carrier to noise | 23.2 dB in 20 MHz | 22.4 dB |
+| Line rate | 15,734.3 Hz (0 to +2 ppm) | 15,734.2 Hz (-2 ppm) |
+| **Video deviation** | **4.94-4.97 MHz p-p** of 5.00 sent | **8.01 MHz p-p** of 8.00 sent |
+| **Carrier offset** | - | **+9 kHz (+1.5 ppm)** |
+| **Response at 3.58 MHz** | -0.00 to +0.07 dB | -0.09 dB |
+| Sound subcarriers | -27.7 to -28.2 dBc of -27.5 sent | - |
+
+The second column is the one that matters: the receiver was told the FPV
+profile's 5 MHz and the transmitter was swinging 8, and it read **8.01** -
+which is the job it will have to do against a real FPV transmitter. Set to
+PAL with NTSC on the air it said "This is NTSC - reopen with Format set to
+NTSC", which is the other thing nothing on the air announces.
+
+**And then against the real thing.** On 2026-09-16 an actual analog FPV
+transmitter and camera were put on the bench, on channel A3 (5825 MHz),
+into the BB60D at 60%. A sweep of 5645-5945 MHz found it first - centre of
+mass 5824.83 MHz, 99% bandwidth 8.03 MHz, 24.2 dB carrier-to-noise in
+20 MHz, no BB60D overflows - and then the receiver locked and decoded a
+colour picture sharp enough to read a serial number off an instrument's
+front panel. Over 60 seconds and 237 measured frames, with 1,059 pictures
+decoded at 17.7 a second, **0 dropped, 0 failed and 0 overflows**:
+
+| | the profile's guess | what it actually does |
+|---|---|---|
+| Video deviation | 5.0 MHz p-p | **7.93 MHz p-p**, spread 7.89-7.96 |
+| Video pre-emphasis | none | **none** - burst +0.14 dB against DC, spread 0.08-0.18 |
+| Sound subcarriers | 6.0 and 6.5 MHz at -27.5 dBc | **none sent at all** |
+| Format | unknown until measured | **NTSC**, 15,734.52 Hz, +16.4 ppm |
+
+Three things that came out of it:
+
+- **The deviation was the guess that was wrong, and by 59%.** `FPV` in
+  `fm_video_core` carries 7.93 MHz now. It is worth 4 dB of picture: the
+  threshold table above moved from 42.8 dB at 30 dB carrier-to-noise to
+  46.8, because the datasheet's figure was throwing that away.
+- **The pre-emphasis guess was right**, and the burst reading is what says
+  so - +0.14 dB with a spread of a tenth of a decibel, on a transmitter
+  nobody has documented.
+- **The receiver reported noise as sound, and that is now fixed.** The
+  6.0 and 6.5 MHz chains read **-51.9 dBc and 30 kHz rms** - which reads as
+  a subcarrier carrying loud programme - when the baseband above 4.25 MHz
+  was in fact flat noise at -39.5 dB with no structure at either frequency.
+  Both numbers were the empty band. A subcarrier weaker than
+  `NO_SUBCARRIER_DBC` (-45 dBc) is reported as "nothing here" now and its
+  deviation is not shown at all; and the "silent" threshold on one that
+  *is* there went from 100 Hz to 2 kHz, because a real subcarrier 27 dB
+  down measures 1.0-1.2 kHz rms of the demodulator's own noise on a 23 dB
+  link with silence going out, so 100 Hz would never once have fired.
+
+Its carrier sat **-399 kHz** from where it was tuned and wandered between
+-222 and -521 kHz over the minute, which is a cheap VTX warming up and is
+well outside anything the measurement's own precision could invent.
+
+Six things worth knowing before changing it, five of them mistakes this made
+first:
+
+- **There is no local-oscillator offset, unlike the NTSC receiver.** That
+  one tunes 6 MHz above its channel so the radio's own leakage falls outside
+  a 6 MHz channel in a 20 MHz window. FM video has no such room: the signal
+  is 9 to 15 MHz wide and the radio's 20 MS/s is all of it, so the carrier
+  sits in the middle and the radio's DC lands on it. The BB60D centres its
+  own IQ; a radio that does not would show it as a periodic distortion of
+  the picture rather than as a spike in the spectrum.
+- **The picture filter must not depend on the profile, because it is part of
+  the instrument.** It has to be flat over the picture and *gone* by the
+  lowest sound subcarrier - decimating to NTSC's 10 MS/s folds 6.0 MHz onto
+  4.0, straight into the chroma, and PAL's own band reaches 5.0 MHz so there
+  are 400 kHz to stop in. Letting the transition widen when the sound sat
+  higher (F.405's is at 6.8) is cheaper and looks harmless: 21 taps instead
+  of 35, still 34 dB down where the sound is. But a windowed sinc with a
+  wide transition droops long before it, and that one read **0.68 dB low at
+  the colour subcarrier** - so the receiver would have reported most of a
+  decibel of its own filter as the transmitter's pre-emphasis. Fixed at
+  6.0 MHz for every profile it is 0.008 dB. An FFT filter makes the sharp
+  version affordable: 12x real time at 20 MS/s against a plain FIR's 8x.
+- **The burst has to be windowed before it is averaged.** Mixing it down and
+  taking the mean leaves a term at twice the subcarrier which only cancels
+  over a whole number of cycles, and seven cycles of NTSC's subcarrier is
+  19.56 samples at 10 MS/s. Rounded to 20, the leftover read a *perfect*
+  loopback as 0.974 - a 0.23 dB lift that is not there. A Hann window puts
+  it back to 1.0000 at 10, 12.5 and 20 MS/s in both standards.
+- **The carrier offset has to be measured against the deviation just found,
+  not the one the receiver was told.** The sync tip sits half the swing
+  below the carrier, so its position carries both; taking the set deviation
+  for the real one books the difference as tuning error. Off air against the
+  transmitter swinging 8 MHz while the receiver expected 5, that read the
+  carrier as **1.5 MHz off** when it was within a couple of kilohertz. Its
+  precision follows the deviation's, though - 1% of a 5 MHz swing is
+  25 kHz - so read it in tens of kilohertz, not in parts per million.
+- **A click threshold has to be one a discriminator can actually reach.**
+  Differencing phase cannot read further than half the sample rate, 10 MHz
+  at 20 MS/s. Quoting the threshold against the *peak-to-peak* deviation
+  rather than the peak puts it at 10.1 MHz for FPV, beyond that ceiling: the
+  count then reads zero however badly the link is breaking up, and an empty
+  channel and a perfect one look alike. Measured, that read **0 clicks a
+  frame at 6 dB carrier-to-noise** where there should have been thousands.
+  `click_threshold_hz` in `fm_video_core` is now the one definition, shared
+  with the transmitter's own test, and the margin is 3 MHz where there is
+  room and halfway to the ceiling where there is not - F.405 swings 5.4 of
+  the 10 available and needs the second. With it right, 3,622 clicks a frame
+  at 6 dB, against the 3,588 the transmit test measures independently.
+- **The link statistics must not be a Python block at the radio's rate.**
+  Carrier-to-noise and clicks were one `gr.sync_block` reading the RF and
+  the discriminator at 20 MS/s. It worked, and it held the interpreter lock
+  that the frame decoder - also Python, on its own thread - needs to get a
+  picture out. Measured at the radio's own pace: without it, every frame the
+  buffer allows and none dropped; with it, **7 buffers of 70 dropped in NTSC
+  and 13 of 58 in PAL**. Squaring the envelope, keeping one sample in eight,
+  rectifying and comparing are C++ blocks now, and what reaches Python is
+  three streams at 100 S/s. Flat out that took the chain from 1.21x real
+  time to 3.01x.
+
+Carrier-to-noise is the number FM lives by, because FM has a threshold, and
+it comes from the second and fourth moments of the envelope - for a carrier
+of power `c` in complex noise, `m4 = 2 m2^2 - c^2`. Against known noise it
+reads within 0.01 dB at 30, 20, 12 and 6 dB. **No carrier at all is not a
+low carrier-to-noise**: pure noise satisfies `m4 = 2 m2^2` exactly, so the
+carrier term comes out zero rather than small and there is no ratio to
+quote. Every sample of noise is also a phase jump, so the click count on an
+empty channel is the sample rate - 190,012 a frame, measured - which is
+arithmetic rather than information. The readout says "no carrier" and leaves
+the clicks blank instead.
+
+The window shows the **RF spectrum** on the transmitter's own span and
+centre, so the two can be read side by side; the **recovered baseband**,
+which the transmitter has no equivalent of and which is where an unknown
+transmitter's sound subcarriers appear at whatever frequency they really
+are; and the **composite** itself. At the radio's rate with no displays the
+chain costs 2.6 cores of the eight in NTSC and 3.4 in PAL, and decodes every
+frame the buffer allows.
+
+**The frame decoder is shared with the NTSC receiver**, as
+`CompositeFrameSink` - the same threaded decode, drop-rather-than-fall-
+behind buffer and non-blocking player pipe, with the video standard as a
+parameter so it does PAL too. Its `measure()` hook is where the numbers
+above are taken, with the sync pulses already found.
+
+### Where the windows come back
+
+Three windows remember where they were left, and all three keep it the same
+way: plain `x`, `y`, `width`, `height` in JSON, applied size-first, and only
+when the saved position would land somewhere still reachable
+(`geometry_is_reachable` in `apps/utils.py`, which looks across every
+screen rather than just the primary one).
+
+| Window | Where it is kept |
+|--------|------------------|
+| The launcher | `window_position` in `config/window_settings.json` |
+| An app's config dialog | `dialog_position` in `config/<module>_config.json` |
+| An app's flowgraph window | `flowgraph_position`, in that same per-app file |
+
+**The flowgraph's was the one that did not work, and it looked like it was
+never being saved.** Every app already calls Qt's own
+`saveGeometry`/`restoreGeometry` against `QSettings("GNU Radio", <app>)`,
+and the *saving* half works - the stored blobs hold real geometries, 1782
+x1161 at (215, 258) and so on. Two things stopped them coming back:
+
+- **Qt 5 refuses to restore at all when the screen has changed size.**
+  `restoreGeometry` compares the screen width the blob was saved on against
+  the current one and returns false, restoring nothing, if they differ by
+  more than a quarter. The blobs here were written on screens 2880 and 3840
+  wide - a laptop with an external monitor does that every time it is
+  plugged in - so 3840/2880 = 1.33 tripped it.
+- **It runs before the window exists.** Each app calls it at the top of its
+  `__init__`, which is the GRC-generated idiom, and then builds every
+  control, box and plot afterwards. The layout can overrule the restored
+  size once the widgets are in.
+
+So the geometry is applied *after* `main()` has shown the window, by
+whichever launcher started it - `gnuradio_launcher.py` for the desktop
+grid, `apps/_run.py` for the browser - and saved from the close-event
+wrapper the launcher already installs, read before the app's own
+`closeEvent` stops the flowgraph. **No app needed changing**, and each
+keeps its `QSettings` calls, which is what an app run directly still uses.
+
+The saved size is clamped to the current screen but the position is not:
+a window deliberately parked against an edge, or on a second monitor,
+should come back there.
 
 ### How every dialog gets laid out
 
@@ -1698,8 +1996,21 @@ Things worth knowing before changing it:
   cannot do. The server holds the processes instead, so the page lists what
   is running with a Stop button - something the desktop launcher cannot do -
   and single mode is an enforced one-at-a-time rather than an implicit one.
-  Stop is `terminate`, which lands on the `SIGTERM` handler every app already
-  installs.
+  Stop is `terminate`, and **that is not yet enough to stop an app started
+  through `apps/_run.py`.** Every app installs a `SIGTERM` handler in its
+  `main()`, and run under `_run.py` on TVAdemo the FM video transmitter
+  ignored both `SIGTERM` and `SIGINT`: five minutes after the first one it
+  was still on the air on 419% of a core across 53 threads, its main thread
+  parked in Qt's poll, and only `SIGKILL` ended it - on two separate runs.
+  It is *not* the obvious cause: each `main()` starts a 500 ms timer so the
+  interpreter gets control to run the handler, and then returns, dropping
+  the only reference to it - but a stripped-down reproduction with the timer
+  collected still took `SIGTERM` immediately, so something else is
+  swallowing it. Until this is found, the browser's Stop button should be
+  assumed not to stop an app, and anything launched through `_run.py` by
+  hand needs its PID. A killed transmitter leaves `config/.vsg60.lock`
+  behind, and that is only harmless because the lock is keyed by a PID and a
+  dead one is treated as stale.
 - **Loopback is open, wider is not.** Sitting at the machine is already the
   permission, so `127.0.0.1` needs no token. `--host` anything else mints one
   and puts it in the printed URL. Every tile keys a transmitter and 0 % power
@@ -1718,10 +2029,18 @@ Exercised so far: the tile table parsing, the settings round trip and its
 merge, every launch refusal (wrong direction, single mode, unknown module,
 radio absent), spawn, the running list, reaping, Stop, and the token. All of
 it against a stubbed interpreter, because it was written on a machine without
-the `gnu` environment. **Not yet exercised: anything involving real GNU Radio
-or a real radio** - in particular the assumption the whole design rests on,
-that the probe subprocess releases the USB handle in time for the app that
-follows.
+the `gnu` environment. **Not yet exercised: the assumption the whole design
+rests on**, that the probe subprocess releases the USB handle in time for
+the app that follows - neither machine here has a HackRF, which is the radio
+that trap belongs to.
+
+`apps/_run.py` itself has now run a real app against a real radio: it
+started the FM video transmitter on TVAdemo's VSG60 from a `--config` file,
+headless, and transmitted correctly - see the Stop note above for the one
+thing that did not work. `scripts/test_app_close.py` used to fail on
+`_run.py`, which lives in `apps/` and has a `main()` of its own; it skips
+names beginning with an underscore now, since a leading underscore there
+means a helper rather than an app.
 
 The per-app configuration dialogs are still Qt, and appear on the server's
 display like the flowgraph does. Moving them into the browser needs no app
@@ -1799,12 +2118,39 @@ attenuator open, no RF), within 2 dB of the best this device can do.
 
 **An overdriven converter is invisible in the samples.** They arrive
 filtered and decimated, so nothing clips; the only sign is the driver
-logging `GetIQ: ADC overflow`. `bb60_source` therefore installs a SoapySDR
-log handler that counts those, and the receiver shows "Input overloaded —
-turn the RF gain down" instead of it scrolling past in a terminal. The same
-handler drops the module's `ConfigureIQCenter` / `ConfigureIO` / `Using
-format` chatter, which is logged at ERROR, is harmless, and otherwise
+saying `GetIQ: ADC overflow`. `bb60_source` counts those, and the receiver
+shows "Input overloaded — turn the RF gain down" instead of it scrolling
+past in a terminal. It also drops the module's `ConfigureIQCenter` /
+`ConfigureIO` / `Using format` chatter, which is harmless and otherwise
 prints several lines per retune.
+
+**A SoapySDR log handler does not catch any of it, and this said it did.**
+`SoapySDR.registerLogHandler` works - a message logged from Python arrives
+- and `install_log_handler` now registers through the C API on *every*
+copy of the library in the process, because there are two: the BB60 module
+is a system module linking `/lib/x86_64-linux-gnu/libSoapySDR.so.0.8`
+(318 kB) while the conda binding carries its own (629 kB). A message logged
+through either copy's own C API reaches the handler, both checked. And yet
+during a real open and two retunes the handler was called **zero times**
+while the module printed fifteen lines, whose `[INFO] %s` formatting comes
+out of libSoapySDR's *default* handler - so the module does log through the
+library, and the level is consulted somewhere the handler is not
+(`SoapySDR_setLogLevel(FATAL)` silences it completely, and so does
+`SOAPY_SDR_LOG_LEVEL=fatal`).
+
+That cost more than a tidy terminal. `adc_overflows` counted only what the
+handler saw, so it stayed at zero however hard the front end was driven and
+the ATSC receiver's "Input overloaded" could never fire. Raising the log
+level would have hidden the overflow line too, since it is at the same
+level as the chatter. So `_DriverOutput` takes file descriptor 2 for as
+long as a BB60 is streaming, drops the chatter, counts the overflows and
+passes everything else — GNU Radio's warnings, Python's tracebacks —
+straight through to the real stderr. Verified: fifteen chatter lines to
+none, `GetIQ: ADC overflow` counted with its text kept, an unrecognised
+error passed through, and stderr restored when the last source stops.
+**The separate `overflows` counter, for samples actually lost, comes from
+`readStream`'s return code and was never affected** — the off-air figures
+quoted in this file are that one.
 
 Recording with raw SoapySDR and decoding offline still works too, and is
 still the right thing for anything that does not need to be live -

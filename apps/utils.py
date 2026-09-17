@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from PyQt5 import Qt  #type: ignore
 from PyQt5.QtCore import (QObject, QEvent, QRect, Qt as QtNs,  #type: ignore
                           pyqtSignal)
@@ -207,6 +208,93 @@ class DialogGeometryTracker(QObject):
                 'width': obj.width(),
                 'height': obj.height(),
             }
+        return False
+
+
+#: Where a flowgraph window's own geometry lives, in the same per-app file
+#: as ``dialog_position`` and in the same shape.
+FLOWGRAPH_POSITION = 'flowgraph_position'
+
+
+def _app_config_path(module_name, config_dir='config'):
+    return os.path.join(config_dir, f"{module_name}_config.json")
+
+
+def save_window_geometry(window, module_name, config_dir='config',
+                         key=FLOWGRAPH_POSITION):
+    """Remember where a flowgraph window was, beside its dialog's position.
+
+    **Qt already does this and it does not survive a change of monitor.**
+    Every app calls ``saveGeometry``/``restoreGeometry`` against
+    ``QSettings("GNU Radio", <app>)``, and the saving half works - the
+    stored blobs hold real geometries. The restoring half has two problems.
+    It runs at the top of each ``__init__``, before any of the widgets
+    exist, so the layout can overrule the size afterwards; and Qt 5's
+    ``restoreGeometry`` compares the screen width it was saved on against
+    the current one and **returns false without restoring anything** if
+    they differ by more than a quarter. The saved blobs here were written
+    on screens 2880 and 3840 wide, so that check had been firing.
+
+    So the geometry is kept the way the launcher keeps its own window's and
+    the config dialog's: plain x, y, width and height in the app's own
+    JSON, applied after the window is up, and only when it would land
+    somewhere still reachable.
+    """
+    path = _app_config_path(module_name, config_dir)
+    try:
+        config = {}
+        if os.path.exists(path):
+            with open(path) as fh:
+                config = json.load(fh)
+        config[key] = {
+            'x': window.pos().x(),
+            'y': window.pos().y(),
+            'width': window.width(),
+            'height': window.height(),
+        }
+        os.makedirs(config_dir, exist_ok=True)
+        with open(path, 'w') as fh:
+            json.dump(config, fh, indent=4)
+        return True
+    except Exception as exc:
+        print(f"Could not save the window position for {module_name}: {exc}",
+              file=sys.stderr)
+        return False
+
+
+def restore_window_geometry(window, module_name, app=None,
+                            config_dir='config', key=FLOWGRAPH_POSITION):
+    """Put a flowgraph window back where it was. See `save_window_geometry`.
+
+    Call it *after* the window has been shown: that is the whole point of
+    doing this rather than leaving it to ``restoreGeometry`` at the top of
+    ``__init__``.
+    """
+    path = _app_config_path(module_name, config_dir)
+    try:
+        if not os.path.exists(path):
+            return False
+        with open(path) as fh:
+            position = json.load(fh).get(key)
+        if not position:
+            return False
+        app = app or Qt.QApplication.instance()
+        # Size first, so the reachability test and the move both work on the
+        # geometry the window will actually have - as the launcher does.
+        if 'width' in position and 'height' in position:
+            width, height = int(position['width']), int(position['height'])
+            if app is not None:
+                screen = app.primaryScreen().availableGeometry()
+                width = min(width, screen.width())
+                height = min(height, screen.height())
+            window.resize(width, height)
+        if 'x' in position and 'y' in position \
+                and geometry_is_reachable(app, position):
+            window.move(int(position['x']), int(position['y']))
+        return True
+    except Exception as exc:
+        print(f"Could not restore the window position for {module_name}: "
+              f"{exc}", file=sys.stderr)
         return False
 
 
