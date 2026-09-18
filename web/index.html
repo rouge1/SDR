@@ -4,8 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>RF Bench Launcher</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap">
 <style>
+/* Barlow and Barlow Semi Condensed, served out of fonts/ in the repo
+   rather than fetched from a font CDN, so the page renders the same on a
+   bench with no network. The same files the desktop launcher loads through
+   QFontDatabase, under the SIL OFL that ships beside them. */
+@font-face{font-family:"Barlow";font-style:normal;font-weight:400;font-display:swap;src:url("/fonts/Barlow-Regular.ttf") format("truetype")}
+@font-face{font-family:"Barlow";font-style:normal;font-weight:500;font-display:swap;src:url("/fonts/Barlow-Medium.ttf") format("truetype")}
+@font-face{font-family:"Barlow";font-style:normal;font-weight:600;font-display:swap;src:url("/fonts/Barlow-SemiBold.ttf") format("truetype")}
+@font-face{font-family:"Barlow Semi Condensed";font-style:normal;font-weight:500;font-display:swap;src:url("/fonts/BarlowSemiCondensed-Medium.ttf") format("truetype")}
+@font-face{font-family:"Barlow Semi Condensed";font-style:normal;font-weight:600;font-display:swap;src:url("/fonts/BarlowSemiCondensed-SemiBold.ttf") format("truetype")}
+@font-face{font-family:"Barlow Semi Condensed";font-style:normal;font-weight:700;font-display:swap;src:url("/fonts/BarlowSemiCondensed-Bold.ttf") format("truetype")}
 :root{
   --ground:#10151a; --panel:#1a2228; --panel-2:#212b32; --well:#0c1013;
   --rule:#2e3a43; --rule-soft:#222c33;

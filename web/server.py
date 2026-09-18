@@ -312,6 +312,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({'error': 'not found'}, 404)
             return self._file(target)
 
+        # The page's typefaces, served from the repo rather than fetched
+        # from a font CDN: the bench is not always on a network, and a page
+        # that silently falls back to Helvetica stops matching the desktop
+        # launcher for a reason nobody would guess. Same containment check
+        # as the icons.
+        if path.startswith('/fonts/'):
+            name = os.path.basename(path)
+            target = os.path.join(ROOT, 'fonts', name)
+            if os.path.dirname(os.path.abspath(target)) != os.path.join(ROOT, 'fonts'):
+                return self._json({'error': 'not found'}, 404)
+            return self._file(target)
+
         if path == '/api/state':
             if not self._authorised(query):
                 return self._json({'error': 'bad token'}, 403)

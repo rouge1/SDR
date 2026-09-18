@@ -1990,7 +1990,7 @@ python web/server.py --host 0.0.0.0  # prints a URL with a token in it
 
 | File | Does |
 |------|------|
-| `web/server.py` | Serves the page and icons, reads and writes the settings file, starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
+| `web/server.py` | Serves the page, its icons and its fonts, reads and writes the settings file, starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
 | `web/index.html` | The page: grid, settings, and what is running. |
 | `apps/_run.py` | Runs one app module with its own Qt event loop. |
 | `scripts/probe_radio.py` | Asks whether a radio is there, in a process that then exits. |
@@ -2088,6 +2088,42 @@ edits: `apps/_run.py` already takes `--config values.json` and skips the
 dialog when given one. What it needs is a parameter manifest per app, which
 would also retire the duplication where a range is stated once in
 `ConfigDialog` and again in the flowgraph's `RangeWidget`.
+
+### The typefaces
+
+`fonts/` holds Barlow and Barlow Semi Condensed as six static TTFs, beside
+the SIL OFL they are licensed under. They are *vendored* rather than
+installed, for the same reason `vendor/libvsg_api.so.1` is: Google Fonts is
+only where Barlow happens to ship.
+
+- **There is no apt package.** `fonts-barlow` is not in the Ubuntu archive
+  at all, and an apt install would only ever fix one of the three machines
+  anyway - the Windows laptop has no apt, and TVAdemo has no git and is kept
+  in step by copying files. A system font install is a per-machine step that
+  nothing checks, and a missing face does not raise: the app renders in
+  something else, which is the kind of wrongness only ever found by looking
+  at the screen.
+- **The browser front end serves them itself**, from a `/fonts/` route in
+  `web/server.py` with the same containment check as the icons, so the page
+  needs no network. It used to link `fonts.googleapis.com`, which on a bench
+  with no connection falls back to Helvetica without a word - and the two
+  front ends then stop matching for a reason nobody would guess.
+  `web/prototype/index.html` refers to them relatively, since that mockup is
+  opened as a file rather than served. Nothing else in the tree reaches the
+  network at run time: the two URLs left in `scripts/bootstrap_windows.ps1`
+  are for installing Windows from scratch.
+- **Qt loads them with `QFontDatabase.addApplicationFont`**, so the desktop
+  side needs no system install either and both platforms render the same.
+- **Qt clamps to the heaviest face shipped rather than synthesising one.**
+  Asking for weight 700 in Barlow measures exactly what 600 does, because
+  SemiBold is the heaviest of the three cut here; a synthesiser would have
+  smeared it wider. So asking for a weight the set does not carry is not an
+  error and does not look like one - it is silently the nearest that is
+  there.
+- **The whole directory travels together.** The OFL requires the licence
+  alongside the fonts wherever they are passed on, which is the same rule
+  `media/VIDEO-CREDITS.txt` follows for the CC BY clips: copying `fonts/` to
+  TVAdemo means copying `OFL.txt` with it.
 
 ### Signal Hound BB60D as a receiver
 
