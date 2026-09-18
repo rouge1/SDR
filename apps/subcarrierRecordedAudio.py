@@ -596,8 +596,14 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.fft_filter_xxx_0 = filter.fft_filter_fff(1, firdes.low_pass(1,48000,3500,500), 1)
         self.fft_filter_xxx_0.declare_sample_delay(0)
         # WAV or MP3, looping at 48 kHz - see apps/audio_file.py.
-        self.audio_file = AudioFileSource(values['audio_file'])
-        self.blocks_wavfile_source_0 = self.audio_file.block
+        audio_path = values.get('audio_file')
+        self.audio_file = None
+        if audio_path and os.path.exists(audio_path):
+            self.audio_file = AudioFileSource(audio_path)
+            self.blocks_wavfile_source_0 = self.audio_file.block
+        else:
+            # Create dummy source if no valid audio file
+            self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
         self.blocks_selector_0 = blocks.selector(gr.sizeof_gr_complex*1,subMod,0)
         self.blocks_selector_0.set_enabled(True)
         self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)

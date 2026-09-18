@@ -475,7 +475,7 @@ Three things worth knowing before changing it:
   grey, so the colours and the panel only work together.
 
 ```sh
-python scripts/test_flowgraph_windows.py                 # all 16, ~1 minute
+python scripts/test_flowgraph_windows.py                 # all 16, twice, ~80 s
 python scripts/test_flowgraph_windows.py --save /tmp/shots
 ```
 
@@ -491,6 +491,14 @@ of the sixteen fails, on 6 to 13 counts each, so a passing run means
 something. No
 window is ever closed, because an app's `closeEvent` writes into the
 user's own `QSettings`.
+
+It then builds all sixteen again with **no media folder**, which is how a
+machine starts before Settings has been opened, and only requires each
+to build and run. The dialog greys out OK there, but `apps/_run.py
+--config` goes straight to `main()`, and the FM Subcarrier Generator
+handed no file died on `None` where the other audio apps play silence.
+The first pass caught that only because it ran on a new machine; the
+second pass fails on it on any machine.
 
 ## The typefaces
 

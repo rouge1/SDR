@@ -27,6 +27,14 @@ What it checks, on the window as rendered:
 - **Every label can be read**: 4.5:1 against what is behind it, including
   the receivers' own status colours.
 
+Then every app again with no media folder, which is how a machine starts
+before Settings has been opened: each must still build its flowgraph and
+run. Its dialog greys out OK there, but the browser launcher's
+``apps/_run.py --config`` goes straight to ``main()``, and a transmitter
+handed no file once died on ``None`` - found only because this test ran on
+a new machine. The windows are not looked at again; that is the first
+pass's job.
+
 Then, with no window from any app, that a window's position, size and
 maximized flag go into the app's config and come back out of it - into a
 throwaway folder, never the real ``config/``.
@@ -57,6 +65,10 @@ MODULES = [
 #: drawn a few frames.
 RUN_SECONDS = 2.5
 
+#: With no media folder a window is not looked at, only run - long enough
+#: for every block's work() to have been called.
+NO_MEDIA_SECONDS = 1.0
+
 #: The size each window is looked at - the 1366x768 laptop, less its frame.
 SIZE = (1340, 700)
 
@@ -80,8 +92,12 @@ def contrast(a, b):
     return (hi + 0.05) / (lo + 0.05)
 
 
-def install_stand_ins():
-    """Swap every radio and sound card for a block that opens nothing."""
+def install_stand_ins(media=None):
+    """Swap every radio and sound card for a block that opens nothing.
+
+    ``media``, if given, replaces the media folder in the settings the apps
+    read - ``''`` is a machine where Settings has never been opened.
+    """
     from gnuradio import analog, audio, blocks, gr, soapy
     import apps.utils as utils
 
@@ -155,12 +171,18 @@ def install_stand_ins():
     def read_settings():
         settings = real()
         settings['radio_type'] = 'hackrf'
+        if media is not None:
+            settings['media_directory'] = media
         return settings
     utils.read_settings = read_settings
 
 
-def child(name, save):
-    """One app, in this process. Prints result lines, then exits hard."""
+def child(name, save, no_media=False):
+    """One app, in this process. Prints result lines, then exits hard.
+
+    With ``no_media`` the media folder is unset and the window is only run,
+    not inspected.
+    """
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     os.chdir(ROOT)
     sys.path.insert(0, ROOT)
@@ -169,7 +191,7 @@ def child(name, save):
     from PyQt5 import Qt
 
     app = Qt.QApplication([])
-    install_stand_ins()
+    install_stand_ins(media='' if no_media else None)
 
     spec = importlib.util.spec_from_file_location(name, f'apps/{name}.py')
     module = importlib.util.module_from_spec(spec)
@@ -183,12 +205,12 @@ def child(name, save):
 
     tb = module.main(app=app, config_values=values)
     tb.resize(*SIZE)
-    end = time.time() + RUN_SECONDS
+    end = time.time() + (NO_MEDIA_SECONDS if no_media else RUN_SECONDS)
     while time.time() < end:
         app.processEvents()
         time.sleep(0.02)
 
-    problems = inspect(Qt, tb, name, save)
+    problems = [] if no_media else inspect(Qt, tb, name, save)
     try:
         tb.stop()
         tb.wait()
@@ -446,12 +468,14 @@ def main():
     parser.add_argument('--child', help=argparse.SUPPRESS)
     parser.add_argument('--geometry', action='store_true',
                         help=argparse.SUPPRESS)
+    parser.add_argument('--no-media', action='store_true',
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.geometry:
         geometry_child()
         return 0
     if args.child:
-        child(args.child, args.save)
+        child(args.child, args.save, args.no_media)
         return 0
 
     failed = []
@@ -467,7 +491,12 @@ def main():
             tail += ['--save', os.path.abspath(args.save)]
         if not run_child(tail, name):
             failed.append(name)
-    print(f"\n{len(names)} windows checked")
+
+    print('\nthe windows, with no media folder')
+    for name in names:
+        if not run_child(['--child', name, '--no-media'], name):
+            failed.append(f'{name} (no media)')
+    print(f"\n{len(names)} windows checked, with media and without")
     if failed:
         print("RESULT: FAIL - " + ', '.join(failed))
         return 1
