@@ -40,8 +40,8 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
-from apps.atsc_source import (TransportStream, atsc_video_files, describe,
-                              needs_encoding)
+from apps.atsc_source import (COLOUR_BARS, TransportStream, atsc_video_files,
+                              describe, needs_encoding)
 from apps.ntsc_source import have_ffmpeg
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
@@ -144,7 +144,7 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addLayout(self.pwr_layout)
 
     def create_file_selector(self):
-        """Every video in the media folder, one entry per clip.
+        """Colour bars, then every video in the media folder, one per clip.
 
         This offered only ``.ts`` files, because the flowgraph plays a
         transport stream. That looked complete here, where every clip has a
@@ -152,9 +152,21 @@ class ConfigDialog(Qt.QDialog):
         has the clips only as ``.mp4`` - the test pattern and nothing else.
         A clip with no ``.ts`` is encoded as it plays now; see
         ``apps/atsc_source.py``.
+
+        The bars come first and need no media at all, as in the NTSC and FM
+        video transmitters. Before them an empty or unset media folder left
+        OK greyed out, which on the Windows laptop, whose folder holds only
+        MP3s, meant the app could not be started. ffmpeg makes the bars, so
+        without it they are listed but cannot be chosen.
         """
         self.file_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        model = self.file_combo.model()
+
+        def note(text):
+            """A line that explains something and cannot be chosen."""
+            self.file_combo.addItem(text)
+            model.item(self.file_combo.count() - 1).setEnabled(False)
 
         # The media directory, like every other app. This used to read a
         # tsFileList.txt from the working directory, which does not exist in
@@ -162,39 +174,43 @@ class ConfigDialog(Qt.QDialog):
         # disabled, and the app could not be launched at all.
         settings = read_settings()
         self.media_dir = settings.get('media_directory', '')
+        ffmpeg = have_ffmpeg()
 
-        try:
-            if not self.media_dir or not os.path.exists(self.media_dir):
-                raise FileNotFoundError("Error - Setup Media directory in Settings")
+        if ffmpeg:
+            self.file_combo.addItem("Colour bars (built in)", COLOUR_BARS)
+        else:
+            note("Colour bars need ffmpeg, which is not installed here")
 
-            clips = atsc_video_files(self.media_dir)
-            if not clips:
-                raise FileNotFoundError(
-                    "No video in media directory" if have_ffmpeg() else
-                    "No transport streams (.ts) in media directory, and "
-                    "ffmpeg is not installed to encode anything else")
-            for display_name, path in clips:
-                self.file_combo.addItem(display_name, path)
-
-            # Without ffmpeg only the .ts files can play. A list that just
-            # left the rest out would look like clips missing from the folder.
-            if not have_ffmpeg():
-                unplayable = (len(atsc_video_files(self.media_dir, encode=True))
-                              - len(clips))
-                if unplayable:
+        if self.media_dir and os.path.isdir(self.media_dir):
+            try:
+                clips = atsc_video_files(self.media_dir)
+                if clips:
                     self.file_combo.insertSeparator(self.file_combo.count())
-                    self.file_combo.addItem(
-                        f"{unplayable} more need ffmpeg, which is not "
-                        "installed here")
-                    self.file_combo.model().item(
-                        self.file_combo.count() - 1).setEnabled(False)
+                for display_name, path in clips:
+                    self.file_combo.addItem(display_name, path)
+                # Without ffmpeg only the .ts files can play. A list that just
+                # left the rest out would look like clips missing from the
+                # folder.
+                if not ffmpeg:
+                    unplayable = (len(atsc_video_files(self.media_dir,
+                                                       encode=True))
+                                  - len(clips))
+                    if unplayable:
+                        self.file_combo.insertSeparator(self.file_combo.count())
+                        note(f"{unplayable} more need ffmpeg, which is not "
+                             "installed here")
+            except Exception as e:
+                note(f"Could not read the media directory: {e}")
 
+        # Open on the first thing that can actually be sent. A disabled line
+        # can still be the current one, and would be sent as nothing.
+        playable = [i for i in range(self.file_combo.count())
+                    if self.file_combo.itemData(i)]
+        if playable:
+            self.file_combo.setCurrentIndex(playable[0])
             ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg') or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
-        except Exception as e:
-            self.file_combo.addItem(str(e))
-            self.file_combo.setEnabled(False)
-            # Disable OK button and add opacity effect
+        else:
             ok_button.setEnabled(False)
             opacity_effect = Qt.QGraphicsOpacityEffect()
             opacity_effect.setOpacity(0.30)
@@ -327,7 +343,9 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
         pwr = values['pwr']
-        self.video_file = values.get('video_file') or values.get('ts_file')
+        # Nothing named - a config from _run.py, say - sends the bars.
+        self.video_file = (values.get('video_file') or values.get('ts_file')
+                           or COLOUR_BARS)
 
         ##################################################
         # Variables

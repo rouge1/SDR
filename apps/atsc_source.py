@@ -20,12 +20,19 @@ a clock of its own.
 
 **A clip that has its ``.ts`` still plays that file directly.** It costs no
 processor, and it is the file that was checked through the loopback.
+
+**And there are colour bars with no file at all** (:data:`COLOUR_BARS`),
+as the NTSC and FM video transmitters have, so the app transmits from an
+empty media folder. The Windows laptop's holds only MP3s, and the transmitter
+there had nothing it could send. ffmpeg makes the bars as well, from nothing,
+at 55x real time here.
 """
 
 import os
 import subprocess
 
-from apps.ntsc_source import VIDEO_EXTENSIONS, have_ffmpeg, video_files
+from apps.ntsc_source import (BAR_COLOURS, VIDEO_EXTENSIONS, have_ffmpeg,
+                              video_files)
 
 #: The bit rate A/53 fixes for the transport stream. The flowgraph consumes
 #: the stream at this rate whatever it is muxed at, so a stream muxed any
@@ -60,6 +67,40 @@ ENCODE = ['-c:v', 'mpeg2video', '-b:v', '15M', '-minrate', '15M',
           '-c:a', 'ac3', '-b:a', '384k', '-ac', '2', '-ar', '48000',
           '-muxrate', str(TS_RATE), '-f', 'mpegts']
 
+#: What the picker offers, the config saves and the flowgraph is handed in
+#: place of a file, for the built-in bars. Angle brackets cannot be in a
+#: Windows file name, so no clip in any media folder can be mistaken for it.
+COLOUR_BARS = '<colour bars>'
+
+
+def colour_bars_input():
+    """ffmpeg input arguments: colour bars and a 1 kHz tone, forever.
+
+    The seven 75% bars the NTSC and FM video transmitters send
+    (``ntsc_source.BAR_COLOURS``), made at the stream's own 704x480 with
+    10:11 pixels - 640x480 on a television - so no scaler rings on a bar's
+    edge. Every edge is on an even pixel, where 4:2:0 chroma has a sample
+    of its own. Decoded back, each bar is within 3 of 191 in every
+    channel.
+
+    The tone is 1 kHz at -20 dBFS in both channels, the SMPTE RP 155
+    reference level that US stations put under bars. ffmpeg's sine is
+    -18 dBFS, hence the 0.8. It is made stereo explicitly, because
+    upmixing mono takes 3 dB off each side.
+    """
+    width, height, rate = 704, 480, '30000/1001'
+    edges = [round(k * width / 7 / 2) * 2 for k in range(8)]
+    bars = []
+    for k, rgb in enumerate(BAR_COLOURS):
+        colour = ''.join(f'{round(c * 0.75 * 255):02X}' for c in rgb)
+        bars.append(f'color=c=0x{colour}:s={edges[k + 1] - edges[k]}x{height}'
+                    f':r={rate}[b{k}]')
+    video = (';'.join(bars) + ';' + ''.join(f'[b{k}]' for k in range(7))
+             + 'hstack=inputs=7,setsar=10/11,setfield=tff[out0]')
+    audio = ('sine=frequency=1000:sample_rate=48000,volume=0.8,'
+             'pan=stereo|c0=c0|c1=c0')
+    return ['-f', 'lavfi', '-i', video, '-f', 'lavfi', '-i', audio]
+
 
 def needs_encoding(path):
     """Whether this file has to go through ffmpeg to become a stream."""
@@ -80,6 +121,8 @@ def atsc_video_files(directory, encode=None):
 
 def describe(path):
     """What the window says is on the air."""
+    if path == COLOUR_BARS:
+        return "Colour bars and 1 kHz tone (built in)"
     name = os.path.basename(path)
     if needs_encoding(path):
         return f"{name} (encoded to MPEG-2 as it plays)"
@@ -87,7 +130,8 @@ def describe(path):
 
 
 class TransportStream:
-    """A video file, encoded into an ATSC transport stream, looping forever.
+    """A video file, or :data:`COLOUR_BARS`, as an ATSC transport stream,
+    forever.
 
     The pipe is handed to ``blocks.file_descriptor_source``, for the same
     reason ``ntsc_source.AudioTrack`` hands over its own: there is nothing to
@@ -102,13 +146,20 @@ class TransportStream:
     def __init__(self, path, loop=True):
         if not have_ffmpeg():
             raise RuntimeError(
-                "Transmitting a video that is not already a transport stream "
-                "needs ffmpeg on PATH, and it is not installed.")
+                "The built-in colour bars, and any video that is not already "
+                "a transport stream, need ffmpeg on PATH, and it is not "
+                "installed.")
         self.path = path
         argv = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
-        if loop:
-            argv += ['-stream_loop', '-1']
-        argv += ['-i', path, '-vf', VIDEO_FILTER] + ENCODE + ['pipe:1']
+        if path == COLOUR_BARS:
+            # Made at the stream's own size and rate, so no filter; and
+            # never ending, so nothing to loop.
+            argv += colour_bars_input()
+        else:
+            if loop:
+                argv += ['-stream_loop', '-1']
+            argv += ['-i', path, '-vf', VIDEO_FILTER]
+        argv += ENCODE + ['pipe:1']
         self._proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL)
 

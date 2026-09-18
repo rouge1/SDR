@@ -654,6 +654,36 @@ fixing. Three other things did:
   real flowgraph on the VSG60: the launcher came back, its loop survived,
   ffmpeg exited and the VSG lock was released. `scripts/test_app_close.py`
   checks every app for this.
+- **It had nothing to send without media.** The NTSC and FM video
+  transmitters always offer built-in colour bars first. This one listed
+  only the media folder, so where that held no video it could not start:
+  OK stayed greyed out. The Windows laptop's folder holds only MP3s. Now
+  **Colour bars (built in)** is first in its list. It sends the same seven
+  75% bars as the other two (`ntsc_source.BAR_COLOURS`) with a 1 kHz tone
+  at -20 dBFS in both channels, the SMPTE RP 155 level US stations put
+  under bars. ffmpeg makes both from nothing (`colour_bars_input()` in
+  `apps/atsc_source.py`) at 55x real time, into the same pipe a clip goes
+  through.
+  - The bars are built at the stream's own 704x480 with 10:11 pixels, and
+    every bar edge falls on an even pixel. So no scaler rings on an edge,
+    and each edge has a 4:2:0 chroma sample of its own. Decoded back,
+    every bar is within 3 of 191. After the loopback's receiver, the
+    stream still decodes to those bars and a 1000.0 Hz tone at -20.0 dBFS.
+  - Without ffmpeg the line stays in the list, says it needs ffmpeg, and
+    cannot be chosen; the dialog opens on the first `.ts` instead.
+  - The choice is saved as `<colour bars>`, a name no Windows file can
+    have. A config naming no video at all, from `_run.py` say, sends the
+    bars.
+  - `test_atsc_loopback.py bars 2` needs no media. It locked in 0.39 s,
+    then 99.5-99.7% of packets came back byte-perfect here and 99.3% on the
+    laptop under ffmpeg 9.
+  - **It does not make the laptop an ATSC transmitter.** The laptop sent
+    the bars on its HackRF, and the ATSC receiver here on the BB60D found
+    the pilot at -32.5 dBFS but never decoded. The laptop was off the air
+    46.1% of the time, in gaps of about 11 ms, 41 a second. That is the
+    same limit measured before with a clip (see the Windows notes), so
+    transmit ATSC from Linux. On the laptop the app starts, the window
+    says what is on the air, and ffmpeg ends with it.
 
 The transport stream must be **constant bit rate at exactly 19.392658 Mbps**,
 since the flowgraph consumes it at a rate fixed by the symbol clock - mux it
@@ -662,6 +692,7 @@ one with `-muxrate 19392658 -f mpegts`, MPEG-2 video and AC-3 audio.
 
 ```sh
 python scripts/test_atsc_loopback.py <video> 2      # no radio
+python scripts/test_atsc_loopback.py bars 2         # ... the built-in colour bars
 python scripts/test_atsc_loopback.py <video> 2 15   # ... at 15 dB SNR
 ```
 
@@ -2703,6 +2734,28 @@ re-run it after a pull and it updates in place.
   decode clips through ffmpeg too, and passed on 9.0.1 as they were. So a
   new ffmpeg arriving on one machine is worth a loopback run before it is
   trusted.
+- **The laptop is too slow for the video transmitters, and
+  `test_ntsc_transmit.py` failing its four speed checks there is the test
+  being right.** It is an i5-7200U: two cores, four threads, 2.7 GHz, 8 GB.
+  Encoding NTSC colour at 10 MS/s flat out, measured on 2026-09-18 on
+  AC power with the machine idle: 0.41x real time on one thread, 0.55x on
+  two (the default, with four logical processors), 0.60x on four. The i9
+  here does 0.94, 1.36, 1.68 and 1.96. A frame takes 82 ms on one of its
+  threads against 35 here, and the extra two threads are hyperthreads,
+  worth 9%. Below 1.0x the encoder cannot keep up even with the processor
+  to itself, before the modulator and the radio sink take their share, so
+  the NTSC transmitter there repeats pictures, and the FM video
+  transmitter, which needed 4.3-5.5 cores on TVAdemo, has no chance. It
+  is the same machine whose HackRF was silent 45% of the time sending
+  ATSC (see the ATSC transmitter notes). Transmit video from Linux. What
+  the laptop has run well is FM + RDS, both ends, and the generators and
+  audio apps are lighter than that. It cannot receive ATSC live either:
+  `test_atsc_receiver.py` decoded the built-in bars perfectly there,
+  13.3 ppm clock error corrected and all, but at **0.44-0.48x real time**
+  against the 1.2x it asks for. At the HackRF's 12 MS/s more than half
+  the samples would be lost before the demodulator saw them (measured
+  2026-09-18). The NTSC and FM video receivers have not been tried there,
+  but they take 2.6-3.8 of the i9's cores.
 - **Check whether WinUSB is already bound before sending anyone to Zadig.** The
   HackRF here needed no driver work at all - Windows had already attached its
   own WinUSB. `(Get-PnpDeviceProperty -InstanceId <id>)` showing
