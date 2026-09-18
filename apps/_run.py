@@ -91,7 +91,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     # The apps open config/ and icons/ by relative path, exactly as
-    # start_app.sh arranges for the desktop launcher.
+    # linux/start_app.sh arranges for the desktop launcher.
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     os.chdir(ROOT)

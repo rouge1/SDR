@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the Application
 
 ```sh
-# Using the launch script (activates .venv conda environment):
-./start_app.sh
+# Using the launch script (activates the 'gnu' conda environment):
+./linux/start_app.sh
 
 # Or directly (requires the 'gnu' conda environment to be active):
 conda activate gnu
@@ -15,9 +15,10 @@ python gnuradio_launcher.py
 
 The app requires a display (X11/Wayland) and either a HackRF One (USB) or Ettus USRP (network) connected. Radio type is selected in the Settings dialog.
 
-On Windows it is `start_app.ps1` instead, and the environment comes from
-`environment-windows.yml` rather than `environment.yml` - see
-[Running on Windows](#running-on-windows).
+On Windows it is `windows/start_app.ps1` instead, and the environment comes
+from `windows/environment.yml` rather than `linux/environment.yml` - see
+[Running on Windows](#running-on-windows) and [where things
+live](#where-things-live-linux-and-windows).
 
 There is also a browser front end onto the same grid and the same settings,
 which starts the same apps as separate processes - see
@@ -27,6 +28,31 @@ which starts the same apps as separate processes - see
 conda activate gnu
 python web/server.py                 # http://127.0.0.1:8730
 ```
+
+## Where things live: linux/ and windows/
+
+Every line of Python runs on both operating systems, so the code is not
+split by OS at all: `gnuradio_launcher.py`, `apps/`, `web/`, `icons/`,
+`fonts/` and `scripts/` are shared, and a difference between the two is a
+branch at run time in the one place it matters (`vsg_sink.py`'s library
+search, say), never a second copy of a file. Only the edges differ - how
+the launcher is started, what conda installs, and one-time setup - and
+those, and nothing else, go in a folder named for the OS:
+
+| | `linux/` | `windows/` |
+|---|---|---|
+| Start the launcher | `start_app.sh` | `start_app.ps1` |
+| Conda environment | `environment.yml`, a full pinned solve | `environment.yml`, only what the code imports |
+| One-time setup | `setup_vsg.sh`, the VSG60 library and udev rule | `bootstrap.ps1`, conda and the environment |
+
+The same name in both folders is the same job, which is the point of the
+arrangement: a change to one should make you look at the other. Both
+start scripts step up to the repo root before running anything, because
+the launcher opens `icons/` and `config/` by relative path, and both
+setup scripts find the root the same way. So a script moved into or out
+of these folders has to fix that one line. Nothing that runs on both
+belongs in them - a module that only one OS happened to need first is
+still shared code and goes in `apps/`.
 
 ## Architecture
 
@@ -2014,7 +2040,7 @@ file, because a test must never write into the user's own configuration.
 ### Testing the launcher end to end
 
 The `scripts/test_*.py` above all bypass the GUI. `scripts/test_launcher_gui.py`
-covers what they cannot - that `./start_app.sh` starts, that a button press
+covers what they cannot - that `linux/start_app.sh` starts, that a button press
 reaches `launch_application`, that the dialog accepts, that the flowgraph
 window appears, and that closing it brings the launcher back - by driving real
 X input through xdotool (`apt install xdotool`):
@@ -2045,7 +2071,7 @@ it (see its notes); nothing else did.
 - **That table is parsed with `ast`, not a regex and not an import.** A flip
   tile's faces are a nested list, which is the shape a regex reads wrongly;
   and importing the launcher opens a window, when the whole point is to
-  drive the one `start_app.sh` starts. `RADIO_DIRECTIONS` comes out the
+  drive the one `linux/start_app.sh` starts. `RADIO_DIRECTIONS` comes out the
   same way, so the test knows which apps the selected radio can run and
   says so up front rather than failing later like a broken button.
 - **A blob's position in its row is not its grid column.** Row 2 ends at
@@ -2323,7 +2349,7 @@ only where Barlow happens to ship.
   front ends then stop matching for a reason nobody would guess.
   `web/prototype/index.html` refers to them relatively, since that mockup is
   opened as a file rather than served. Nothing else in the tree reaches the
-  network at run time: the two URLs left in `scripts/bootstrap_windows.ps1`
+  network at run time: the two URLs left in `windows/bootstrap.ps1`
   are for installing Windows from scratch.
 - **Qt loads them with `QFontDatabase.addApplicationFont`**, so the desktop
   side needs no system install either and both platforms render the same.
@@ -2539,28 +2565,44 @@ conda-forge ships the *same* GNU Radio for win-64 that this repo uses on Linux
 for.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
-powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\bootstrap.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\start_app.ps1
 ```
 
-`bootstrap_windows.ps1` installs Miniforge if there is no conda, builds the
+`windows/bootstrap.ps1` installs Miniforge if there is no conda, builds the
 `gnu` environment, then verifies that gnuradio, qtgui, soapy, PyQt5 and
-SoapySDR import and reports how many radios Soapy sees. It is idempotent -
+SoapySDR import, reports how many radios Soapy sees, and says whether
+ffmpeg is there. It is idempotent -
 re-run it after a pull and it updates in place.
 
-- **`environment.yml` cannot solve on Windows at all.** It is a full Linux
+- **`linux/environment.yml` cannot solve on Windows at all.** It is a full Linux
   solve: every package pinned to a `linux-64` build string, with `alsa-lib`,
-  `pulseaudio-client` and `libgcc` in the list. `environment-windows.yml` names
+  `pulseaudio-client` and `libgcc` in the list. `windows/environment.yml` names
   only what the code imports and lets conda choose builds, which is also why it
   needs no edit when conda-forge rolls a build number.
 - **Activate; do not call the environment's `python.exe` directly.** GNU
   Radio's DLLs live in `envs\gnu\Library\bin`, which only activation puts on
   PATH. Without it the import dies with a bare `DLL load failed` that names
-  nothing useful. `start_app.ps1` goes through the conda *shell hook*, so it
+  nothing useful. `windows/start_app.ps1` goes through the conda *shell hook*, so it
   works without `conda init` having been run.
-- `start_app.ps1` also has to `Set-Location` to the repo root, for the same
-  reason `start_app.sh` does its `cd`: the launcher opens `icons/settings.png`
-  and `config/` by relative path.
+- `windows/start_app.ps1` also has to `Set-Location` to the repo root, one
+  above its own folder, for the same reason `linux/start_app.sh` does its
+  `cd ..`: the launcher opens `icons/settings.png` and `config/` by relative
+  path.
+- **ffmpeg comes from `windows/environment.yml` unpinned, and a new major
+  version broke the ATSC transmitter.** The laptop had none at all until
+  2026-09-18, so its video transmitters offered colour bars and nothing
+  else. conda-forge then gave it 9.0.1, where Linux pins 7.1.1 - and 9
+  removed `-top`, the option `apps/atsc_source.py` set top field first
+  with. ffmpeg refuses the whole command over one unknown option, so every
+  clip without its own `.ts` ended before a byte came out:
+  `test_atsc_loopback.py` reported "receiver produced nothing" in one
+  second. `setfield=tff` at the end of the filter chain does the same job
+  on both - byte-identical to `-top 1` on 7.1.1, and 99.57% byte-perfect
+  through the loopback on 9.0.1. The NTSC and FM video transmitters
+  decode clips through ffmpeg too, and passed on 9.0.1 as they were. So a
+  new ffmpeg arriving on one machine is worth a loopback run before it is
+  trusted.
 - **Check whether WinUSB is already bound before sending anyone to Zadig.** The
   HackRF here needed no driver work at all - Windows had already attached its
   own WinUSB. `(Get-PnpDeviceProperty -InstanceId <id>)` showing
@@ -2612,6 +2654,6 @@ go looking for it there.
 
 ## Environment
 
-- Conda environment name: `gnu` (defined in `environment.yml`, prefix: `/home/user/miniconda3/envs/gnu`)
+- Conda environment name: `gnu` (defined in `linux/environment.yml`, prefix: `/home/user/miniconda3/envs/gnu`; on Windows `windows/environment.yml`)
 - Python 3.12, GNU Radio 3.10.12, PyQt5 5.15, UHD 4.8
-- The `start_app.sh` script activates `.venv` (a local conda env alias); ensure the conda env is set up before running.
+- `linux/start_app.sh` activates `gnu` from `~/miniconda3`; edit its `source` line if conda lives elsewhere.

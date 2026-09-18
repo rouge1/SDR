@@ -2,7 +2,7 @@
 """Drive the launcher through a real X session: click an app, run it, close it.
 
 The other test scripts exercise the signal chain with no GUI at all. This one
-covers the part they cannot: that ``./start_app.sh`` starts, that a button
+covers the part they cannot: that ``linux/start_app.sh`` starts, that a button
 press reaches ``launch_application``, that the config dialog accepts, that the
 flowgraph window actually appears, and that closing it brings the launcher
 back. Everything is driven with real X input through xdotool, so the app is
@@ -128,7 +128,7 @@ def launcher_literal(name):
     """Read a module-level literal out of the launcher without importing it.
 
     Constructing the launcher opens a window, and this test exists to drive
-    the one ``start_app.sh`` starts - so its tables are read with ``ast``
+    the one ``linux/start_app.sh`` starts - so its tables are read with ``ast``
     instead. That also copes with shapes a regular expression reads wrongly,
     such as a flip tile's nested list of faces.
     """
@@ -278,8 +278,8 @@ def main():
 
 
 def run(args, row, col):
-    print("starting ./start_app.sh")
-    proc = subprocess.Popen([os.path.join(ROOT, 'start_app.sh')], cwd=ROOT,
+    print("starting linux/start_app.sh")
+    proc = subprocess.Popen([os.path.join(ROOT, 'linux', 'start_app.sh')], cwd=ROOT,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True)
     try:

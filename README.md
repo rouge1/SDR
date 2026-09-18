@@ -64,15 +64,15 @@ cd SDR
 
 ### 2. Create the conda environment
 
-The `environment.yml` contains a hardcoded `prefix` for the original machine. Override it with `--name` so it installs correctly on any system:
+The Linux environment, `linux/environment.yml`, contains a hardcoded `prefix` for the original machine. Override it with `--name` so it installs correctly on any system:
 
 ```sh
-conda env create -f environment.yml --name gnu
+conda env create -f linux/environment.yml --name gnu
 ```
 
 > If conda reports that the environment already exists:
 > ```sh
-> conda env update -f environment.yml --name gnu --prune
+> conda env update -f linux/environment.yml --name gnu --prune
 > ```
 
 ### 3. Verify the environment
@@ -90,13 +90,14 @@ The same GNU Radio (3.10.12) runs natively on Windows - no WSL. From the
 repository folder in PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
-powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\bootstrap.ps1
+powershell -ExecutionPolicy Bypass -File .\windows\start_app.ps1
 ```
 
 The first installs Miniforge if there is no conda, builds the `gnu`
-environment from `environment-windows.yml` (the Linux `environment.yml` cannot
-solve on Windows), and checks that GNU Radio, SoapySDR and PyQt5 import. It is
+environment from `windows/environment.yml` (the Linux one cannot solve on
+Windows), and checks that GNU Radio, SoapySDR and PyQt5 import and that
+`ffmpeg`, which the video transmitters need for clips, is there. It is
 safe to re-run after an update. The second starts the launcher; launch it from
 the Windows desktop, since a window started over SSH never appears. A HackRF
 often needs no driver work - Windows binds WinUSB to it by itself - and if
@@ -119,13 +120,13 @@ machine.
 
 ```sh
 # From a machine that has Sceptre installed locally:
-./scripts/setup_vsg.sh
+./linux/setup_vsg.sh
 
 # From an explicit path (a Signal Hound SDK download, a USB stick, ...):
-./scripts/setup_vsg.sh /path/to/libvsg_api.so.1
+./linux/setup_vsg.sh /path/to/libvsg_api.so.1
 
 # Copied from another machine that has it:
-./scripts/setup_vsg.sh user@host
+./linux/setup_vsg.sh user@host
 ```
 
 The script puts the library in `vendor/` (gitignored — do not commit it),
@@ -171,8 +172,16 @@ gain - is the default and usually the best setting.
 
 ## Running the Application
 
+On Linux:
+
 ```sh
-./start_app.sh
+./linux/start_app.sh
+```
+
+On Windows, from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\start_app.ps1
 ```
 
 Or activate the environment manually first:
@@ -182,7 +191,7 @@ conda activate gnu
 python gnuradio_launcher.py
 ```
 
-> `start_app.sh` assumes Miniconda is installed at `~/miniconda3`. If your installation is elsewhere (e.g., `/opt/miniconda3`), edit the `source` line in that script accordingly.
+> `linux/start_app.sh` assumes Miniconda is installed at `~/miniconda3`. If your installation is elsewhere (e.g., `/opt/miniconda3`), edit the `source` line in that script accordingly.
 
 ### From a browser
 
@@ -210,7 +219,14 @@ On first launch, open the **Settings** dialog (gear icon, top-right) and configu
 | Launcher Mode | **Single** — launcher hides while an app runs; **Multi** — launcher stays open (requires ≥ 2 USRP IPs) |
 | SDR IP Addresses | USRP only — enter each USRP IP address and click Add |
 
+The repository ships no audio or video, so a fresh clone has nothing to pick
+until **Media Directory** points at a folder: the WAV lists are empty, the video
+transmitters offer only their built-in colour bars, and every app still runs on
+its tone or pattern. Any WAV and any video `ffmpeg` reads will do.
+
 Settings are saved to `config/window_settings.json` (created automatically on first run).
+Nothing in `config/` is committed - window positions, radio choice and the
+media folder are per machine - so a pull never overwrites them.
 The launcher opens at a size it works out for itself - the widest bank's tiles
 in one row, every bank in view - centred on the screen, and after that comes
 back wherever it was left.
@@ -231,16 +247,19 @@ SDR/
 ├── fonts/                        # Barlow, shipped with its SIL OFL licence
 ├── icons/                        # Tile pictures and interface glyphs
 ├── scripts/
-│   ├── test_*.py                 # Tests - most need no radio and no display
-│   ├── setup_vsg.sh              # Installs the VSG60 vendor library + udev rule
-│   └── bootstrap_windows.ps1     # Builds the Windows environment
+│   └── test_*.py                 # Tests - most need no radio and no display
+├── linux/                        # Only what differs on Linux
+│   ├── start_app.sh              # Starts the launcher
+│   ├── environment.yml           # Conda environment
+│   └── setup_vsg.sh              # Installs the VSG60 vendor library + udev rule
+├── windows/                      # Only what differs on Windows
+│   ├── start_app.ps1             # Starts the launcher
+│   ├── environment.yml           # Conda environment
+│   └── bootstrap.ps1             # Installs conda and builds the environment
 ├── config/                       # Auto-created; gitignored
 │   └── window_settings.json      # Global settings (radio type, IPs, media dir)
 ├── vendor/                       # Gitignored; holds libvsg_api.so.1 if used
-├── gnuradio_launcher.py          # The desktop launcher
-├── start_app.sh, start_app.ps1   # Launch helpers for Linux and Windows
-├── environment.yml               # Conda environment, Linux
-└── environment-windows.yml       # Conda environment, Windows
+└── gnuradio_launcher.py          # The desktop launcher
 ```
 
 ---
@@ -301,7 +320,7 @@ Refer to `apps/amSineGenerator.py` as a reference implementation.
 ## Troubleshooting
 
 **`conda env create` fails with prefix conflict**
-Add `--name gnu` to override the hardcoded prefix in `environment.yml`.
+Add `--name gnu` to override the hardcoded prefix in `linux/environment.yml`.
 
 **App launches but no RF output (HackRF)**
 Ensure the HackRF is connected before starting. Run `SoapySDRUtil --find` to confirm it is detected. The power slider is a 0–100% control mapped onto the HackRF's VGA range, so 100% is 47 dB of VGA gain.
@@ -310,7 +329,7 @@ Ensure the HackRF is connected before starting. Run `SoapySDRUtil --find` to con
 Confirm the USRP IP is reachable (`ping <ip>`) and matches what is configured in Settings.
 
 **Signal Hound VSG60: "VSG API library not found" / "Software Not Found"**
-The vendor library is missing on this machine — the device itself is fine, and `lsusb | grep 2817` will still list it. The dialog names every directory searched and every path tried. See [Signal Hound VSG60 library](#signal-hound-vsg60-library); usually `./scripts/setup_vsg.sh` is enough. Note the Sceptre install directory is named after its version, so it differs from machine to machine.
+The vendor library is missing on this machine — the device itself is fine, and `lsusb | grep 2817` will still list it. The dialog names every directory searched and every path tried. See [Signal Hound VSG60 library](#signal-hound-vsg60-library); usually `./linux/setup_vsg.sh` is enough. Note the Sceptre install directory is named after its version, so it differs from machine to machine.
 
 **Signal Hound VSG60 detected by `lsusb` but not by the launcher**
 The udev rule is missing, so the API cannot claim the device. Install it as shown in [Signal Hound VSG60 library](#signal-hound-vsg60-library) and replug the unit.

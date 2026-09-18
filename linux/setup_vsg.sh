@@ -4,9 +4,9 @@
 # The library is proprietary and is NOT shipped in this repository, so it has to
 # come from a machine or install that already has it:
 #
-#   ./scripts/setup_vsg.sh                     # find it in a local Sceptre install
-#   ./scripts/setup_vsg.sh /path/libvsg_api.so.1
-#   ./scripts/setup_vsg.sh user@host           # copy from another machine via scp
+#   ./linux/setup_vsg.sh                       # find it in a local Sceptre install
+#   ./linux/setup_vsg.sh /path/libvsg_api.so.1
+#   ./linux/setup_vsg.sh user@host             # copy from another machine via scp
 #
 # It lands in vendor/ next to the code, which is gitignored and is the first
 # place apps/vsg_sink.py looks.

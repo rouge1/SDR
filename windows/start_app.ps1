@@ -1,12 +1,13 @@
-# Windows equivalent of start_app.sh.
+# Windows equivalent of linux/start_app.sh.
 #
 # Run it from anywhere - the launcher opens icons/ and config/ by relative
 # path, so the working directory has to be the repo root or it dies on a
 # missing icons/settings.png.
 #
-#   powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+#   powershell -ExecutionPolicy Bypass -File .\windows\start_app.ps1
 
-Set-Location -LiteralPath $PSScriptRoot
+# This script lives in windows\, one below the repo root.
+Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot)
 
 function Find-Conda {
     # CONDA_EXE is already set inside an activated shell. Otherwise look where
@@ -30,7 +31,7 @@ function Find-Conda {
 
 $conda = Find-Conda
 if (-not $conda) {
-    Write-Error "conda not found. Run scripts\bootstrap_windows.ps1 first."
+    Write-Error "conda not found. Run windows\bootstrap.ps1 first."
     exit 1
 }
 
@@ -41,7 +42,7 @@ if (-not $conda) {
 (& $conda "shell.powershell" "hook") | Out-String | Invoke-Expression
 conda activate gnu
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "could not activate the 'gnu' environment. Run scripts\bootstrap_windows.ps1 first."
+    Write-Error "could not activate the 'gnu' environment. Run windows\bootstrap.ps1 first."
     exit 1
 }
 

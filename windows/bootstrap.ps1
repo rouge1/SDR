@@ -5,7 +5,7 @@
     Idempotent - re-run it after a pull and it updates the environment in place
     rather than rebuilding it.
 
-        powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
+        powershell -ExecutionPolicy Bypass -File .\windows\bootstrap.ps1
 
     It does NOT bind the WinUSB driver to the HackRF; that needs a physical
     device present and is a one-time manual step with Zadig. The script says so
@@ -21,13 +21,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Repo = Split-Path -Parent $PSScriptRoot
-$EnvFile = Join-Path $Repo 'environment-windows.yml'
+$EnvFile = Join-Path $PSScriptRoot 'environment.yml'
 
 function Say($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 
-if (-not (Test-Path $EnvFile)) { throw "environment-windows.yml not found next to the repo at $Repo" }
+if (-not (Test-Path $EnvFile)) { throw "environment.yml not found beside this script in $PSScriptRoot" }
 
 # ---------------------------------------------------------------- conda -----
 function Find-Conda {
@@ -81,7 +80,7 @@ if ($envExists -and $Force) {
 }
 
 if ($envExists) {
-    Say "updating existing '$EnvName' environment from environment-windows.yml"
+    Say "updating existing '$EnvName' environment from windows\environment.yml"
     & $conda env update -n $EnvName -f $EnvFile --prune
 } else {
     Say "creating '$EnvName' environment - this pulls ~2 GB and takes a while"
@@ -98,6 +97,8 @@ import numpy, scipy, PIL
 print("numpy       ", numpy.__version__)
 print("scipy       ", scipy.__version__)
 print("pillow      ", PIL.__version__)
+import shutil
+print("ffmpeg      ", shutil.which("ffmpeg") or "MISSING - only colour bars and .ts files will play")
 from PyQt5 import QtCore
 print("PyQt5       ", QtCore.PYQT_VERSION_STR)
 from gnuradio import gr, analog, filter, blocks, audio
@@ -134,7 +135,7 @@ Write-Host @"
 Next:
 
   1. Start the launcher:
-         powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+         powershell -ExecutionPolicy Bypass -File .\windows\start_app.ps1
 
   2. For the HackRF, bind the WinUSB driver once, with the radio plugged in:
          - get Zadig from https://zadig.akeo.ie

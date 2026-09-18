@@ -40,16 +40,23 @@ ATSC_EXTENSIONS = ('.ts',) + tuple(e for e in VIDEO_EXTENSIONS if e != '.ts')
 #: made: interlaced frames deinterlaced, pixels squared, fitted inside 4:3
 #: and letterboxed rather than stretched, 29.97 frames a second, then
 #: 704x480 with 10:11 pixels, which is 4:3 again on a television.
+#:
+#: Top field first is ``setfield=tff`` here, not ``-top 1`` in ``ENCODE``
+#: as the credits record. ffmpeg 9 removed ``-top`` and refuses the whole
+#: command over it, so a clip without its ``.ts`` would not play at all -
+#: which is what a fresh Windows install, getting ffmpeg unpinned, gets.
+#: On 7.1.1 the two give byte-identical streams.
 VIDEO_FILTER = ('bwdif=deint=interlaced,scale=iw*sar:ih,setsar=1,'
                 'scale=640:480:force_original_aspect_ratio=decrease'
                 ':flags=lanczos,pad=640:480:(ow-iw)/2:(oh-ih)/2,'
-                'fps=30000/1001,scale=704:480:flags=lanczos,setsar=10/11')
+                'fps=30000/1001,scale=704:480:flags=lanczos,setsar=10/11,'
+                'setfield=tff')
 
 #: MPEG-2 at a constant 15 Mbit/s and AC-3 at 384 kbit/s, muxed with null
 #: packets up to ``TS_RATE`` - also exactly as the ``.ts`` files were made.
 ENCODE = ['-c:v', 'mpeg2video', '-b:v', '15M', '-minrate', '15M',
           '-maxrate', '15M', '-bufsize', '1835k', '-g', '15', '-bf', '2',
-          '-flags', '+ildct+ilme', '-top', '1', '-aspect', '4:3',
+          '-flags', '+ildct+ilme', '-aspect', '4:3',
           '-c:a', 'ac3', '-b:a', '384k', '-ac', '2', '-ar', '48000',
           '-muxrate', str(TS_RATE), '-f', 'mpegts']
 
