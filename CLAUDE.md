@@ -2013,20 +2013,38 @@ when the saved position would land somewhere still reachable
 (`geometry_is_reachable` in `apps/utils.py`, which looks across every
 screen rather than just the primary one).
 
-**The launcher also remembers being maximized**, as `"maximized": true`
-beside the other four - which then hold its *normal* geometry, from Qt's
-`normalGeometry()`, so un-maximizing after a restart gives back the size it
-had. Saved as `pos()` and `size()` while maximized, as it used to be, they
-held the whole screen instead. Two things about it:
+**The launcher and every flowgraph window also remember being
+maximized**, as `"maximized": true` beside the other four - which then hold
+the *normal* geometry (`normal_geometry` in `apps/utils.py`, from Qt's
+`normalGeometry()`), so un-maximizing after a restart gives back the size
+the window had. Saved as `pos()` and `size()` while maximized, as the
+launcher once did, they held the whole screen instead. A config saved
+before the flag existed has no `maximized` and comes back normal. Three
+things about it:
 
 - **On GNOME a window cannot be maximized before it is on screen.** Set on
   the hidden window, the state never reaches the window manager: Qt reports
   the window maximized, GNOME maps it at its normal size, and a moment later
   Qt agrees with GNOME. Qt's own `showMaximized()` fails the same way,
-  measured. So `load_window_position` places the window at its normal
+  measured. So `load_window_position` places the launcher at its normal
   geometry and `showEvent` asks for maximized once it is up - which costs a
   glimpse of the normal-sized window first. The same path serves single
   mode, where the launcher is hidden while an app runs and shown again.
+- **"Once it is up" means exposed, not shown** - `when_exposed` in
+  `apps/utils.py`. `show()` only asks for a window, and GNOME puts it up,
+  title bar and all, a little later. A flowgraph window is restored after
+  `main()` has shown it, and done straight away that went wrong twice.
+  Until the frame is on, Qt does not know how thick it is, so `move()` put
+  the *inside* of the window where the frame's corner was meant to go:
+  37 px higher every time it was opened. And a maximize asked for before
+  the window is mapped goes out as a property GNOME reads only at map
+  time, so it was lost on one run and kept on the next. Both the flowgraph
+  restore and the launcher's maximize now wait for Qt to report the window
+  exposed (3 s at most, for a window that never is). Verified through the
+  window manager on GNOME, three runs of each: a flowgraph window
+  maximized by the WM's own `_NET_WM_STATE` request, saved, reopened
+  maximized, un-maximized to exactly 1000x700 at (200, 150), and reopened
+  there, with no drift.
 - **The Windows side has not been seen working.** Everything started over
   SSH on the laptop runs in session 0, where Windows reports no window as
   visible, and Qt only asks Windows to maximize a window it believes is
@@ -2041,7 +2059,7 @@ held the whole screen instead. Two things about it:
 |--------|------------------|
 | The launcher | `window_position` in `config/window_settings.json` |
 | An app's config dialog | `dialog_position` in `config/<module>_config.json` |
-| An app's flowgraph window | `flowgraph_position`, in that same per-app file |
+| An app's flowgraph window | `flowgraph_position`, in that same per-app file, with `maximized` |
 
 **The flowgraph's was the one that did not work, and it looked like it was
 never being saved.** Every app already calls Qt's own
@@ -2060,12 +2078,14 @@ x1161 at (215, 258) and so on. Two things stopped them coming back:
   control, box and plot afterwards. The layout can overrule the restored
   size once the widgets are in.
 
-So the geometry is applied *after* `main()` has shown the window, by
-whichever launcher started it - `RFbenchToolkit.py` for the desktop
-grid, `apps/_run.py` for the browser - and saved from the close-event
-wrapper the launcher already installs, read before the app's own
-`closeEvent` stops the flowgraph. **No app needed changing**, and each
-keeps its `QSettings` calls, which is what an app run directly still uses.
+So the geometry is applied *after* `main()` has shown the window - and
+after the window manager has put it up, see above - by whichever launcher
+started it: `RFbenchToolkit.py` for the desktop grid, `apps/_run.py` for
+the browser. It is saved from the close-event wrapper the launcher already
+installs, read before the app's own `closeEvent` stops the flowgraph. **No
+app needed changing**, and each keeps its `QSettings` calls, which is what
+an app run directly still uses. `scripts/test_flowgraph_windows.py` checks
+the round trip, maximized and not, into a throwaway folder.
 
 The saved size is clamped to the current screen but the position is not:
 a window deliberately parked against an edge, or on a second monitor,

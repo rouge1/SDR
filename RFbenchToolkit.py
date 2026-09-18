@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import ( # type: ignore
     QGraphicsOpacityEffect,
     QMessageBox
 )
-from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint, QTimer,  # type: ignore
+from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint,  # type: ignore
                           QPropertyAnimation, QEasingCurve, pyqtProperty)
 from PyQt5.QtGui import (QIcon, QImage, QPixmap, QFont,  # type: ignore
                          QFontMetrics, QPainter)
@@ -39,7 +39,8 @@ import numpy as np # type: ignore
 from apps import theme
 from apps.utils import (apply_launcher_theme, apply_dark_theme,
                        centre_on, DialogGeometryTracker,
-                       geometry_is_reachable, read_settings,
+                       geometry_is_reachable, maximize_when_shown,
+                       normal_geometry, read_settings,
                        restore_window_geometry, save_window_geometry)
 from apps.settings_dialog import SettingsDialog
 
@@ -808,28 +809,6 @@ class RFbenchToolkit(QMainWindow):
         self.resize(min(width, available.width()),
                     min(height, available.height()))
 
-    def _normal_geometry(self):
-        """Where the window sits when it is not maximized, as x, y, w, h.
-
-        In the same terms as ``pos()`` and ``size()`` - the frame's corner
-        and the inside's size - because that is what ``load_window_position``
-        hands back to ``move()`` and ``resize()``. Maximized, those two
-        report the whole screen, so the size to come back to is Qt's
-        ``normalGeometry()``, which measures the inside's corner instead and
-        is moved out by the frame; saved as it stands, every maximized
-        close would put the window a title bar lower. None when Qt does not
-        know it, and the last one saved is kept.
-        """
-        if not self.isMaximized():
-            return (self.pos().x(), self.pos().y(),
-                    self.width(), self.height())
-        normal = self.normalGeometry()
-        if not normal.isValid():
-            return None
-        frame = self.geometry().topLeft() - self.frameGeometry().topLeft()
-        return (normal.x() - frame.x(), normal.y() - frame.y(),
-                normal.width(), normal.height())
-
     def save_window_position(self):
         """Save the window's position, size and whether it is maximized."""
         try:
@@ -842,7 +821,7 @@ class RFbenchToolkit(QMainWindow):
             # The normal geometry even when maximized, so un-maximizing after
             # a restart gives back the size the window had before.
             position = dict(settings.get('window_position') or {})
-            normal = self._normal_geometry()
+            normal = normal_geometry(self)
             if normal is not None:
                 position.update(zip(('x', 'y', 'width', 'height'), normal))
             position['maximized'] = self.isMaximized()
@@ -897,20 +876,12 @@ class RFbenchToolkit(QMainWindow):
         self._maximize_on_show = maximized
 
     def showEvent(self, event):
-        """Maximize here, not before, if the window was left maximized.
-
-        Set on a window that is not yet on screen, the maximized state never
-        reaches GNOME: Qt reports the window maximized, GNOME maps it at its
-        normal size, and a moment later Qt agrees with GNOME - measured,
-        and Qt's own ``showMaximized()`` fails the same way. Asked for once
-        the window is up, GNOME maximizes it. The cost is a glimpse of the
-        normal-sized window first.
-        """
+        """Maximize here, not before, if the window was left maximized -
+        see ``maximize_when_shown`` in apps/utils.py for why."""
         super().showEvent(event)
         if getattr(self, '_maximize_on_show', False):
             self._maximize_on_show = False
-            QTimer.singleShot(0, lambda: self.setWindowState(
-                self.windowState() | Qt.WindowMaximized))
+            maximize_when_shown(self)
 
     def create_tile(self, faces):
         """Make one tile. Two or more faces makes it a flip tile.

@@ -1,9 +1,10 @@
 import json
 import os
 import sys
+import time
 from PyQt5 import Qt  #type: ignore
-from PyQt5.QtCore import (QObject, QEvent, QRect, Qt as QtNs,  #type: ignore
-                          pyqtSignal)
+from PyQt5.QtCore import (QObject, QEvent, QRect, QTimer,  #type: ignore
+                          Qt as QtNs, pyqtSignal)
 
 from apps import theme
 
@@ -261,7 +262,8 @@ def centre_on(dialog, window, app=None):
 
 
 #: Where a flowgraph window's own geometry lives, in the same per-app file
-#: as ``dialog_position`` and in the same shape.
+#: as ``dialog_position`` and in the same shape - plus ``maximized``, as the
+#: launcher keeps for its own window.
 FLOWGRAPH_POSITION = 'flowgraph_position'
 
 
@@ -269,9 +271,81 @@ def _app_config_path(module_name, config_dir='config'):
     return os.path.join(config_dir, f"{module_name}_config.json")
 
 
+def normal_geometry(window):
+    """Where a window sits when it is not maximized, as x, y, w, h.
+
+    In the same terms as ``pos()`` and ``size()`` - the frame's corner and
+    the inside's size - because that is what a restore hands back to
+    ``move()`` and ``resize()``. Maximized, those two report the whole
+    screen, so the size to come back to is Qt's ``normalGeometry()``, which
+    measures the inside's corner instead and is moved out by the frame;
+    saved as it stands, every maximized close would put the window a title
+    bar lower. None when Qt does not know it, and whatever was saved last
+    should then be kept.
+    """
+    if not window.isMaximized():
+        return (window.pos().x(), window.pos().y(),
+                window.width(), window.height())
+    normal = window.normalGeometry()
+    if not normal.isValid():
+        return None
+    frame = window.geometry().topLeft() - window.frameGeometry().topLeft()
+    return (normal.x() - frame.x(), normal.y() - frame.y(),
+            normal.width(), normal.height())
+
+
+def when_exposed(window, action, timeout_ms=3000):
+    """Run ``action`` once the window is really on the screen.
+
+    ``show()`` only asks for a window; the window manager puts it up a
+    little later, with its title bar round it. Two things done in between
+    go wrong on GNOME, both measured:
+
+    - **A move lands a title bar too high.** Until the frame is on, Qt does
+      not know how thick it is, so ``move()`` puts the *inside* of the
+      window where the frame's corner was meant to go. A flowgraph window
+      restored straight after ``main()`` had shown it came back 37 px
+      higher every time it was opened.
+    - **A maximize is lost, some of the time.** Before the window is up, Qt
+      asks for maximized by setting a property the window manager only
+      reads when it maps the window; if it has already mapped it, the
+      request is never seen. The same restore came back maximized on one
+      run and normal on the next.
+
+    Waiting for Qt to report the window exposed fixes both. A window that
+    never is - minimized, or started over SSH on Windows, where session 0
+    shows nothing - gets the action anyway after ``timeout_ms``.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+
+    def attempt():
+        handle = window.windowHandle()
+        if (handle is not None and handle.isExposed()) \
+                or time.monotonic() > deadline:
+            action()
+        else:
+            QTimer.singleShot(10, attempt)
+    attempt()
+
+
+def maximize_when_shown(window):
+    """Maximize a window that is on its way onto the screen.
+
+    **On GNOME a window cannot be maximized before it is on screen** - see
+    ``when_exposed``. Qt's own ``showMaximized()`` fails the same way. The
+    cost is a glimpse of the normal-sized window first.
+    """
+    when_exposed(window, lambda: window.setWindowState(
+        window.windowState() | QtNs.WindowMaximized))
+
+
 def save_window_geometry(window, module_name, config_dir='config',
                          key=FLOWGRAPH_POSITION):
     """Remember where a flowgraph window was, beside its dialog's position.
+
+    Its position, its size and whether it was maximized. A maximized
+    window's position and size are its *normal* ones (``normal_geometry``),
+    so un-maximizing it after it comes back gives the size it had before.
 
     **Qt already does this and it does not survive a change of monitor.**
     Every app calls ``saveGeometry``/``restoreGeometry`` against
@@ -295,12 +369,12 @@ def save_window_geometry(window, module_name, config_dir='config',
         if os.path.exists(path):
             with open(path) as fh:
                 config = json.load(fh)
-        config[key] = {
-            'x': window.pos().x(),
-            'y': window.pos().y(),
-            'width': window.width(),
-            'height': window.height(),
-        }
+        position = dict(config.get(key) or {})
+        normal = normal_geometry(window)
+        if normal is not None:
+            position.update(zip(('x', 'y', 'width', 'height'), normal))
+        position['maximized'] = window.isMaximized()
+        config[key] = position
         os.makedirs(config_dir, exist_ok=True)
         with open(path, 'w') as fh:
             json.dump(config, fh, indent=4)
@@ -317,7 +391,11 @@ def restore_window_geometry(window, module_name, app=None,
 
     Call it *after* the window has been shown: that is the whole point of
     doing this rather than leaving it to ``restoreGeometry`` at the top of
-    ``__init__``.
+    ``__init__``. The geometry goes on once the window is exposed
+    (``when_exposed``), which on a window that has only just been shown is
+    a few event-loop turns later; a window left maximized is put at its
+    normal geometry and then maximized, so un-maximizing gives that back.
+    Returns whether there was anything saved to apply.
     """
     path = _app_config_path(module_name, config_dir)
     try:
@@ -327,24 +405,41 @@ def restore_window_geometry(window, module_name, app=None,
             position = json.load(fh).get(key)
         if not position:
             return False
-        app = app or Qt.QApplication.instance()
-        # Size first, so the reachability test and the move both work on the
-        # geometry the window will actually have - as the launcher does.
-        if 'width' in position and 'height' in position:
-            width, height = int(position['width']), int(position['height'])
-            if app is not None:
-                screen = app.primaryScreen().availableGeometry()
-                width = min(width, screen.width())
-                height = min(height, screen.height())
-            window.resize(width, height)
-        if 'x' in position and 'y' in position \
-                and geometry_is_reachable(app, position):
-            window.move(int(position['x']), int(position['y']))
-        return True
     except Exception as exc:
-        print(f"Could not restore the window position for {module_name}: "
+        print(f"Could not read the window position for {module_name}: "
               f"{exc}", file=sys.stderr)
         return False
+    app = app or Qt.QApplication.instance()
+
+    def apply():
+        try:
+            # Normal first, or the resize and move below would land on a
+            # window that is still maximized - which Qt's own
+            # restoreGeometry, at the top of the app's __init__, may
+            # already have made it.
+            window.setWindowState(window.windowState() & ~QtNs.WindowMaximized)
+            # Size first, so the reachability test and the move both work on
+            # the geometry the window will actually have - as the launcher
+            # does.
+            if 'width' in position and 'height' in position:
+                width, height = int(position['width']), int(position['height'])
+                if app is not None:
+                    screen = app.primaryScreen().availableGeometry()
+                    width = min(width, screen.width())
+                    height = min(height, screen.height())
+                window.resize(width, height)
+            if 'x' in position and 'y' in position \
+                    and geometry_is_reachable(app, position):
+                window.move(int(position['x']), int(position['y']))
+            if position.get('maximized'):
+                window.setWindowState(window.windowState()
+                                      | QtNs.WindowMaximized)
+        except Exception as exc:
+            print(f"Could not restore the window position for {module_name}: "
+                  f"{exc}", file=sys.stderr)
+
+    when_exposed(window, apply)
+    return True
 
 
 def geometry_is_reachable(app, position, minimum=(160, 40)):

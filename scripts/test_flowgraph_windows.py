@@ -27,6 +27,10 @@ What it checks, on the window as rendered:
 - **Every label can be read**: 4.5:1 against what is behind it, including
   the receivers' own status colours.
 
+Then, with no window from any app, that a window's position, size and
+maximized flag go into the app's config and come back out of it - into a
+throwaway folder, never the real ``config/``.
+
 Each app runs in a process of its own, because ``main()`` installs signal
 handlers and a flowgraph that goes wrong should take only itself down. None
 of them is ever closed: an app's ``closeEvent`` writes its geometry into
@@ -318,6 +322,96 @@ def inspect(Qt, tb, name, save):
     return problems
 
 
+def geometry_child():
+    """Position, size and maximized go into the config and come back out."""
+    import json
+    import tempfile
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+    sys.path.insert(0, ROOT)
+    from PyQt5 import Qt
+    from apps.utils import (FLOWGRAPH_POSITION, restore_window_geometry,
+                            save_window_geometry)
+
+    app = Qt.QApplication([])
+    problems = []
+
+    def settle():
+        # Long enough for when_exposed's timer to have had its turn.
+        import time
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            app.processEvents()
+            time.sleep(0.01)
+
+    def saved(folder):
+        with open(os.path.join(folder, 'demo_config.json')) as fh:
+            return json.load(fh)
+
+    with tempfile.TemporaryDirectory() as folder:
+        # Another key in the same file, which saving must leave alone.
+        with open(os.path.join(folder, 'demo_config.json'), 'w') as fh:
+            json.dump({'dialog_position': {'x': 1, 'y': 2}}, fh)
+
+        w = Qt.QWidget()
+        w.resize(700, 500)
+        w.move(120, 90)
+        w.show()
+        settle()
+        save_window_geometry(w, 'demo', config_dir=folder)
+        got = saved(folder)[FLOWGRAPH_POSITION]
+        want = {'x': 120, 'y': 90, 'width': 700, 'height': 500,
+                'maximized': False}
+        if got != want:
+            problems.append(f"normal window saved as {got}, not {want}")
+
+        w.setWindowState(w.windowState() | Qt.Qt.WindowMaximized)
+        settle()
+        if not w.isMaximized() or w.width() == 700:
+            problems.append("could not maximize a window here, so the "
+                            "maximized case was not tested")
+        save_window_geometry(w, 'demo', config_dir=folder)
+        config = saved(folder)
+        got = config[FLOWGRAPH_POSITION]
+        want = dict(want, maximized=True)
+        if got != want:
+            problems.append(f"maximized window saved as {got}, not {want} - "
+                            f"it must keep the size to come back to")
+        if config.get('dialog_position') != {'x': 1, 'y': 2}:
+            problems.append("saving lost the dialog's position")
+
+        # Shown first, as main() does, then restored.
+        w2 = Qt.QWidget()
+        w2.show()
+        restore_window_geometry(w2, 'demo', app, config_dir=folder)
+        settle()
+        if not w2.isMaximized():
+            problems.append("a window saved maximized came back normal")
+        w2.setWindowState(w2.windowState() & ~Qt.Qt.WindowMaximized)
+        settle()
+        got = (w2.pos().x(), w2.pos().y(), w2.width(), w2.height())
+        if got != (120, 90, 700, 500):
+            problems.append(f"un-maximized, it came back at {got}, not "
+                            f"(120, 90, 700, 500)")
+
+        # Saved before there was a flag: it comes back normal.
+        with open(os.path.join(folder, 'demo_config.json'), 'w') as fh:
+            json.dump({FLOWGRAPH_POSITION: {'x': 60, 'y': 70, 'width': 640,
+                                            'height': 480}}, fh)
+        w3 = Qt.QWidget()
+        w3.setWindowState(Qt.Qt.WindowMaximized)
+        w3.show()
+        restore_window_geometry(w3, 'demo', app, config_dir=folder)
+        settle()
+        if w3.isMaximized() or (w3.width(), w3.height()) != (640, 480):
+            problems.append("a window saved before the flag existed did not "
+                            "come back normal at its saved size")
+
+    for problem in problems:
+        print(f"PROBLEM {problem}", flush=True)
+    print(f"RESULT geometry {len(problems)}", flush=True)
+    os._exit(0)
+
+
 def run_child(argv_tail, label):
     """Run one check in a process of its own; its result, and what it said."""
     argv = [sys.executable, os.path.abspath(__file__)] + argv_tail
@@ -350,13 +444,22 @@ def main():
     parser.add_argument('--save', metavar='DIR',
                         help='write a PNG of every window here')
     parser.add_argument('--child', help=argparse.SUPPRESS)
+    parser.add_argument('--geometry', action='store_true',
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.geometry:
+        geometry_child()
+        return 0
     if args.child:
         child(args.child, args.save)
         return 0
 
     failed = []
-    print('the windows, with no radio')
+    print('where a window comes back')
+    if not run_child(['--geometry'], 'position, size, maximized'):
+        failed.append('geometry')
+
+    print('\nthe windows, with no radio')
     names = args.apps or MODULES
     for name in names:
         tail = ['--child', name]
