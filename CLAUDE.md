@@ -60,7 +60,7 @@ This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applic
 
 ### Launch Flow
 
-1. `RFbenchToolkit.py` — Main window (`GNURadioLauncher`). Dynamically imports app modules from `apps/` using `importlib`.
+1. `RFbenchToolkit.py` — Main window (class `RFbenchToolkit`). Dynamically imports app modules from `apps/` using `importlib`.
 2. When a button is clicked → `launch_application(module_name)` instantiates the module's `ConfigDialog` → user configures parameters → on OK, calls `module.main(app=..., config_values=...)`.
 3. In **single mode**: launcher hides itself while the app runs, then shows again when the app closes. In **multi mode**: launcher stays visible.
 

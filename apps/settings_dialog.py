@@ -43,7 +43,7 @@ class SettingsDialog(QDialog):
         media_group.setLayout(media_layout)
         
         # Add Radio Mode Section (after media_group)
-        mode_group = QGroupBox("GNUradio Launcher Mode")
+        mode_group = QGroupBox("Launcher Mode")
         mode_layout = QHBoxLayout()
         self.single_mode = QRadioButton("Single")
         self.multi_mode = QRadioButton("Multi")

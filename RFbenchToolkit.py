@@ -549,7 +549,7 @@ class FlipTile(QPushButton):
         self.launcher.launch_application(self.current()[1])
 
 
-class GNURadioLauncher(QMainWindow):
+class RFbenchToolkit(QMainWindow):
     def __init__(self, app, parent=None):
         super().__init__(parent)
         self.app = app  # Store reference to QApplication
@@ -1229,6 +1229,6 @@ if __name__ == '__main__':
     if not app:
         app = QApplication(sys.argv)
     
-    launcher = GNURadioLauncher(app)
+    launcher = RFbenchToolkit(app)
     launcher.show()
     sys.exit(app.exec_())
