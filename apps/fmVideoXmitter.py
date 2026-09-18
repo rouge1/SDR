@@ -47,7 +47,8 @@ from apps.fm_video_core import (DEFAULT_PROFILE, PREEMPHASIS_CHOICES,
 from apps.ntsc_encode import NTSC, STANDARDS
 from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, has_audio,
                               have_ffmpeg, ntsc_source, video_files)
-from apps.utils import (apply_dark_theme, read_settings, power_percent,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
@@ -535,7 +536,7 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "FM Video Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("FM Video Transmitter")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except Exception:

@@ -36,7 +36,8 @@ from PyQt5.QtCore import QObject, pyqtSlot # type: ignore
 # Local imports
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
-from apps.utils import (apply_dark_theme, read_settings, power_percent,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 if __name__ == '__main__':
@@ -273,7 +274,7 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "PPM-OOK Live Audio Xmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("PPM-OOK Live Audio Xmitter")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

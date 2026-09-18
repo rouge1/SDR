@@ -621,6 +621,46 @@ def apply_dark_theme(widget):
                                           icon_url('check.png')))
     tidy_dialog(widget)
 
+
+def apply_flowgraph_theme(window):
+    """Paint a running flowgraph window from the shared design tokens.
+
+    Call it first thing in the window's ``__init__``, before any widget
+    exists: it takes the place of GRC's ``qtgui.util.check_set_qss()``
+    there. Two things depend on that timing.
+
+    - **The plots' axis titles take the application font as it is when the
+      plot is built**, and keep it. GNU Radio sets their size as a font of
+      their own, copied from the application's, and Qt has no way to reach
+      a Qwt title from Python afterwards. So the face is made the
+      application's here, before any plot exists; set after, the axis
+      titles stayed in the system face while everything round them was
+      Barlow. It is set on the application rather than in the stylesheet
+      because a stylesheet font beats ``setFont()``, and the receivers set
+      fonts that mean something - monospace RadioText, a large lock status.
+    - **The traces are recoloured when the window is first shown.** Every
+      app sets its traces in GNU Radio's colours for a white canvas, black
+      commonest, which on the well would be invisible. The stylesheet sets
+      them again through the plots' own ``line_color`` properties, and a
+      stylesheet's properties are applied when a widget is polished - on
+      show, after the app's own ``set_line_color`` calls.
+
+    It is paint only: every control and every plot is the app's own.
+    """
+    theme.load_fonts()
+    app = Qt.QApplication.instance()
+    if app is not None:
+        font = Qt.QFont(theme.TOKENS['f_ui'])
+        font.setPixelSize(theme.TOKENS['s_md'])
+        app.setFont(font)
+    # The window is a QWidget subclass, which paints a stylesheet
+    # background only when asked to - without this the ground shows only
+    # where the scroll area covers it.
+    window.setAttribute(QtNs.WA_StyledBackground, True)
+    window.setStyleSheet(theme.flowgraph_qss(icon_url('spin-up.png'),
+                                             icon_url('spin-down.png'),
+                                             icon_url('check.png')))
+
 def read_settings():
     """Read settings from window_settings.json and ensure required fields exist"""
     settings_file = os.path.join("config", "window_settings.json")

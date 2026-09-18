@@ -44,7 +44,8 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
-from apps.utils import (apply_dark_theme, read_settings, power_percent,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 
@@ -281,7 +282,7 @@ class amSineGenerator(gr.top_block, Qt.QWidget):
         Qt.QWidget.__init__(self)
         
         self.setWindowTitle("AM Sinewave Signal Generator")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except:

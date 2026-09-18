@@ -53,7 +53,8 @@ from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
 from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, dat_files,
                               dat_resample_ratio, has_audio, have_ffmpeg,
                               ntsc_source, video_files)
-from apps.utils import (apply_dark_theme, read_settings, power_percent,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
@@ -494,7 +495,7 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "NTSC Video Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("NTSC Video Transmitter")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except:

@@ -35,7 +35,9 @@ from apps.ntsc_encode import FH, FRAME, IRE_SYNC, NTSC as NTSC_STANDARD
 from apps.ntscAnalogVideoRecorded import (AURAL_CARRIER, AURAL_DEVIATION,
                                           CARRIER_AT_SYNC, CARRIER_AT_WHITE,
                                           LO_OFFSET, VISUAL_CARRIER)
-from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
+from apps.theme import TOKENS
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
 # 20 MS/s, not 10. A 6 MHz channel will not fit either side of DC at 10, so
@@ -699,13 +701,13 @@ def rx_gain_plan(percent, radio_type):
 
 
 class ntscReceiver(gr.top_block, Qt.QWidget):
-    GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
+    GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "NTSC Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("NTSC Video Receiver")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

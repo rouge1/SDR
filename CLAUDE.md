@@ -70,7 +70,7 @@ Every module in `apps/` must implement:
 - `ConfigDialog(QDialog)` — shows configuration UI; must implement `get_values()` returning a dict of config params; saves/loads its own per-app JSON config to `config/<module_name>_config.json`.
 - `main(top_block_cls=..., options=None, app=None, config_values=None)` — creates and starts the GNU Radio `top_block`, returns the `top_block` instance (not `app.exec_()`).
 
-The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block` and `Qt.QWidget`.
+The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block` and `Qt.QWidget`, and its `__init__` calls `apply_flowgraph_theme(self)` before it builds any widget.
 
 ### Shared Utilities (`apps/utils.py`)
 
@@ -80,6 +80,9 @@ The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block`
 - `apply_dark_theme(widget)` — the same tokens for a config dialog, and it
   also straightens the layout — see [how every dialog gets laid
   out](#how-every-dialog-gets-laid-out).
+- `apply_flowgraph_theme(window)` — the same tokens for a running
+  flowgraph window, called first thing in its `__init__` — see [the
+  flowgraph windows wear it too](#the-flowgraph-windows-wear-it-too).
 - `read_settings()` — reads `config/window_settings.json`, returns dict with `media_directory` and `ip_addresses`.
 
 ### Settings / Persistence
@@ -2459,6 +2462,72 @@ ON AIR panel. That is not paint, it is a running-apps list the desktop
 launcher has never kept - and in single mode it hides itself while an app
 runs, so there would be nothing to show it to.
 
+#### The flowgraph windows wear it too
+
+The windows an app opens once OK is pressed were the last thing still in
+Qt's light grey, with GNU Radio's white plots and black and blue traces.
+They now take the page's panel view (`web/prototype/index.html`): the
+window on the ground, each group of controls or readout a panel card,
+each plot a well with a rule round it, the first trace in `trace` and the
+second (Imag) in `ink_3`, as the prototype draws I and Q. Every control and
+every plot is the app's own - it is paint only, `theme.flowgraph_qss()`,
+which shares its buttons, inputs, sliders and ticks with the dialogs'
+(`_CONTROLS_QSS`), so a dialog and the window it opens read as one app.
+
+Each app's `__init__` calls **`apply_flowgraph_theme(self)`** first thing,
+where GRC put `qtgui.util.check_set_qss()` (which applied a GNU Radio
+theme from the user's GNU Radio preferences, and is gone). First thing
+matters, twice:
+
+- **The plots' axis titles keep the application font they were built
+  with.** GNU Radio sets their size as a font of their own, copied from the
+  application's at that moment, and nothing in PyQt can reach a Qwt title
+  afterwards. Themed after the plots were built, the titles stayed in Noto
+  Sans with Barlow all round them. So the application font becomes Barlow
+  before any plot exists.
+- **A stylesheet's properties go on when a widget is polished**, which is
+  when it is shown - after the app's own `set_line_color` calls. That is
+  how the traces are recoloured without touching any app's colour lists:
+  the plots expose `line_color1`-`9`, `palette_color` (the canvas),
+  `zoomer_color` and the frequency plot's markers as Qt properties, and
+  the sheet sets them.
+
+Three things worth knowing before changing it:
+
+- **No `font-family` or `font-size` on `QWidget` or `QLabel`**, unlike the
+  dialog's sheet. A stylesheet font beats `setFont()`, and the receivers
+  set fonts that mean something: the RadioText and the program list in
+  monospace, so a gap or a stray character shows where it is, and the lock
+  status large. The face comes from the application font instead, which a
+  widget's own `setFont()` still overrides.
+- **`qproperty-marker_peak_amplitude_color` segfaults GNU Radio 3.10.12's
+  frequency plot**, with no Python frame at all - found by bisecting the
+  sheet one property at a time on a lone `freq_sink_c`. Every other
+  property it sets is safe on every plot kind the apps use.
+- **The receivers' status colours are tokens now** - `good`, `warn` and
+  `bad`, added to `TOKENS` and to `/theme.css`. The old green and red were
+  picked for Qt's light grey and read 3.2:1 and 3.0:1 on the new panel;
+  the tokens read 8.5, 8.2 and 5.6:1 there - and 1.6-2.4:1 on the old
+  grey, so the colours and the panel only work together.
+
+```sh
+python scripts/test_flowgraph_windows.py                 # all 16, ~1 minute
+python scripts/test_flowgraph_windows.py --save /tmp/shots
+```
+
+builds every app's real window the way `launch_application` does, with a
+stand-in radio (a throttle into nothing for a transmitter, noise and a tone
+for a receiver) and no sound card, so it needs no radio and runs beside a
+launcher. It renders the whole scroll content, fold and all, and checks
+that the window carries the sheet, that little outside the plots is near
+white, that the well shows on every canvas, that each trace in use has
+3:1 against it, that every label has 4.5:1 against what is behind it, and
+that the axes are in Barlow. Run with the theme switched off, every one
+of the sixteen fails, on 6 to 13 counts each, so a passing run means
+something. No
+window is ever closed, because an app's `closeEvent` writes into the
+user's own `QSettings`.
+
 ### The typefaces
 
 `fonts/` holds Barlow and Barlow Semi Condensed as six static TTFs, beside
@@ -2795,7 +2864,10 @@ go looking for it there.
 
 ### Adding a New Application
 
-1. Create `apps/<module_name>.py` implementing `ConfigDialog` and `main()`.
+1. Create `apps/<module_name>.py` implementing `ConfigDialog` and `main()`,
+   with `apply_flowgraph_theme(self)` as the first thing the flowgraph's
+   `__init__` does, and add it to `MODULES` in
+   `scripts/test_flowgraph_windows.py`.
 2. Add an icon to `icons/`.
 3. Add a row to `APP_TILES` in `RFbenchToolkit.py`, saying whether the
    app transmits or receives. To give an existing app a second side instead

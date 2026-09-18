@@ -45,7 +45,9 @@ def main():
 
     print('\ntokens -> Qt')
     for name, sheet in (('launcher', theme.launcher_qss()),
-                        ('dialog', theme.dialog_qss('u.png', 'd.png', 'c.png'))):
+                        ('dialog', theme.dialog_qss('u.png', 'd.png', 'c.png')),
+                        ('flowgraph',
+                         theme.flowgraph_qss('u.png', 'd.png', 'c.png'))):
         leftover = re.findall(r'%\([a-z_0-9]+\)s', sheet)
         check(not leftover,
               f"the {name} stylesheet has no unsubstituted token"

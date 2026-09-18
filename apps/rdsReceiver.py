@@ -28,7 +28,8 @@ from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
 from apps.rds_core import RdsDemod, RdsProtocol, clock_text
-from apps.utils import apply_dark_theme, read_settings, SPECTRUM_Y_AXIS
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, SPECTRUM_Y_AXIS)
 
 MPX_RATE = 250e3          # everything after the channel filter runs here
 # Each radio's own rate, chosen from what it will actually accept, and each
@@ -294,7 +295,7 @@ class rdsReceiver(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "FM + RDS Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("FM + RDS Receiver")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

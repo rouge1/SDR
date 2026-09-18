@@ -41,7 +41,8 @@ from gnuradio.qtgui import Range, RangeWidget # type: ignore
 # Local imports
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
-from apps.utils import (apply_dark_theme, read_settings, power_percent,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
 def get_wav_files(settings):
@@ -359,7 +360,7 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "FM Audio Signal Generator", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("FM Audio Signal Generator")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except:

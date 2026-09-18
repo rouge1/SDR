@@ -32,7 +32,8 @@ from apps.audio_file import PcmReader, audio_channels, is_wav, track_tags
 from apps.media import AUDIO, choices
 from apps.rds_core import PTY_RBDS, clock_text
 from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
-from apps.utils import (apply_dark_theme, power_percent, read_settings,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        power_percent, read_settings,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 MPX_RATE = 200e3          # everything below 100 kHz fits comfortably
@@ -442,7 +443,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "FM + RDS Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("FM + RDS Transmitter")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

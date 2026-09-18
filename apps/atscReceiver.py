@@ -35,7 +35,9 @@ from apps.atsc_rx_core import (Afc, SYMBOL_RATE, TsAnalyzer,
                                channel_center_mhz, channel_for_center,
                                channels, mer_db, mer_quality, since,
                                tv_channel_items)
-from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
+from apps.theme import TOKENS
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, SPECTRUM_Y_AXIS,
                         FrequencyChooser, align_output_buffer)
 
 # Each radio's own rate, chosen from what it will actually accept:
@@ -576,7 +578,7 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         gr.top_block.__init__(self, "ATSC Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("ATSC Video Receiver")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:
@@ -1015,8 +1017,9 @@ class atscReceiver(gr.top_block, Qt.QWidget):
             self.watch_btn.setText("Watch")
             self.action_note.setText("")
 
-    #: Readable on the light Qt default and on a dark desktop theme alike.
-    GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
+    #: The theme's, since the window wears it: the old green and red were
+    #: picked for Qt's light grey and read about 3:1 on its panels.
+    GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
 
     def _status(self, packets, bad_pct):
         """What is actually happening, and a colour for how bad it is.

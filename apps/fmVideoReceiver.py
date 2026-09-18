@@ -62,7 +62,9 @@ from apps.fmVideoXmitter import (DEVIATION_MAX_MHZ, DEVIATION_MIN_MHZ,
 # And the threaded frame decoder, the player and the HackRF's receive gain
 # plan come from the NTSC receiver, which is where they were written.
 from apps.ntscReceiver import CompositeFrameSink, find_player, rx_gain_plan
-from apps.utils import (apply_dark_theme, read_settings, SPECTRUM_Y_AXIS,
+from apps.theme import TOKENS
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+                        read_settings, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
 DEFAULT_FORMAT = NTSC.key
@@ -841,13 +843,13 @@ class ConfigDialog(Qt.QDialog):
 # --------------------------------------------------------------------------
 
 class fmVideoReceiver(gr.top_block, Qt.QWidget):
-    GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
+    GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "FM Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("FM Video Receiver")
-        qtgui.util.check_set_qss()
+        apply_flowgraph_theme(self)
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

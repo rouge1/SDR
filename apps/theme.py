@@ -4,9 +4,10 @@ The desktop launcher and the browser page are meant to look like one
 program. They were drawn twice, which is how two front ends drift apart:
 the first edit to either one and they stop matching, for no reason anybody
 can see. So the palette, the type scale and the faces live here, and both
-read them - ``apply_launcher_theme`` and ``apply_dark_theme`` in
-``apps/utils.py`` through :func:`launcher_qss` and :func:`dialog_qss`, and
-``web/server.py`` through :func:`css`, which it serves as ``/theme.css``.
+read them - ``apply_launcher_theme``, ``apply_dark_theme`` and
+``apply_flowgraph_theme`` in ``apps/utils.py`` through :func:`launcher_qss`,
+:func:`dialog_qss` and :func:`flowgraph_qss`, and ``web/server.py`` through
+:func:`css`, which it serves as ``/theme.css``.
 
 **This module imports nothing but the standard library at module level.**
 The web server imports it, and the server deliberately pulls in no GNU
@@ -41,6 +42,9 @@ TOKENS = {
     'ink_3': '#5d6d78',       # the quietest thing still meant to be read
     'live': '#ff9b21',        # on air
     'warn': '#e8b04b',        # a banner that wants reading
+    'good': '#6fcf97',        # a receiver that has locked
+    'bad': '#f0716a',         # one that has lost it
+    'trace': '#cfe0e8',       # a plotted signal, on the well
     'f_num': 'Barlow Semi Condensed',
     'f_ui': 'Barlow',
     's_xs': 12, 's_sm': 13, 's_md': 15, 's_lg': 18, 's_xl': 24,
@@ -162,7 +166,7 @@ def launcher_qss():
 
 # The page's .sheet: a panel card, a well for anything typed into, one
 # primary button. tidy_dialog still does the layout - this is paint only.
-_DIALOG_QSS = """
+_DIALOG_BASE_QSS = """
 QDialog, QWidget { background: %(panel)s; color: %(ink)s;
     font-family: "%(f_ui)s", %(fallback)s; font-size: %(s_md)spx; }
 QToolTip { background: %(panel_2)s; color: %(ink)s;
@@ -172,7 +176,11 @@ QGroupBox { border: 1px solid %(rule_soft)s; border-radius: 2px;
     margin-top: 10px; padding-top: 10px; }
 QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px;
     color: %(ink_2)s; font-size: %(s_sm)spx; }
+"""
 
+# Buttons, anything typed into, sliders and ticks - the same in a config
+# dialog and in the flowgraph window it opens, so the two read as one app.
+_CONTROLS_QSS = """
 QPushButton { background: %(panel_2)s; color: %(ink)s;
     border: 1px solid %(rule)s; border-radius: 2px;
     padding: 8px 16px; min-width: 80px; font-size: %(s_sm)spx; }
@@ -234,6 +242,8 @@ QCheckBox::indicator:checked { background: %(ink)s; border-color: %(ink)s;
 QCheckBox:disabled { color: %(ink_3)s; }
 """
 
+_DIALOG_QSS = _DIALOG_BASE_QSS + _CONTROLS_QSS
+
 
 def dialog_qss(up, down, tick):
     """A config dialog's stylesheet.
@@ -244,6 +254,121 @@ def dialog_qss(up, down, tick):
     """
     return _DIALOG_QSS % dict(TOKENS, fallback=FALLBACK,
                               up=up, down=down, tick=tick)
+
+
+# --- The flowgraph windows --------------------------------------------------
+
+# The page's panel view (web/prototype/index.html): the window on the
+# ground, each group of controls a panel card, each plot a well with a
+# rule round it, traces in the trace colour.
+#
+# **No font-family or font-size on QWidget, QLabel or the plots' own
+# frames**, unlike the dialog. A stylesheet font beats setFont(), and the
+# receivers set fonts that mean something - the RadioText and the program
+# list in monospace, so a gap or a stray character shows where it is, and
+# the lock status large. The face comes from the application font instead
+# (see apply_flowgraph_theme), which a widget's own setFont() still
+# overrides. Rules below that do set a face are for widgets no app sets
+# one on.
+_FLOWGRAPH_BASE_QSS = """
+QWidget { background: %(ground)s; color: %(ink)s; }
+QToolTip { background: %(panel_2)s; color: %(ink)s;
+    border: 1px solid %(rule)s; padding: 5px 7px; }
+QLabel, QRadioButton, QCheckBox, QSlider, QToolBar { background: transparent; }
+
+/* GRC puts every window inside a scroll area. */
+QScrollArea { background: %(ground)s; border: none; }
+QScrollBar:vertical { background: %(ground)s; width: 10px; margin: 0; }
+QScrollBar:horizontal { background: %(ground)s; height: 10px; margin: 0; }
+QScrollBar::handle { background: %(rule)s; border-radius: 2px; }
+QScrollBar::handle:vertical { min-height: 30px; }
+QScrollBar::handle:horizontal { min-width: 30px; }
+QScrollBar::handle:hover { background: %(ink_3)s; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: %(ground)s; }
+
+/* A group of controls, or a receiver's readout, is a panel card. What it
+   holds sits on the card rather than painting the ground over it. */
+QGroupBox { background: %(panel)s; border: 1px solid %(rule)s;
+    border-radius: 2px; margin-top: 22px; padding: 6px 8px; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left;
+    left: 1px; top: 0; padding: 0 0 5px 0; background: transparent;
+    color: %(ink_2)s; font-family: "%(f_ui)s", %(fallback)s;
+    font-size: %(s_sm)spx; }
+QGroupBox > QWidget { background: transparent; }
+
+/* A control's name, from GNU Radio's RangeWidget and GRC's labelled tool
+   bars, is quieter than the value beside it. */
+RangeWidget QLabel { color: %(ink_2)s; }
+QToolBar { border: none; spacing: 4px; padding: 0; }
+QToolBar QLabel { color: %(ink_2)s; }
+QToolBar::handle { width: 0; height: 0; image: none; }
+
+/* GRC's choosers are radio buttons in a group box. */
+QRadioButton { color: %(ink_2)s; spacing: 8px; }
+QRadioButton:checked { color: %(ink)s; }
+QRadioButton:disabled { color: %(ink_3)s; }
+QRadioButton::indicator { width: 14px; height: 14px; border-radius: 8px;
+    border: 1px solid %(rule)s; background: %(well)s; }
+QRadioButton::indicator:hover { border-color: %(ink_3)s; }
+QRadioButton::indicator:checked { border-color: %(ink)s;
+    background: qradialgradient(cx: 0.5, cy: 0.5, radius: 0.5,
+        fx: 0.5, fy: 0.5, stop: 0 %(ink)s, stop: 0.42 %(ink)s,
+        stop: 0.52 %(well)s, stop: 1 %(well)s); }
+
+/* A plot's right-click menus, and the little dialogs they open. */
+QMenu { background: %(panel_2)s; color: %(ink)s; border: 1px solid %(rule)s;
+    padding: 4px 0; }
+QMenu::item { padding: 5px 18px; background: transparent; }
+QMenu::item:selected { background: %(rule)s; }
+QMenu::separator { height: 1px; background: %(rule_soft)s; margin: 4px 0; }
+QDialog { background: %(panel)s; }
+
+/* A plot is a well with a rule round it, as on the page. */
+DisplayPlot { background: %(well)s; border: 1px solid %(rule)s;
+    border-radius: 2px;
+    qproperty-palette_color: %(well)s;
+    qproperty-zoomer_color: %(ink)s;
+    qproperty-axes_label_font_size: 10;
+    qproperty-line_color1: %(trace)s;
+    qproperty-line_color2: %(ink_3)s;
+    qproperty-line_color3: %(live)s;
+    qproperty-line_color4: %(good)s;
+    qproperty-line_color5: %(warn)s;
+    qproperty-line_color6: %(bad)s;
+    qproperty-line_color7: %(ink_2)s;
+    qproperty-line_color8: %(rule)s;
+    qproperty-line_color9: %(ink)s; }
+TimeDomainDisplayPlot { qproperty-tag_text_color: %(ink)s;
+    qproperty-tag_background_color: %(panel_2)s; }
+/* Not marker_peak_amplitude_color: setting it at all segfaults GNU Radio
+   3.10.12's frequency plot, with no Python frame to say why. */
+FrequencyDisplayPlot { qproperty-max_fft_color: %(ink_2)s;
+    qproperty-min_fft_color: %(ink_3)s;
+    qproperty-marker_lower_intensity_color: %(ink_3)s;
+    qproperty-marker_upper_intensity_color: %(warn)s;
+    qproperty-marker_noise_floor_amplitude_color: %(ink_3)s;
+    qproperty-marker_CF_color: %(rule)s; }
+QwtPlotCanvas { background: %(well)s; border: 1px solid %(rule)s;
+    border-radius: 0; }
+DisplayPlot QWidget { background: transparent; }
+DisplayPlot QwtPlotCanvas { background: %(well)s; }
+QwtTextLabel#QwtPlotTitle { color: %(ink)s; padding: 6px 0 2px 0;
+    font-family: "%(f_ui)s", %(fallback)s; font-size: %(s_sm)spx;
+    font-weight: 600; }
+QwtScaleWidget { color: %(ink_3)s; font-family: "%(f_ui)s", %(fallback)s;
+    font-size: %(s_xs)spx; }
+QwtLegendLabel { color: %(ink_2)s; font-size: %(s_sm)spx; }
+"""
+
+_FLOWGRAPH_QSS = _FLOWGRAPH_BASE_QSS + _CONTROLS_QSS
+
+
+def flowgraph_qss(up, down, tick):
+    """A running flowgraph window's stylesheet. The paths are as for
+    :func:`dialog_qss`."""
+    return _FLOWGRAPH_QSS % dict(TOKENS, fallback=FALLBACK,
+                                 up=up, down=down, tick=tick)
 
 
 # --- The browser page -------------------------------------------------------
@@ -276,7 +401,8 @@ def css():
             % (TOKENS[family], weight, filename))
     lines.append(':root{')
     for name in ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft',
-                 'ink', 'ink_2', 'ink_3', 'live', 'warn'):
+                 'ink', 'ink_2', 'ink_3', 'live', 'warn', 'good', 'bad',
+                 'trace'):
         lines.append('  --%s:%s;' % (name.replace('_', '-'), TOKENS[name]))
     lines.append('  --f-num:"%s",%s;' % (TOKENS['f_num'], FALLBACK))
     lines.append('  --f-ui:"%s",%s;' % (TOKENS['f_ui'], FALLBACK))
