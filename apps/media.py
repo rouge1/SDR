@@ -23,6 +23,12 @@ import os
 
 WAV = ('.wav',)
 
+#: What the audio pickers offer. WAV comes first on purpose: where a song is
+#: kept both ways, :func:`choices` lists it once and keeps the WAV, which
+#: plays without being decoded. An MP3 is decoded by ffmpeg as it plays -
+#: see ``apps/audio_file.py``.
+AUDIO = ('.wav', '.mp3')
+
 
 def media_files(directory, extensions):
     """Every file under ``directory`` with one of ``extensions``.
@@ -79,6 +85,21 @@ def picker_name(relative, stem=None):
 
 
 def choices(directory, extensions):
-    """``(label, full path)`` for every matching file - a picker's items."""
-    return [(picker_name(relative), full)
-            for relative, full in media_files(directory, extensions)]
+    """``(label, full path)`` for every matching file - a picker's items.
+
+    One entry per name within a folder. A song kept as both ``song.wav``
+    and ``song.mp3`` would otherwise be listed twice under the one label
+    ``song``, with nothing on screen to say which is which - the trap the
+    video picker fell into with its ``.mp4`` and ``.ts`` twins. The file
+    kept is the one whose extension comes earliest in ``extensions``.
+    """
+    ranks = [e.lower() for e in extensions]
+    kept, order = {}, []
+    for relative, full in media_files(directory, extensions):
+        stem, ext = os.path.splitext(relative)
+        key, rank = stem.lower(), ranks.index(ext.lower())
+        if key not in kept:
+            order.append(key)
+        if key not in kept or rank < kept[key][0]:
+            kept[key] = (rank, relative, full)
+    return [(picker_name(kept[k][1]), kept[k][2]) for k in order]

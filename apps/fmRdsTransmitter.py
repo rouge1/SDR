@@ -28,7 +28,8 @@ from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
-from apps.media import WAV, choices
+from apps.audio_file import PcmReader, audio_channels, is_wav, track_tags
+from apps.media import AUDIO, choices
 from apps.rds_core import PTY_RBDS, clock_text
 from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
 from apps.utils import (apply_dark_theme, power_percent, read_settings,
@@ -63,6 +64,22 @@ def track_name(path):
     return os.path.splitext(os.path.basename(path))[0].replace('-', ' ')
 
 
+def song(path):
+    """``(artist, title)`` for RDS Now Playing.
+
+    The file's own tags where it has them - ID3 in an MP3, INFO in a WAV -
+    so a receiver shows "Bon Jovi" and "Livin' On A Prayer" as RT+ artist
+    and title rather than the file name "01 Livin' On A Prayer", track
+    number and all. The name stands in for a missing title, and no artist
+    tag sends the title alone, as before. The encoder turns both into text
+    RDS can carry (``rds_encode.rds_text``).
+    """
+    if not path or path in ('tone', 'silence'):
+        return '', ''
+    tags = track_tags(path)
+    return tags.get('artist', ''), tags.get('title') or track_name(path)
+
+
 def wav_channels(path):
     """Channel count of a WAV file, or 0 if it is not a readable WAV."""
     try:
@@ -76,13 +93,13 @@ def wav_channels(path):
 
 
 def wav_files(settings):
-    """(label, path) for every WAV in the media folder, subfolders included.
+    """(label, path) for every WAV and MP3 in the media folder, subfolders too.
 
     The label carries the folder a track sits in; ``track_name`` does not,
     because that one goes out over the air as RDS Now Playing and a
     listener's radio should say the song, not where it is filed.
     """
-    return choices(settings.get('media_directory', ''), WAV)
+    return choices(settings.get('media_directory', ''), AUDIO)
 
 
 class ConfigDialog(Qt.QDialog):
@@ -325,7 +342,7 @@ def _pcm_floats(raw, width):
 
 
 class audio_source(gr.sync_block):
-    """Left and right audio at 48 kHz, from a WAV file, a test tone or silence.
+    """Left and right audio at 48 kHz, from a WAV or MP3, a test tone or silence.
 
     The source switches in place, so Next Track never touches the rest of the
     flowgraph. Rebuilding it instead dropped the samples in transit: pilot and
@@ -333,6 +350,11 @@ class audio_source(gr.sync_block):
     already measured its RDS bit timing went on decoding junk, or nothing at
     all. A mono file plays the same on both sides, so the stereo difference is
     zero - on the air, exactly what a mono chain would send.
+
+    An MP3 is decoded ahead on a thread (``apps/audio_file.PcmReader``),
+    always to two channels, so ``work()`` never waits on ffmpeg: a wait
+    there would hold up the pilot and RDS along with the music. ``channels``
+    still reports what the file itself carries.
     """
 
     def __init__(self, choice='silence'):
@@ -340,27 +362,42 @@ class audio_source(gr.sync_block):
                                out_sig=[np.float32, np.float32])
         self._lock = threading.Lock()
         self._wav = None
+        self._pcm = None
         self._kind = 'silence'
         self._tone_n = 0
         self.channels = 1
         self.set_source(choice)
 
     def set_source(self, choice):
-        """Play a WAV file path, 'tone' or 'silence' from the next sample on."""
-        wav, kind, channels = None, 'silence', 1
+        """Play a WAV or MP3 path, 'tone' or 'silence' from the next sample on."""
+        wav, pcm, kind, channels = None, None, 'silence', 1
         if choice == 'tone':
             kind = 'tone'
         elif choice and choice != 'silence' and os.path.exists(choice):
             try:
-                wav = wave.open(choice)
-                kind, channels = 'wav', wav.getnchannels()
-            except (wave.Error, EOFError, OSError) as exc:
+                if is_wav(choice):
+                    wav = wave.open(choice)
+                    kind, channels = 'wav', wav.getnchannels()
+                else:
+                    # Started, and a moment of it decoded, before the swap -
+                    # so the new song does not open on a gap.
+                    pcm = PcmReader(choice, channels=2)
+                    pcm.wait_ready()
+                    kind, channels = 'pcm', audio_channels(choice) or 2
+            except (wave.Error, EOFError, OSError, RuntimeError) as exc:
                 print(f"FM+RDS: cannot play {choice}: {exc}", file=sys.stderr)
         with self._lock:
-            old, self._wav = self._wav, wav
+            old_wav, self._wav = self._wav, wav
+            old_pcm, self._pcm = self._pcm, pcm
             self._kind, self.channels = kind, channels
-        if old is not None:
-            old.close()
+        if old_wav is not None:
+            old_wav.close()
+        if old_pcm is not None:
+            old_pcm.close()
+
+    def close(self):
+        """Let go of the file - and an MP3's ffmpeg - once the flowgraph stops."""
+        self.set_source('silence')
 
     def _wav_frames(self, n):
         """The next ``n`` frames, shape (n, channels), looping the file."""
@@ -384,8 +421,9 @@ class audio_source(gr.sync_block):
     def work(self, input_items, output_items):
         n = len(output_items[0])
         with self._lock:
-            if self._kind == 'wav':
-                data = self._wav_frames(n)
+            if self._kind in ('wav', 'pcm'):
+                data = (self._wav_frames(n) if self._kind == 'wav'
+                        else self._pcm.read(n))
                 left = data[:, 0]
                 right = data[:, 1] if data.shape[1] > 1 else left
             elif self._kind == 'tone':
@@ -457,8 +495,10 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             pty=int(values.get('pty', 5) or 0),
             clock=system_clock,
         )
+        # Asked of the file once per track, for the air and for the window.
+        self.song = song(self.audio_choice)
         if self.track_in_rt and self.audio_choice not in ('tone', 'silence'):
-            self.encoder.set_now_playing('', track_name(self.audio_choice))
+            self.encoder.set_now_playing(*self.song)
 
         self._build_controls()
         self._build_readout()
@@ -714,8 +754,10 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
             self.radio_sink.set_frequency(0, self.freq_mhz * 1e6)
 
     def _update_track_label(self):
-        name = track_name(self.audio_choice) if self.audio_choice not in (
-            'tone', 'silence') else self.audio_choice
+        if self.audio_choice in ('tone', 'silence'):
+            name = self.audio_choice
+        else:
+            name = ' - '.join(part for part in self.song if part)
         self.track_label.setText(name or '-')
 
     def next_track(self):
@@ -730,9 +772,10 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         # the pilot and RDS left receivers decoding junk or nothing at all.
         self.audio_src.set_source(path)
         self.stereo = self.audio_src.channels == 2
+        self.song = song(path)
         self._update_track_label()
         if self.track_in_rt:
-            self.encoder.set_now_playing('', track_name(path))
+            self.encoder.set_now_playing(*self.song)
             # A typed message stays in the box; otherwise it shows the new song.
             snap = self.encoder.snapshot()
             self.rt_edit.setText(snap['message'] or snap['radiotext'])
@@ -743,6 +786,7 @@ class fmRdsTransmitter(gr.top_block, Qt.QWidget):
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        self.audio_src.close()
         event.accept()
 
 

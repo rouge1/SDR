@@ -98,7 +98,7 @@ print("numpy       ", numpy.__version__)
 print("scipy       ", scipy.__version__)
 print("pillow      ", PIL.__version__)
 import shutil
-print("ffmpeg      ", shutil.which("ffmpeg") or "MISSING - only colour bars and .ts files will play")
+print("ffmpeg      ", shutil.which("ffmpeg") or "MISSING - video clips and MP3s will not play; WAV and .ts files still do")
 from PyQt5 import QtCore
 print("PyQt5       ", QtCore.PYQT_VERSION_STR)
 from gnuradio import gr, analog, filter, blocks, audio

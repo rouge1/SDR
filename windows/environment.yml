@@ -26,4 +26,4 @@ dependencies:
   - numpy
   - scipy
   - pillow                    # the launcher tints its icons with PIL
-  - ffmpeg                    # video clips: NTSC, FM video and ATSC transmitters
+  - ffmpeg                    # video clips, and MP3 audio in every app that plays a file

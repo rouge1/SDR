@@ -35,7 +35,8 @@ from PyQt5 import QtCore  # type: ignore
 from PyQt5.QtCore import pyqtSlot  # type: ignore
 
 # Local imports
-from apps.media import WAV, choices
+from apps.audio_file import AudioFileSource
+from apps.media import AUDIO, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
@@ -130,7 +131,7 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
-        # Read settings and get wav files
+        # Read settings and get the audio files
         settings = read_settings()
         media_dir = settings.get('media_directory', '')
         
@@ -138,11 +139,11 @@ class ConfigDialog(Qt.QDialog):
             if not media_dir or not os.path.exists(media_dir):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
-            # Every WAV file, subfolders included and whatever the case of
+            # Every WAV and MP3 file, subfolders included and whatever the case of
             # its extension - see apps/media.py.
-            wav_files = choices(media_dir, WAV)
+            wav_files = choices(media_dir, AUDIO)
             if not wav_files:
-                raise FileNotFoundError("No WAV files found in media directory")
+                raise FileNotFoundError("No WAV or MP3 files found in media directory")
                 
             for display_name, wav_file in wav_files:
                 self.audio_combo.addItem(display_name, wav_file)
@@ -593,7 +594,9 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.filter_fft_low_pass_filter_0 = filter.fft_filter_fff(1, firdes.low_pass(1, 48000, noiseFreq, 200, window.WIN_HAMMING, 6.76), 1)
         self.fft_filter_xxx_0 = filter.fft_filter_fff(1, firdes.low_pass(1,48000,3500,500), 1)
         self.fft_filter_xxx_0.declare_sample_delay(0)
-        self.blocks_wavfile_source_0 = blocks.wavfile_source(values['audio_file'], True)
+        # WAV or MP3, looping at 48 kHz - see apps/audio_file.py.
+        self.audio_file = AudioFileSource(values['audio_file'])
+        self.blocks_wavfile_source_0 = self.audio_file.block
         self.blocks_selector_0 = blocks.selector(gr.sizeof_gr_complex*1,subMod,0)
         self.blocks_selector_0.set_enabled(True)
         self.blocks_multiply_xx_0 = blocks.multiply_vcc(1)
@@ -645,6 +648,10 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        # An MP3's ffmpeg would otherwise sit on a full pipe until the
+        # launcher exits - see apps/audio_file.py.
+        if getattr(self, 'audio_file', None) is not None:
+            self.audio_file.close()
 
         event.accept()
 

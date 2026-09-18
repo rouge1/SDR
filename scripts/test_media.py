@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check how the pickers find media: subfolders, capitals, hidden files.
+"""Check how the pickers find media: subfolders, capitals, hidden files, MP3.
 
 Builds a throwaway media folder with every case that matters and checks
 what ``apps/media.py`` - and the video and still-frame lists built on it in
@@ -17,7 +17,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from apps.media import WAV, choices, media_files, picker_name  # noqa: E402
+from apps.media import AUDIO, WAV, choices, media_files, picker_name  # noqa: E402
 
 FAILURES = []
 
@@ -43,7 +43,8 @@ def main():
                      '._Zebra-Song.wav', '.cache/hidden.wav',
                      'Prelinger/clip.mp4', 'Prelinger/clip.ts',
                      'NASA/clip.mp4', 'Moonwalk.mp4', 'Moonwalk.TS',
-                     'Stills/Test-Card-946x486-18M0FS.DAT'):
+                     'Stills/Test-Card-946x486-18M0FS.DAT',
+                     'Road-Song.MP3', 'Music/Both-Ways.mp3', 'Music/Both-Ways.wav'):
             touch(root, name)
 
         print('capitals')
@@ -70,6 +71,17 @@ def main():
         deep = [n for n in names if '/' in n]
         check(deep == sorted(deep, key=str.lower),
               'subfolders grouped: ' + ', '.join(deep))
+
+        print('\nMP3 beside WAV')
+        audio = dict(choices(root, AUDIO))
+        check(os.path.basename(audio.get('Road Song', '')) == 'Road-Song.MP3',
+              'an .MP3 is offered, capitals and all')
+        check('Road Song' not in labels, 'but not by a picker asking only for WAV')
+        check(os.path.basename(audio.get('Music/Both Ways', '')) == 'Both-Ways.wav',
+              'a song kept as both .mp3 and .wav is offered once, as the WAV')
+        check(len(audio) == len(set(audio)) and
+              sum(1 for label, _ in choices(root, AUDIO) if label == 'Music/Both Ways') == 1,
+              'and no label appears twice')
 
         print('\nwhat is skipped')
         check(not any(n.startswith('._') for n in names),

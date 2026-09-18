@@ -37,7 +37,8 @@ try:                 # PyQt5 ships sip inside the package; some builds also
 except ImportError:  # pragma: no cover - depends on the PyQt5 build
     from PyQt5 import sip  # type: ignore
 
-from apps.media import WAV, choices
+from apps.audio_file import AudioFileSource
+from apps.media import AUDIO, choices
 from apps.fm_video_core import (DEFAULT_PROFILE, PREEMPHASIS_CHOICES,
                                 PROFILES, VIDEO_CENTRE, compensation_band,
                                 fm_integrator_gain,
@@ -362,7 +363,7 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo.addItem("From the video clip", ('clip', None))
         self.audio_combo.addItem("Silence - unmodulated subcarriers",
                                  ('silence', None))
-        wavs = choices(self.media_dir, WAV)     # subfolders too
+        wavs = choices(self.media_dir, AUDIO)   # WAV and MP3, subfolders too
         if wavs:
             self.audio_combo.insertSeparator(self.audio_combo.count())
         for label, path in wavs:
@@ -732,8 +733,11 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
                 print(f"{os.path.basename(video_path)} has no soundtrack; "
                       "the subcarriers go out unmodulated.", file=sys.stderr)
         if head is None and kind == 'file' and audio_path and os.path.exists(audio_path):
-            head = blocks.wavfile_source(audio_path, True)
-            rate = self.audio_rate(audio_path)
+            # WAV or MP3; the rate is the file's own for a WAV, and 48 kHz
+            # for an MP3, which ffmpeg resamples as it decodes.
+            self.audio_file = AudioFileSource(audio_path)
+            head = self.audio_file.block
+            rate = self.audio_file.rate
             self.soundDescription = os.path.basename(audio_path)
         if head is None:
             self.audio_head = analog.sig_source_f(RF_RATE, analog.GR_CONST_WAVE,
@@ -746,20 +750,15 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
         self.connect(head, self.audio_conditioner)
         self.audio_source = self.audio_conditioner
 
-    @staticmethod
-    def audio_rate(path, default=48000):
-        try:
-            import wave
-            with wave.open(path, 'rb') as w:
-                return w.getframerate()
-        except Exception:
-            return default
-
     def close_sources(self):
-        """End the clip's sound pipe; the video source closes its own ffmpeg."""
-        track = getattr(self, 'audio_track', None)
-        if track is not None:
-            track.close()
+        """End the sound's pipe - the clip's, or an MP3's - once stopped.
+
+        The video source closes its own ffmpeg.
+        """
+        for source in (getattr(self, 'audio_track', None),
+                       getattr(self, 'audio_file', None)):
+            if source is not None:
+                source.close()
 
     def closeEvent(self, event):
         self.settings = Qt.QSettings("GNU Radio", "fmVideoXmitter")

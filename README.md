@@ -214,15 +214,16 @@ On first launch, open the **Settings** dialog (gear icon, top-right) and configu
 
 | Setting | Description |
 |---------|-------------|
-| Media Directory | Folder of WAV audio and video clips. Subfolders are searched too, and `.WAV` counts as well as `.wav`; any video `ffmpeg` can read works |
+| Media Directory | Folder of audio and video clips. WAV and MP3 both play; subfolders are searched too, and `.WAV` counts as well as `.wav`; any video `ffmpeg` can read works |
 | Radio Hardware | **HackRF One (USB)**, **Ettus USRP (Network)**, **Signal Hound VSG60 (USB, transmit only)** or **Signal Hound BB60D (USB, receive only)**. With a one-way radio every tile turns to the side it can run and the rest are dimmed |
 | Launcher Mode | **Single** — launcher hides while an app runs; **Multi** — launcher stays open (requires ≥ 2 USRP IPs) |
 | SDR IP Addresses | USRP only — enter each USRP IP address and click Add |
 
 The repository ships no audio or video, so a fresh clone has nothing to pick
-until **Media Directory** points at a folder: the WAV lists are empty, the video
+until **Media Directory** points at a folder: the audio lists are empty, the video
 transmitters offer only their built-in colour bars, and every app still runs on
-its tone or pattern. Any WAV and any video `ffmpeg` reads will do.
+its tone or pattern. Any WAV or MP3 and any video `ffmpeg` reads will do - MP3
+and video need `ffmpeg`, which both environments install.
 
 Settings are saved to `config/window_settings.json` (created automatically on first run).
 Nothing in `config/` is committed - window positions, radio choice and the
@@ -275,9 +276,9 @@ SDR/
 | PSK Signal Generator | Phase Shift Keying | Tested |
 | PPM-OOK Generator | Pulse Position Modulation OOK audio | Tested |
 | **Audio** | | |
-| AM Audio Generator | AM with live or recorded WAV audio | Tested |
-| FM Audio Generator | FM with recorded WAV audio | Tested |
-| FM Subcarrier Generator | FM subcarrier carrying recorded WAV audio | Tested |
+| AM Audio Generator | AM with live or recorded WAV or MP3 audio | Tested |
+| FM Audio Generator | FM with recorded WAV or MP3 audio | Tested |
+| FM Subcarrier Generator | FM subcarrier carrying recorded WAV or MP3 audio | Tested |
 | FM + RDS Transmitter | FM broadcast in stereo with RDS: station name, RadioText, now playing, clock | Verified off air |
 | FM + RDS Receiver | Decodes a station's RDS: call sign, station name, RadioText, now playing, clock | Verified off air |
 | **Video** | | |

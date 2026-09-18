@@ -47,7 +47,8 @@ import sip #type: ignore
 # Local imports
 from fractions import Fraction
 
-from apps.media import WAV, choices
+from apps.audio_file import AudioFileSource
+from apps.media import AUDIO, choices
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
 from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, dat_files,
                               dat_resample_ratio, has_audio, have_ffmpeg,
@@ -350,7 +351,7 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo.addItem("Silence - aural carrier only",
                                  ('silence', None))
 
-        wavs = choices(self.media_dir, WAV)     # subfolders too
+        wavs = choices(self.media_dir, AUDIO)   # WAV and MP3, subfolders too
         if wavs:
             self.audio_combo.insertSeparator(self.audio_combo.count())
         for label, path in wavs:
@@ -936,8 +937,11 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
 
         if head is None and kind == 'file' and audio_path \
                 and os.path.exists(audio_path):
-            head = blocks.wavfile_source(audio_path, True)
-            rate = self.audio_rate(audio_path)
+            # WAV or MP3; the rate is the file's own for a WAV, and 48 kHz
+            # for an MP3, which ffmpeg resamples as it decodes.
+            self.audio_file = AudioFileSource(audio_path)
+            head = self.audio_file.block
+            rate = self.audio_file.rate
             self.soundDescription = os.path.basename(audio_path)
 
         if head is None:
@@ -991,9 +995,10 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         # The video source closes its own ffmpeg in the block's stop(); the
         # audio one is a plain pipe into file_descriptor_source, so it is
         # shut down here rather than left for garbage collection.
-        track = getattr(self, 'audio_track', None)
-        if track is not None:
-            track.close()
+        for source in (getattr(self, 'audio_track', None),
+                       getattr(self, 'audio_file', None)):
+            if source is not None:
+                source.close()
 
         event.accept()
 
@@ -1026,16 +1031,6 @@ class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
         self.polarity = 'negative' if videoInvert < 0 else 'positive'
         self._videoInvert_callback(self.videoInvert)
         self.modulator.set_polarity(self.polarity)
-
-    @staticmethod
-    def audio_rate(path, default=48000):
-        """The wav file's own sample rate, so the resampler can match it."""
-        try:
-            import wave
-            with wave.open(path, 'rb') as w:
-                return w.getframerate()
-        except Exception:
-            return default
 
     def get_videoFileName(self):
         return self.videoFileName

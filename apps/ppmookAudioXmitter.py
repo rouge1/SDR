@@ -34,7 +34,8 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import QObject, pyqtSlot # type: ignore
 
 # Local imports
-from apps.media import WAV, choices
+from apps.audio_file import AudioFileSource
+from apps.media import AUDIO, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
@@ -128,7 +129,7 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
-        # Read settings and get wav files
+        # Read settings and get the audio files
         settings = read_settings()
         media_dir = settings.get('media_directory', '')
         
@@ -136,11 +137,11 @@ class ConfigDialog(Qt.QDialog):
             if not media_dir or not os.path.exists(media_dir):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
-            # Every WAV file, subfolders included and whatever the case of
+            # Every WAV and MP3 file, subfolders included and whatever the case of
             # its extension - see apps/media.py.
-            wav_files = choices(media_dir, WAV)
+            wav_files = choices(media_dir, AUDIO)
             if not wav_files:
-                raise FileNotFoundError("No WAV files found in media directory")
+                raise FileNotFoundError("No WAV or MP3 files found in media directory")
                 
             for display_name, wav_file in wav_files:
                 self.audio_combo.addItem(display_name, wav_file)
@@ -573,11 +574,13 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         for c in range(0, 5):
             self.top_grid_layout.setColumnStretch(c, 1)
         
-        # Modify wavfile source to use selected file
+        # The selected file, WAV or MP3, looping at 48 kHz
+        self.audio_file = None
         if audio_file and os.path.exists(audio_file):
-            self.blocks_wavfile_source_0 = blocks.wavfile_source(audio_file, True)
+            self.audio_file = AudioFileSource(audio_file)
+            self.blocks_wavfile_source_0 = self.audio_file.block
         else:
-            # Create dummy source if no valid wav file
+            # Create dummy source if no valid audio file
             self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
 
         self.blocks_vector_source_x_0_0 = blocks.vector_source_f((0,)*10+(1,)*(sps-10), True, 1, [])
@@ -648,6 +651,10 @@ class ppmookLiveAudioXmitter(gr.top_block, Qt.QWidget):
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        # An MP3's ffmpeg would otherwise sit on a full pipe until the
+        # launcher exits - see apps/audio_file.py.
+        if getattr(self, 'audio_file', None) is not None:
+            self.audio_file.close()
 
         event.accept()
 

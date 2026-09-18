@@ -19,6 +19,7 @@ Two details matter more than they look:
   a receiver find block boundaries at all.
 """
 import threading
+import unicodedata
 from datetime import date, datetime, timezone
 
 import numpy as np
@@ -59,6 +60,45 @@ def make_block(info, offset_name):
 
 def _chars(text, size):
     return list(text.ljust(size)[:size])
+
+
+#: Characters with no plain-ASCII decomposition, spelt out rather than lost.
+_SPELT = str.maketrans({
+    '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'", '\u2032': "'",
+    '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u2033': '"',
+    '\u2010': '-', '\u2011': '-', '\u2012': '-', '\u2013': '-', '\u2014': '-',
+    '\u2026': '...', '\u00a0': ' ', '\t': ' ', '\n': ' ', '\r': ' ',
+    '\u00df': 'ss', '\u00e6': 'ae', '\u00c6': 'AE', '\u0153': 'oe', '\u0152': 'OE',
+    '\u00f8': 'o', '\u00d8': 'O', '\u0111': 'd', '\u0110': 'D',
+    '\u0142': 'l', '\u0141': 'L', '\u00fe': 'th', '\u00de': 'Th',
+})
+
+
+def _fit(text, width):
+    """``text`` cut to ``width`` characters, at a word if one is near the end."""
+    if len(text) <= width:
+        return text
+    cut = text[:width + 1].rsplit(' ', 1)[0].rstrip(' ,;:-')
+    return cut if len(cut) >= width * 2 // 3 else text[:width].rstrip()
+
+
+def rds_text(text):
+    """Text as it can go out: printable ASCII, one byte a character.
+
+    Each character is packed into a byte with ``ord()``, and a song's tags
+    are full of characters that do not fit one: the curly apostrophe in
+    "Livin\u2019" is U+2019. Sent as they were, measured through the encoder
+    and decoder here, it arrived as a space and "M\u00f6tley Cr\u00fce" as
+    "M tley Cr e" - the blocks all clean, the letters silently gone. The
+    Latin-1 accents do fit a byte, but RDS has its own table above 127 (IEC
+    62106 annex E), so a car radio would show them as other letters. Plain
+    ASCII reads the same everywhere. So curly quotes and dashes become
+    straight ones, accents come off their letters (Motley Crue), a few
+    letters with no accent to remove are spelt out, and whatever is left is
+    dropped rather than sent wrong.
+    """
+    text = unicodedata.normalize('NFKD', (text or '').translate(_SPELT))
+    return ''.join(c for c in text if ' ' <= c <= '~')
 
 
 def paginate(text, width=64):
@@ -132,7 +172,7 @@ class RdsEncoder:
     # -- live edits --------------------------------------------------------
     def set_ps(self, text):
         with self._lock:
-            self._ps = _chars(text, 8)
+            self._ps = _chars(rds_text(text), 8)
 
     def set_radiotext(self, text):
         """Put a message in RadioText.
@@ -142,7 +182,7 @@ class RdsEncoder:
         playing, and Now Playing stays on the song throughout. Sending the
         song's line itself, or nothing, goes back to the song alone.
         """
-        text = (text or '')[:64]
+        text = rds_text(text)[:64]
         with self._lock:
             song = self._item[0] if self._item else None
             if not text.strip() or text.rstrip() == song:
@@ -171,6 +211,7 @@ class RdsEncoder:
         arrives, but not in reading order. The numbering is what lets them be
         reassembled without waiting to spot where the cycle wraps.
         """
+        text = rds_text(text)
         with self._lock:
             pages = paginate(text, 64)
             if number_pages and len(pages) > 1:
@@ -233,12 +274,30 @@ class RdsEncoder:
         the RT+ item toggle bit, which tells receivers to drop the last song's
         title and artist. A typed message stays, taking turns with the new line.
         """
-        artist, title = (artist or '').strip(), (title or '').strip()
+        # Converted before the tags are counted, since they are offsets.
+        artist, title = rds_text(artist).strip(), rds_text(title).strip()
+        # And fitted into RadioText's 64 characters, for the same reason. A
+        # longer line was cut to 64 while its tags still pointed past the
+        # end, and a receiver took neither: measured, an 84-character line
+        # of artist and title arrived as no artist and no title at all, while
+        # the On Air box here claimed the whole title.
+        if artist and title:
+            artist = _fit(artist, 30)
+            title = _fit(title, 64 - len(artist) - 3)
+        else:
+            title = _fit(title, 64)
         with self._lock:
             if artist and title:
+                # Title first: an RT+ group's second tag has a 5-bit length,
+                # 32 characters at most, and the first a 6-bit one. With the
+                # artist first, any title over 32 characters went out with
+                # its length cut to the low five bits - a 39-character title
+                # arrived as "Symphon", and the receiver rightly refused half
+                # a word. Unseen while the artist was always empty. An artist
+                # is fitted to 30 above, so it always fits the short one.
                 item = (f"{artist} - {title}",
-                        ((4, 0, len(artist) - 1),
-                         (1, len(artist) + 3, len(title) - 1)))
+                        ((1, len(artist) + 3, len(title) - 1),
+                         (4, 0, len(artist) - 1)))
             elif title:
                 item = (title, ((1, 0, len(title) - 1), (0, 0, 0)))
             else:

@@ -39,19 +39,20 @@ from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
-from apps.media import WAV, choices
+from apps.audio_file import AudioFileSource
+from apps.media import AUDIO, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
 def get_wav_files(settings):
-    """Get list of wav files from media directory"""
+    """Get list of WAV and MP3 files from media directory"""
     try:
         media_dir = settings.get('media_directory', '')
         if not media_dir or not os.path.exists(media_dir):
             return None
             
-        # Subfolders too, and .WAV as well as .wav - see apps/media.py.
-        wav_files = choices(media_dir, WAV)
+        # WAV and MP3, subfolders too, any case - see apps/media.py.
+        wav_files = choices(media_dir, AUDIO)
         return wav_files if wav_files else []
     except:
         return None
@@ -171,7 +172,7 @@ class ConfigDialog(Qt.QDialog):
         self.source_combo = Qt.QComboBox()
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
         
-        # Read media directory setting and get wav files
+        # Read media directory setting and get the audio files
         settings = read_settings()
         wav_files = get_wav_files(settings)
         
@@ -180,9 +181,9 @@ class ConfigDialog(Qt.QDialog):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
             if not wav_files:
-                raise FileNotFoundError("No WAV files found in media directory")
+                raise FileNotFoundError("No WAV or MP3 files found in media directory")
                 
-            # Add wav files found
+            # Add the audio files found
             for display_name, wav_file in wav_files:
                 self.source_combo.addItem(display_name, wav_file)
                 
@@ -679,11 +680,13 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         for c in range(3, 6):
             self.top_grid_layout.setColumnStretch(c, 1)
         
-        # Modify wavfile source to use selected file
+        # The selected file, WAV or MP3, looping at 48 kHz
+        self.audio_file = None
         if self.wavFile and os.path.exists(self.wavFile):
-            self.blocks_wavfile_source_0 = blocks.wavfile_source(self.wavFile, True)
+            self.audio_file = AudioFileSource(self.wavFile)
+            self.blocks_wavfile_source_0 = self.audio_file.block
         else:
-            # Create dummy source if no valid wav file
+            # Create dummy source if no valid audio file
             self.blocks_wavfile_source_0 = blocks.null_source(gr.sizeof_float*1)
 
         self.blocks_selector_0 = blocks.selector(gr.sizeof_float*1,inputSelect,0)
@@ -712,6 +715,10 @@ class fmAudioRecordedGenerator(gr.top_block, Qt.QWidget):
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
+        # An MP3's ffmpeg would otherwise sit on a full pipe until the
+        # launcher exits - see apps/audio_file.py.
+        if getattr(self, 'audio_file', None) is not None:
+            self.audio_file.close()
 
         event.accept()
 
