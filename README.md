@@ -1,15 +1,23 @@
-# GNU Radio Applications Launcher
+# RF Bench Toolkit
 
-A PyQt5-based graphical launcher for GNU Radio applications, providing easy access to a suite of signal generation and transmission tools.
+A launcher for a suite of GNU Radio transmitters and receivers. Pick a tile, set
+it up in its dialog, and the flowgraph runs on whichever radio is selected.
 
 ---
 
 ## Features
 
-- Clean, dark-themed graphical interface for launching GNU Radio applications
-- Supports **HackRF One** (USB via SoapySDR), **Ettus USRP** (network via UHD), and **Signal Hound VSG60** (USB via the vendor VSG API) radio backends
-- 11 signal generation and transmission modules (audio, video, digital modulations)
-- Persistent window positioning and per-app configuration
+- Two front ends onto the same grid and the same settings: a desktop launcher,
+  and a browser page that starts the same apps
+- 16 apps: signal generators, AM and FM audio, FM broadcast with RDS, and ATSC,
+  NTSC and FM video - transmitters and receivers, with the two ends of each
+  standard sharing one tile
+- Four radios: **HackRF One** (USB via SoapySDR), **Ettus USRP** (network via
+  UHD), **Signal Hound VSG60** (transmit only) and **Signal Hound BB60D**
+  (receive only). The grid arranges itself around whichever is selected
+- Runs on Linux and Windows
+- Needs no network connection - the fonts ship with the repository
+- Remembers each app's settings, and where every window was left
 - Single and multi-radio operation modes
 
 ---
@@ -18,7 +26,8 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 
 ### System Requirements
 
-- Linux (X11 or Wayland display required)
+- Linux (X11 or Wayland display required), or Windows 10/11 - see
+  [On Windows](#on-windows)
 - [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/)
 - Audio: **PipeWire** (ALSA audio source is not supported)
 
@@ -26,7 +35,8 @@ A PyQt5-based graphical launcher for GNU Radio applications, providing easy acce
 
 - **HackRF One** — connected via USB; SoapySDR HackRF driver must be available in the conda environment
 - **Ettus USRP** — reachable over the network via UHD 4.x; IP address configured in the Settings dialog
-- **Signal Hound VSG60** — connected via USB; requires the vendor `libvsg_api.so`, which is **not** included in this repository — see [Signal Hound VSG60 library](#signal-hound-vsg60-library) below. 30 MHz – 6 GHz, up to 50 MS/s, calibrated output from −120 to +10 dBm
+- **Signal Hound VSG60** — transmit only, Linux only; connected via USB; requires the vendor `libvsg_api.so`, which is **not** included in this repository — see [Signal Hound VSG60 library](#signal-hound-vsg60-library) below. 30 MHz – 6 GHz, up to 50 MS/s, calibrated output from −120 to +10 dBm
+- **Signal Hound BB60D** — receive only; connected via USB; needs Signal Hound's SoapySDR module — see [Signal Hound BB60D](#signal-hound-bb60d) below
 
 ---
 
@@ -74,11 +84,30 @@ python -c "from gnuradio import gr; print(gr.version())"
 
 Expected output: `3.10.12.0`
 
+### On Windows
+
+The same GNU Radio (3.10.12) runs natively on Windows - no WSL. From the
+repository folder in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\start_app.ps1
+```
+
+The first installs Miniforge if there is no conda, builds the `gnu`
+environment from `environment-windows.yml` (the Linux `environment.yml` cannot
+solve on Windows), and checks that GNU Radio, SoapySDR and PyQt5 import. It is
+safe to re-run after an update. The second starts the launcher; launch it from
+the Windows desktop, since a window started over SSH never appears. A HackRF
+often needs no driver work - Windows binds WinUSB to it by itself - and if
+SoapySDR finds no device, bind WinUSB with Zadig. The VSG60 is not supported on
+Windows yet.
+
 ---
 
 ## Signal Hound VSG60 library
 
-Only needed if you are using a VSG60. The vendor library `libvsg_api.so.1` is
+Only needed if you are using a VSG60, and only on Linux. The vendor library `libvsg_api.so.1` is
 proprietary Signal Hound code with no redistribution grant, so it is **not
 committed to this repository** and cannot be installed with pip or conda. You
 supply it from your own licensed copy.
@@ -128,6 +157,18 @@ Replug the VSG60 afterwards.
 
 ---
 
+## Signal Hound BB60D
+
+Receive only. It is driven through SoapySDR, but needs Signal Hound's SoapySDR
+module for it installed on the system: the apps look for
+`libSignalHoundBB60.so` in `/usr/local/lib/SoapySDR/modules0.8` (or the
+distribution's own SoapySDR module folder) and point the conda environment's
+SoapySDR at it themselves. Nothing in this repository replaces that module.
+The receive gain is one 0-100% slider; 60% - the attenuator open and no RF
+gain - is the default and usually the best setting.
+
+---
+
 ## Running the Application
 
 ```sh
@@ -143,6 +184,19 @@ python gnuradio_launcher.py
 
 > `start_app.sh` assumes Miniconda is installed at `~/miniconda3`. If your installation is elsewhere (e.g., `/opt/miniconda3`), edit the `source` line in that script accordingly.
 
+### From a browser
+
+```sh
+conda activate gnu
+python web/server.py                 # http://127.0.0.1:8730
+python web/server.py --host 0.0.0.0  # prints a URL with a token in it
+```
+
+The page shows the same grid and settings and starts the same apps. Each app's
+window opens on the display the **server** runs on, not in the browser - so a
+phone can be the control surface for a bench monitor. Anything wider than this
+machine needs the token in the printed URL; every tile keys a transmitter.
+
 ---
 
 ## First-Run Configuration
@@ -151,12 +205,15 @@ On first launch, open the **Settings** dialog (gear icon, top-right) and configu
 
 | Setting | Description |
 |---------|-------------|
-| Media Directory | Path to WAV/video files used by audio and video transmitter apps |
-| Radio Hardware | Select **HackRF One (USB)**, **Ettus USRP (Network)**, or **Signal Hound VSG60 (USB)** |
+| Media Directory | Folder of WAV audio and video clips. Subfolders are searched too, and `.WAV` counts as well as `.wav`; any video `ffmpeg` can read works |
+| Radio Hardware | **HackRF One (USB)**, **Ettus USRP (Network)**, **Signal Hound VSG60 (USB, transmit only)** or **Signal Hound BB60D (USB, receive only)**. With a one-way radio every tile turns to the side it can run and the rest are dimmed |
 | Launcher Mode | **Single** — launcher hides while an app runs; **Multi** — launcher stays open (requires ≥ 2 USRP IPs) |
 | SDR IP Addresses | USRP only — enter each USRP IP address and click Add |
 
 Settings are saved to `config/window_settings.json` (created automatically on first run).
+The launcher opens at a size it works out for itself - the widest bank's tiles
+in one row, every bank in view - centred on the screen, and after that comes
+back wherever it was left.
 
 ---
 
@@ -165,46 +222,63 @@ Settings are saved to `config/window_settings.json` (created automatically on fi
 ```
 SDR/
 ├── apps/
-│   ├── utils.py                  # Shared theme + settings helpers
-│   ├── settings_dialog.py        # Global settings UI
-│   └── *.py                      # GNU Radio application modules
+│   ├── *.py                      # One module per app, plus the radio blocks
+│   ├── utils.py                  # Shared settings, dialog layout and window helpers
+│   ├── theme.py                  # Colours, type and fonts for both front ends
+│   ├── media.py                  # How every picker finds files in the media folder
+│   └── settings_dialog.py        # Global settings UI
+├── web/                          # Browser front end: server.py and index.html
+├── fonts/                        # Barlow, shipped with its SIL OFL licence
+├── icons/                        # Tile pictures and interface glyphs
+├── scripts/
+│   ├── test_*.py                 # Tests - most need no radio and no display
+│   ├── setup_vsg.sh              # Installs the VSG60 vendor library + udev rule
+│   └── bootstrap_windows.ps1     # Builds the Windows environment
 ├── config/                       # Auto-created; gitignored
 │   └── window_settings.json      # Global settings (radio type, IPs, media dir)
-├── icons/                        # Button icons
-├── scripts/
-│   └── setup_vsg.sh              # Installs the VSG60 vendor library + udev rule
 ├── vendor/                       # Gitignored; holds libvsg_api.so.1 if used
-├── gnuradio_launcher.py          # Main launcher window
-├── start_app.sh                  # Launch helper script
-└── environment.yml               # Conda environment definition
+├── gnuradio_launcher.py          # The desktop launcher
+├── start_app.sh, start_app.ps1   # Launch helpers for Linux and Windows
+├── environment.yml               # Conda environment, Linux
+└── environment-windows.yml       # Conda environment, Windows
 ```
 
 ---
 
 ## Available Applications
 
-| App | Description | Status |
-|-----|-------------|--------|
-| AM Sine Generator | AM with sinewave carrier (DSB/SSB, full/suppressed carrier) | Tested |
-| ASK Generator | Amplitude Shift Keying signal generator | Tested |
-| FSK Signal Generator | Frequency Shift Keying signal generator | Tested |
-| PSK Signal Generator | Phase Shift Keying signal generator | Tested |
-| PPM-OOK Generator | Pulse Position Modulation OOK audio transmitter | Tested |
-| AM Audio Generator | AM transmitter with live or recorded WAV audio | Tested |
-| FM Audio Generator | FM transmitter using recorded WAV audio | Tested |
-| FM Subcarrier | Subcarrier transmitter with recorded WAV audio | Tested |
-| ATSC Video Transmitter | ATSC digital TV transmitter | Untested |
-| NTSC Analog Video | NTSC analog video transmitter | Untested |
-| AM Video Transmitter | AM video transmitter (recorded) | Untested |
+| App | Does | Status |
+|-----|------|--------|
+| **Signal generators** | | |
+| AM Sine Generator | AM with a sinewave (DSB/SSB, full or suppressed carrier) | Tested |
+| ASK Generator | Amplitude Shift Keying | Tested |
+| FSK Signal Generator | Frequency Shift Keying | Tested |
+| PSK Signal Generator | Phase Shift Keying | Tested |
+| PPM-OOK Generator | Pulse Position Modulation OOK audio | Tested |
+| **Audio** | | |
+| AM Audio Generator | AM with live or recorded WAV audio | Tested |
+| FM Audio Generator | FM with recorded WAV audio | Tested |
+| FM Subcarrier Generator | FM subcarrier carrying recorded WAV audio | Tested |
+| FM + RDS Transmitter | FM broadcast in stereo with RDS: station name, RadioText, now playing, clock | Verified off air |
+| FM + RDS Receiver | Decodes a station's RDS: call sign, station name, RadioText, now playing, clock | Verified off air |
+| **Video** | | |
+| ATSC Video Transmitter | ATSC 8VSB digital television on a 6 MHz channel | Verified off air |
+| ATSC Video Receiver | Demodulates 8VSB and recovers the transport stream, to watch or record | Verified off air |
+| NTSC Video Transmitter | Analog television, picture and sound, from any video `ffmpeg` reads | Verified off air |
+| NTSC Video Receiver | Decodes the picture and demodulates the sound | Verified off air |
+| FM Video Transmitter | Analog FPV on 5.8 GHz or ITU-R F.405 relay, in NTSC or PAL | Verified off air |
+| FM Video Receiver | Pictures and sound, and measures what the transmitter actually sends | Verified off air |
 
-Audio/video apps that use recorded files require WAV files placed in the **Media Directory** configured in Settings.
+Each transmitter and its receiver share one tile; the badge in the tile's corner
+flips between them. Apps that play recorded material take it from the **Media
+Directory** set in Settings.
 
 ---
 
 ## Configuration Details
 
 - **Global settings** — `config/window_settings.json` (radio type, IP addresses, media directory, launcher mode, window geometry)
-- **Per-app settings** — `config/<module_name>_config.json` (last-used parameter values, dialog position)
+- **Per-app settings** — `config/<module_name>_config.json` (last-used parameter values, and where its dialog and window were left)
 - Both files are created automatically and are excluded from version control
 
 ---
@@ -215,7 +289,10 @@ Audio/video apps that use recorded files require WAV files placed in the **Media
    - `ConfigDialog(QDialog)` — configuration UI; must implement `get_values()` returning a dict
    - `main(top_block_cls=..., options=None, app=None, config_values=None)` — creates and starts the GNU Radio flowgraph, returns the `top_block` instance
 2. Add an icon to `icons/`
-3. Register the app in `gnuradio_launcher.py` with `self.create_app_button(...)`
+3. Add a row to `APP_TILES` near the top of `gnuradio_launcher.py` -
+   `(row, column, [(label, module, icon, 'tx' or 'rx')])`. To give an existing
+   app its other end, such as a receiver for a transmitter, add a second face
+   to that tile's list instead of a new row. Both front ends read this table
 
 Refer to `apps/amSineGenerator.py` as a reference implementation.
 
@@ -248,7 +325,17 @@ The vendor library calls `abort()` rather than returning an error if the device 
 ALSA audio source is not supported. The system must use PipeWire. Verify with `pactl info | grep "Server Name"`.
 
 **Launcher window appears off-screen after moving between display configurations**
-Delete `config/window_settings.json` to reset all saved window positions.
+It should come back by itself: a saved position no screen reaches any more is
+ignored and the window is centred instead. To reset the launcher's size and
+position by hand, remove just the `window_position` entry from
+`config/window_settings.json`. Do not delete the whole file for this - it also
+holds the media folder, the radio and the USRP addresses, and they go with it.
+
+**A file in the media folder does not appear in an app's list**
+The list is built when the app's dialog opens, so close the dialog and open it
+again. Hidden files are skipped - including the `._` copies macOS leaves beside
+files it writes to a USB stick - and so are folders reached through a symbolic
+link.
 
 ---
 

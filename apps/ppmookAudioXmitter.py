@@ -34,9 +34,9 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import QObject, pyqtSlot # type: ignore
 
 # Local imports
+from apps.media import WAV, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
-import glob
 
 if __name__ == '__main__':
     import ctypes
@@ -136,13 +136,13 @@ class ConfigDialog(Qt.QDialog):
             if not media_dir or not os.path.exists(media_dir):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
-            # Get all wav files
-            wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+            # Every WAV file, subfolders included and whatever the case of
+            # its extension - see apps/media.py.
+            wav_files = choices(media_dir, WAV)
             if not wav_files:
                 raise FileNotFoundError("No WAV files found in media directory")
                 
-            for wav_file in wav_files:
-                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+            for display_name, wav_file in wav_files:
                 self.audio_combo.addItem(display_name, wav_file)
                 
             # Only enable OK button if we have both IP addresses and media files

@@ -41,6 +41,7 @@ from queue import Empty, Full, Queue
 import numpy as np
 from gnuradio import gr  # type: ignore
 
+from apps.media import media_files, picker_name
 from apps.ntsc_encode import FRAME, NTSC, NtscEncoder, IRE_BLANK, ire_to_unit
 
 #: The instructor's ``*-18M0FS.dat`` captures are composite at this rate.
@@ -78,20 +79,21 @@ def video_files(directory, extensions=VIDEO_EXTENSIONS):
     pixels, exactly what the encoder wants, where the ``.ts`` is 704x480 at
     10:11 and would have to be stretched back. The ATSC transmitter asks
     for the ``.ts`` first instead - see ``apps/atsc_source.py``.
+
+    Subfolders are searched too (``apps/media.py``), and "share a name"
+    means share a folder as well: ``Prelinger/clip.mp4`` and
+    ``Prelinger/clip.ts`` are one clip, but a ``clip.mp4`` in each of two
+    folders is two, and both are offered.
     """
-    if not directory or not os.path.isdir(directory):
-        return []
     best = {}
-    for name in sorted(os.listdir(directory)):
-        stem, ext = os.path.splitext(name)
-        ext = ext.lower()
-        if ext not in extensions:
-            continue
-        rank = extensions.index(ext)
-        if stem not in best or rank < best[stem][0]:
-            best[stem] = (rank, name)
-    return [(stem.replace('-', ' '), os.path.join(directory, name))
-            for stem, (_rank, name) in sorted(best.items())]
+    for relative, full in media_files(directory, extensions):
+        key, ext = os.path.splitext(relative)
+        rank = extensions.index(ext.lower())
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, relative, full)
+    ordered = sorted(best.items(), key=lambda kv: ('/' in kv[0], kv[0].lower()))
+    return [(picker_name(relative), full)
+            for _key, (_rank, relative, full) in ordered]
 
 
 #: The instructor's captures are named ``<subject>-946x486-18M0FS.dat``. The
@@ -104,15 +106,13 @@ def dat_files(directory):
     """The ``.dat`` composite captures, as (display name, full path).
 
     One still frame each, sampled at 18 MS/s - see ``dat_resample_ratio``.
+    Subfolders are searched too, as for the clips.
     """
-    if not directory or not os.path.isdir(directory):
-        return []
     found = []
-    for name in sorted(os.listdir(directory)):
-        if not name.lower().endswith('.dat'):
-            continue
+    for relative, full in media_files(directory, ('.dat',)):
+        name = relative.rpartition('/')[2]
         stem = _DAT_SUFFIX.sub('', os.path.splitext(name)[0])
-        found.append((stem.replace('-', ' '), os.path.join(directory, name)))
+        found.append((picker_name(relative, stem), full))
     return found
 
 

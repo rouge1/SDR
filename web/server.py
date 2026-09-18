@@ -46,14 +46,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+# The one import from apps/, and a deliberate one: theme.py is the palette
+# and the type scale that the desktop launcher paints from, and it brings
+# in nothing but the standard library at module level. Everything else in
+# apps/ pulls GNU Radio or Qt, which is why this server reads the tile
+# tables out of the launcher's source rather than importing it.
+from apps import theme  # noqa: E402
 WEB = os.path.join(ROOT, 'web')
 SETTINGS = os.path.join(ROOT, 'config', 'window_settings.json')
 PROBE = os.path.join(ROOT, 'scripts', 'probe_radio.py')
 RUNNER = os.path.join(ROOT, 'apps', '_run.py')
 
-# Row 0 is the launcher's title bar; the grid rows group by what the app
-# carries, which is the order the desktop tiles are declared in.
-BANK_NAMES = {1: 'Signal generators', 2: 'Audio', 3: 'Video'}
 DIRECTION_WORDS = {'tx': 'transmit', 'rx': 'receive'}
 RADIO_LABELS = {
     'hackrf': 'HackRF One', 'usrp': 'Ettus USRP',
@@ -81,6 +85,9 @@ def launcher_literal(name):
 
 def banks():
     """APP_TILES as the page wants it: rows of tiles, each with its faces."""
+    # The headings live beside APP_TILES now, so the desktop grid and this
+    # page cannot end up calling the same row different things.
+    names = launcher_literal('BANK_NAMES')
     rows = {}
     for row, col, faces in launcher_literal('APP_TILES'):
         rows.setdefault(row, []).append((col, [
@@ -89,7 +96,7 @@ def banks():
     out = []
     for row in sorted(rows):
         tiles = [faces for _col, faces in sorted(rows[row])]
-        out.append({'name': BANK_NAMES.get(row, f"Row {row}"), 'tiles': tiles})
+        out.append({'name': names.get(row, f"Row {row}"), 'tiles': tiles})
     return out
 
 
@@ -301,6 +308,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ('/', '/index.html'):
             return self._file(os.path.join(WEB, 'index.html'))
+
+        # Generated rather than a file: the page's :root and its @font-face
+        # rules come from apps/theme.py, the same tokens the launcher
+        # window is painted with, so the two front ends cannot drift.
+        if path == '/theme.css':
+            body = theme.css().encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/css; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
 
         if path == '/favicon.ico':
             return self._file(os.path.join(ROOT, 'icons', 'gnuradio.jpg'))

@@ -521,7 +521,7 @@ CompositeFrameSink = ntsc_frame_sink
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("NTSC Receiver Configuration")
+        self.setWindowTitle("NTSC Video Receiver Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir,
@@ -551,7 +551,7 @@ class ConfigDialog(Qt.QDialog):
         apply_dark_theme(self)
 
     def create_cannot_receive(self):
-        self.setWindowTitle("NTSC Receiver")
+        self.setWindowTitle("NTSC Video Receiver")
         row = Qt.QHBoxLayout()
         icon = Qt.QLabel()
         icon.setPixmap(self.style().standardIcon(
@@ -702,9 +702,9 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
     GOOD, WARN, BAD = '#1a7f37', '#bf8700', '#cf222e'
 
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "NTSC Receiver", catch_exceptions=True)
+        gr.top_block.__init__(self, "NTSC Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("NTSC Receiver")
+        self.setWindowTitle("NTSC Video Receiver")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))

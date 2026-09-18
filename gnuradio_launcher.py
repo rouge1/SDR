@@ -13,28 +13,34 @@ from PyQt5.QtWidgets import ( # type: ignore
     QMainWindow,
     QWidget,
     QGridLayout,
+    QHBoxLayout,
     QPushButton,
     QLabel,
     QApplication,
+    QFrame,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QDialog,
     QGraphicsOpacityEffect,
     QMessageBox
 )
-from PyQt5.QtCore import (Qt, QSize, QPoint, QPropertyAnimation,  # type: ignore
-                          QEasingCurve, pyqtProperty)
-from PyQt5.QtGui import QIcon, QPixmap, QFont, QPainter # type: ignore
+from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint,  # type: ignore
+                          QPropertyAnimation, QEasingCurve, pyqtProperty)
+from PyQt5.QtGui import (QIcon, QImage, QPixmap, QFont,  # type: ignore
+                         QFontMetrics, QPainter)
+from PyQt5.QtSvg import QSvgRenderer # type: ignore
 
-# Add PIL import at the top with other imports
-from PIL import Image, ImageEnhance # type: ignore
-import io
+# PIL and numpy prepare the tile pictures - see cover_pixmap.
+from PIL import Image # type: ignore
 import numpy as np # type: ignore
 
 # Local imports 
+from apps import theme
 from apps.utils import (apply_launcher_theme, apply_dark_theme,
-                       DialogGeometryTracker, geometry_is_reachable,
-                       read_settings, restore_window_geometry,
-                       save_window_geometry)
+                       centre_on, DialogGeometryTracker,
+                       geometry_is_reachable, read_settings,
+                       restore_window_geometry, save_window_geometry)
 from apps.settings_dialog import SettingsDialog
 
 # Which way each radio goes. Two of the four are one-way instruments, and
@@ -85,15 +91,15 @@ APP_TILES = [
              "amAudio.jpg", "tx")]),
     (2, 1, [("FM Audio Generator", "fmAudioRecordedGenerator",
              "fmAudio.png", "tx")]),
-    (2, 2, [("FM Subcarrier", "subcarrierRecordedAudio",
+    (2, 2, [("FM Subcarrier Generator", "subcarrierRecordedAudio",
              "fmSubcarrier.jpg", "tx")]),
-    (2, 3, [("FM + RDS Transmitter", "fmRdsTransmitter", "fmrds.png", "tx"),
-            ("RDS Receiver", "rdsReceiver", "rds.png", "rx")]),
+    (2, 3, [("FM + RDS Transmitter", "fmRdsTransmitter", "fmrds.jpg", "tx"),
+            ("FM + RDS Receiver", "rdsReceiver", "rds.png", "rx")]),
     # atscXmit.jpg is the radiating one and atsc.jpg is a television set,
     # so they land this way round rather than the way the filenames read.
     (3, 0, [("ATSC Video Transmitter", "atscXmitter", "atscXmit.jpg", "tx"),
             ("ATSC Video Receiver", "atscReceiver", "atsc.jpg", "rx")]),
-    (3, 1, [("NTSC Analog Video", "ntscAnalogVideoRecorded",
+    (3, 1, [("NTSC Video Transmitter", "ntscAnalogVideoRecorded",
              "ntsc.jpg", "tx"),
             ("NTSC Video Receiver", "ntscReceiver", "ntscRx.jpg", "rx")]),
     # FM video replaced AM video, which matched nothing a real transmitter
@@ -103,110 +109,287 @@ APP_TILES = [
 ]
 
 
+#: What each grid row holds, shown as a heading above it. Row 0 was the
+#: old title bar and no longer exists: the wordmark and the gear are in
+#: the rail now. ``web/server.py`` reads this table out of here with
+#: ``ast``, the way it already reads APP_TILES, so keep it a plain literal.
+BANK_NAMES = {1: 'Signal generators', 2: 'Audio', 3: 'Video'}
+
+#: The word a tile shows above its name, which is the direction it goes.
+#: The browser front end prints exactly these.
+DIRECTION_KICKER = {'tx': 'TRANSMIT', 'rx': 'RECEIVE'}
+
+
 def face_directions():
     """module name -> 'tx' or 'rx', read off the tile table."""
     return {face[1]: face[3] for _row, _col, faces in APP_TILES
             for face in faces}
 
-TILE_SIZE = 200
-BADGE_SIZE = 32
+# The grid follows the browser front end: tiles at least MIN_TILE wide, as
+# many to a row as fit, inside a column no wider than MAX_CONTENT.
+MIN_TILE = 150
+MAX_TILE = 230
+TILE_GAP = 10
+GUTTER = 16
+MAX_CONTENT = 1080
+BANK_GAP = 26
+RAIL_HEIGHT = 54
+
+#: How wide a tile should be when the launcher chooses its own size - the
+#: one number that is a matter of taste. The window's first size is worked
+#: out from it (see ``natural_size``): the widest bank in one row of tiles
+#: this wide, and exactly tall enough for every bank, measured on the
+#: machine it is running on. 185 is what the 1000 px window chosen by hand
+#: gave, and what was approved looking at it.
+PREFERRED_TILE = 185
+BADGE_SIZE = 27
 BADGE_INSET = 6
 FLIP_MS = 380
 
+#: A tile's picture is cover-cropped once at this width and scaled down to
+#: whatever the tile currently is, so resizing the window costs a blit
+#: rather than a fresh crop of eighteen photographs.
+PICTURE_REF = 420
+
+
+def cover_pixmap(path, width, saturation=0.82):
+    """A tile's picture: ``object-fit: cover`` at 4:3, ``saturate(.82)``.
+
+    A Qt stylesheet has neither property, so the pixels are prepared here
+    instead - crop to the tile's shape about the middle, then pull the
+    colour back a little so the photographs sit down into the panel rather
+    than shouting off it. Thirteen of the sixteen icons are already 4:3
+    and lose nothing; the three squarer ones give up a little top and
+    bottom, so anything written near an edge of a new icon wants it
+    exported at 4:3.
+    """
+    height = int(round(width * 3 / 4))
+    image = Image.open(path).convert('RGB')
+    scale = max(width / image.width, height / image.height)
+    image = image.resize((max(width, int(image.width * scale + 0.5)),
+                          max(height, int(image.height * scale + 0.5))),
+                         Image.LANCZOS)
+    left = (image.width - width) // 2
+    top = (image.height - height) // 2
+    image = image.crop((left, top, left + width, top + height))
+
+    data = np.asarray(image).astype(np.float32)
+    luma = (data * (0.299, 0.587, 0.114)).sum(axis=2, keepdims=True)
+    data = np.clip(luma + (data - luma) * saturation, 0, 255).astype(np.uint8)
+    buffer = data.tobytes()
+    # QImage does not own the buffer it is handed, and this one is a local:
+    # copy() before the bytes go out of scope, or the picture is garbage.
+    picture = QImage(buffer, width, height, 3 * width, QImage.Format_RGB888)
+    return QPixmap.fromImage(picture.copy())
+
+
+def token_font(size_token, family_token='f_ui', weight=None, spacing=None):
+    """A QFont from the shared tokens, in pixels rather than points.
+
+    The stylesheet sizes in ``px`` and a QFont sizes in points by default,
+    so a font built the obvious way comes out about a third too big on a
+    96 dpi screen. Letter spacing has to come through here whatever
+    happens: a Qt stylesheet has no ``letter-spacing`` property at all.
+    """
+    font = QFont(theme.TOKENS[family_token])
+    font.setPixelSize(theme.TOKENS[size_token])
+    if weight is not None:
+        font.setWeight(weight)
+    if spacing is not None:
+        font.setLetterSpacing(QFont.PercentageSpacing, spacing)
+    return font
+
+
+def centred_column(parent):
+    """A column no wider than MAX_CONTENT, centred in ``parent``.
+
+    The page's ``max-width: 1080px; margin: 0 auto``, which it applies to
+    the rail's contents and to the body alike. Without it a maximised
+    launcher left its tiles in the leftmost 1080 px with the bank
+    hairlines and the rail running on across the whole screen. Returns the
+    column; lay its contents out on it.
+
+    The column is given the stretch and the two spacers none: Qt hands
+    space to stretch first, so the column fills the window until it
+    reaches its maximum, and only then do the spacers take what is left,
+    evenly - which is centring.
+    """
+    outer = QHBoxLayout(parent)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+    column = QWidget()
+    column.setObjectName('column')
+    column.setMaximumWidth(MAX_CONTENT + 2 * GUTTER)
+    column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    outer.addStretch(0)
+    outer.addWidget(column, 1)
+    outer.addStretch(0)
+    return column
+
+
+def svg_icon(markup, size):
+    """Render inline SVG to a pixmap. QtSvg has no ``currentColor``."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    QSvgRenderer(markup.encode()).render(painter)
+    painter.end()
+    return pixmap
+
 
 class FlipTile(QPushButton):
-    """One square of the launcher grid, which may have more than one face.
+    """One tile of the launcher grid, which may have more than one face.
 
-    Clicking the tile launches whichever app is showing. Clicking the badge
-    in its corner turns the tile over: the icon and the caption both change,
+    Its anatomy is the browser front end's: the picture full width across
+    the top at 4:3, then the direction in condensed letter-spaced caps,
+    then the app's name, both ranged left. Clicking it launches whichever
+    app is showing; clicking the badge in its corner turns the tile over,
     animated as a card being flipped rather than simply swapped, so it is
     obvious that this is one tile with two sides and not a button that
     mysteriously rearranged itself.
 
-    The turn is drawn by squeezing the icon horizontally through zero width
-    and back - ``cos`` of the animation phase - and swapping the face at the
-    moment it is edge on, which is exactly when nothing of it is visible.
-    The caption fades on the same curve; squeezing text instead just looks
-    like a rendering fault.
+    The turn is drawn by squeezing the picture horizontally through zero
+    width and back - ``cos`` of the animation phase - and swapping the face
+    at the moment it is edge on, which is exactly when nothing of it is
+    visible. The caption fades on the same curve; squeezing text instead
+    just looks like a rendering fault.
 
     Which side is up is remembered in ``window_settings.json``, so a tile
     left showing the receiver is still showing it next time.
     """
 
-    def __init__(self, launcher, faces, size=TILE_SIZE):
+    def __init__(self, launcher, faces, width=MIN_TILE):
         super().__init__()
+        self.setObjectName('tile')
         self.launcher = launcher
         self.faces = list(faces)
         self.key = self.faces[0][1]      # the first module names the tile
         self.face = 0
         self._target = 0
         self._flip = 0.0
+        self._width = None
+        self._picture_size = QSize(width, int(round(width * 3 / 4)))
         # Which faces the selected radio can actually run, and whether the
         # tile can be used at all. Both are set by ``set_directions``.
         self.allowed = list(range(len(self.faces)))
         self.usable = True
         self._remember_turn = True
-        self.setFixedSize(size, size)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        self._pixmaps = [cover_pixmap(f"icons/{face[2]}", PICTURE_REF)
+                         for face in self.faces]
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(5)
-        layout.setAlignment(Qt.AlignCenter)
+        # One pixel in from every edge, for the stylesheet's border: a Qt
+        # layout does not know a stylesheet drew one, so at 0 the picture
+        # sat on the tile's top and left border and left a strip of panel
+        # between itself and the right one.
+        layout.setContentsMargins(1, 1, 1, 12)
+        layout.setSpacing(0)
 
-        self._pixmaps = [QIcon(f"icons/{face[2]}").pixmap(QSize(size, size))
-                         for face in self.faces]
-        # One box big enough for every face, so squeezing the picture inside
-        # it cannot shove the caption around while the tile turns - and so a
-        # face with a different aspect ratio from the first is not clipped.
-        self._box = QSize(max(p.width() for p in self._pixmaps),
-                          max(p.height() for p in self._pixmaps))
-        self.icon_label = QLabel()
-        self.icon_label.setAlignment(Qt.AlignCenter)
-        self.icon_label.setFixedSize(self._box)
+        self.picture = QLabel()
+        self.picture.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.picture)
+
+        self.dir_label = QLabel()
+        self.dir_label.setObjectName('dir')
+        self.dir_label.setFont(token_font('s_xs', 'f_num', QFont.DemiBold, 112))
+        self.dir_label.setContentsMargins(11, 9, 11, 0)
+        layout.addWidget(self.dir_label)
 
         self.text_label = QLabel()
-        self.text_label.setFont(QFont('Arial', 11))
-        self.text_label.setAlignment(Qt.AlignCenter)
+        self.text_label.setObjectName('name')
+        self.text_label.setFont(token_font('s_sm'))
         self.text_label.setWordWrap(True)
-        self._fade = QGraphicsOpacityEffect(self.text_label)
-        self._fade.setOpacity(1.0)
-        self.text_label.setGraphicsEffect(self._fade)
-
-        layout.addWidget(self.icon_label)
+        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.text_label.setContentsMargins(11, 1, 11, 0)
         layout.addWidget(self.text_label)
-        self.setLayout(layout)
+        layout.addStretch(1)
+
+        # One effect per label rather than one on a container holding both.
+        # Effects do not nest predictably, and a container would also need
+        # a background rule of its own to stop the blanket QWidget colour
+        # painting a rectangle over the tile.
+        self._fades = []
+        for label in (self.dir_label, self.text_label):
+            fade = QGraphicsOpacityEffect(label)
+            fade.setOpacity(1.0)
+            label.setGraphicsEffect(fade)
+            self._fades.append(fade)
 
         self.badge = None
         if len(self.faces) > 1:
-            self._build_badge(size)
+            self._build_badge()
 
         self.clicked.connect(self._launch)
         self.animation = QPropertyAnimation(self, b'flip_phase', self)
         self.animation.setDuration(FLIP_MS)
         self.animation.setEasingCurve(QEasingCurve.InOutQuad)
 
+        self.set_width(width)
         self.set_face(launcher.saved_face(self.key, len(self.faces)))
+
+    # -- size ------------------------------------------------------------
+
+    def sizeHint(self):
+        """The layout's size, not a button's.
+
+        A QPushButton sizes itself from its own text and icon and ignores
+        any layout it holds; a tile has neither, so its own hint is a small
+        empty button. On screen that never showed, because showing the
+        window activates each tile's layout and that pushes the real height
+        on as a minimum size. But the launcher measures how tall it wants to
+        be *before* it is shown (``natural_size``), and asked then every
+        tile claimed to be a few pixels high: the window came out at its
+        600 px minimum with 217 px of grid to scroll.
+        """
+        return self.layout().sizeHint()
+
+    def minimumSizeHint(self):
+        return self.layout().minimumSize()
+
+    def caption_height(self, width):
+        """How tall this tile's name needs to be, wrapped to ``width``.
+
+        The grid takes the largest across every tile and gives them all
+        that, so one long name cannot make its own tile taller than the
+        rest of its row.
+        """
+        metrics = QFontMetrics(self.text_label.font())
+        inner = max(1, width - 2 - 22)      # the border and the 11px sides
+        lines = 1
+        for face in self.faces:
+            box = metrics.boundingRect(0, 0, inner, 10000,
+                                       Qt.TextWordWrap, face[0])
+            lines = max(lines, max(1, round(box.height() / metrics.lineSpacing())))
+        return lines * metrics.lineSpacing() + 2
+
+    def set_width(self, width):
+        """Take the width the grid has worked out for this row."""
+        width = int(width)
+        if self._width == width:
+            return
+        self._width = width
+        inner = width - 2                   # inside the 1px border
+        self._picture_size = QSize(inner, int(round(inner * 3 / 4)))
+        self.setFixedWidth(width)
+        self.picture.setFixedSize(self._picture_size)
+        if self.badge is not None:
+            self.badge.move(inner - BADGE_SIZE - BADGE_INSET + 1,
+                            BADGE_INSET + 1)
+        self._draw(abs(math.cos(math.pi * self._flip)))
+
+    def set_caption_height(self, height):
+        self.text_label.setFixedHeight(int(height))
 
     # -- the badge -------------------------------------------------------
 
-    def _build_badge(self, size):
+    def _build_badge(self):
         self.badge = QPushButton("↻", self)
+        self.badge.setObjectName('flip')
         self.badge.setFixedSize(BADGE_SIZE, BADGE_SIZE)
         self.badge.setCursor(Qt.PointingHandCursor)
-        self.badge.setFont(QFont('Arial', 15))
-        # Its own stylesheet: the launcher theme styles every QPushButton,
-        # and a child of a button would otherwise look like a second tile.
-        self.badge.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(24, 24, 24, 200);
-                color: #ffffff;
-                border: 1px solid #8a8a8a;
-                border-radius: %dpx;
-                padding: 0px;
-                min-width: 0px;
-            }
-            QPushButton:hover { background-color: rgba(90, 90, 90, 230); }
-        """ % (BADGE_SIZE // 2))
-        self.badge.move(size - BADGE_SIZE - BADGE_INSET, BADGE_INSET)
         self.badge.clicked.connect(self.flip)
         self.badge.raise_()
 
@@ -222,7 +405,8 @@ class FlipTile(QPushButton):
         self._flip = 0.0
         self._show_face()
         self._draw(1.0)
-        self._fade.setOpacity(1.0)
+        for fade in self._fades:
+            fade.setOpacity(1.0)
         if remember:
             self.launcher.remember_face(self.key, self.face)
 
@@ -235,8 +419,9 @@ class FlipTile(QPushButton):
         return self.allowed[(here + 1) % len(self.allowed)]
 
     def _show_face(self):
-        name = self.current()[0]
+        name, _module, _icon, direction = self.current()
         self.text_label.setText(name)
+        self.dir_label.setText(DIRECTION_KICKER.get(direction, ''))
         if not self.usable:
             return
         if self.badge is not None and len(self.allowed) > 1:
@@ -331,7 +516,8 @@ class FlipTile(QPushButton):
             if self._remember_turn:
                 self.launcher.remember_face(self.key, self.face)
         self._draw(abs(squeeze))
-        self._fade.setOpacity(abs(squeeze))
+        for fade in self._fades:
+            fade.setOpacity(abs(squeeze))
 
     # Named for what it is - how far through the turn - and not ``flip``,
     # which is the method that starts one. QPropertyAnimation looks the
@@ -339,25 +525,25 @@ class FlipTile(QPushButton):
     flip_phase = pyqtProperty(float, _get_flip, _set_flip)
 
     def _draw(self, width_fraction):
-        """Paint the current icon squeezed to a fraction of its width."""
-        base = self._pixmaps[self.face]
-        target = QPixmap(self._box)
+        """Paint the current picture squeezed to a fraction of its width."""
+        size = self._picture_size
+        target = QPixmap(size)
         target.fill(Qt.transparent)
-        width = max(1, int(round(base.width() * width_fraction)))
+        width = max(1, int(round(size.width() * width_fraction)))
         painter = QPainter(target)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         # Dimmed here rather than with a QGraphicsOpacityEffect on the tile,
-        # because the caption already carries one and effects do not nest
-        # predictably.
+        # because the two caption labels already carry one each and effects
+        # do not nest predictably. The caption dims through the stylesheet's
+        # own :disabled colours instead.
         if not self.usable:
-            painter.setOpacity(0.25)
-        painter.drawPixmap((self._box.width() - width) // 2,
-                           (self._box.height() - base.height()) // 2,
-                           base.scaled(width, base.height(),
-                                       Qt.IgnoreAspectRatio,
-                                       Qt.SmoothTransformation))
+            painter.setOpacity(0.34)
+        painter.drawPixmap((size.width() - width) // 2, 0,
+                           self._pixmaps[self.face].scaled(
+                               width, size.height(), Qt.IgnoreAspectRatio,
+                               Qt.SmoothTransformation))
         painter.end()
-        self.icon_label.setPixmap(target)
+        self.picture.setPixmap(target)
 
     def _launch(self):
         self.launcher.launch_application(self.current()[1])
@@ -367,7 +553,7 @@ class GNURadioLauncher(QMainWindow):
     def __init__(self, app, parent=None):
         super().__init__(parent)
         self.app = app  # Store reference to QApplication
-        self.setWindowTitle("GNU Radio Applications Launcher")
+        self.setWindowTitle("RF Bench Toolkit")
         self.setMinimumSize(800, 600)
         
         # Create config directory if it doesn't exist
@@ -375,70 +561,195 @@ class GNURadioLauncher(QMainWindow):
         self.settings_file = os.path.join(self.config_dir, "window_settings.json")
         os.makedirs(self.config_dir, exist_ok=True)
         
-        # Create main widget and layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        grid = QGridLayout(main_widget)
-        
-        # Add settings button in top right with transparent background
-        settings_btn = QPushButton()
-        icon_path = "icons/settings.png"
-        
-        # Process image with PIL
-        img = Image.open(icon_path)
-        img = img.convert("RGBA")
-        
-        # Add brightness enhancement
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(1.1)  # Adjust this value to make it brighter/darker
-        
-        # Knock the light background out of the icon: a pixel whose R, G and B
-        # are all at or above the threshold becomes fully transparent.
-        # numpy rather than getdata()/putdata() - Pillow 12 deprecates those and
-        # 14 removes them, and Windows solves to a newer Pillow than Linux does,
-        # so the loop warned there and not here.
-        threshold = 100
-        arr = np.asarray(img).copy()
-        light = (arr[:, :, :3] >= threshold).all(axis=2)
-        arr[light] = (255, 255, 255, 0)
-        img = Image.fromarray(arr, "RGBA")
-        
-        # Convert PIL image to QPixmap
-        buffer = io.BytesIO()
-        img.save(buffer, "PNG")
-        buffer.seek(0)
-        pixmap = QPixmap()
-        pixmap.loadFromData(buffer.getvalue())
-        
-        icon = QIcon(pixmap)
-        settings_btn.setIcon(icon)
-        settings_btn.setFixedSize(40, 40)
-        settings_btn.setIconSize(QSize(40, 40))
-        settings_btn.clicked.connect(self.show_settings)
-        grid.addWidget(settings_btn, 0, 4, Qt.AlignRight | Qt.AlignTop)
-        
-        # Add title
-        title = QLabel("GNU Radio Applications")
-        title.setFont(QFont('Arial', 20))
-        title.setAlignment(Qt.AlignCenter)
-        grid.addWidget(title, 0, 0, 1, 3)
-        
-        # Add application buttons, from the table at the top of this file.
+        theme.load_fonts()
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_rail())
+
+        # The banks scroll and the rail does not. The old grid had no
+        # scroll area at all, so on a 768-high laptop the video row sat
+        # below the bottom edge with no way to reach it.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        self._body = QVBoxLayout(centred_column(body))
+        self._body.setContentsMargins(GUTTER, 0, GUTTER, 40)
+        self._body.setSpacing(0)
+        self._scroll.setWidget(body)
+        outer.addWidget(self._scroll, 1)
+        # The viewport is what the tiles have to fit inside, and it changes
+        # width without the window being resized - the scroll bar appearing
+        # is enough. Watching the window instead left the grid laid out for
+        # whatever width it happened to have before it was first shown.
+        self._scroll.viewport().installEventFilter(self)
+
+        # The tiles, from the table at the top of this file.
         self.tiles = {}
-        for row, col, faces in APP_TILES:
-            self.create_tile(faces, grid, row, col)
+        self._banks = []
+        self._layout_at = None
+        self._build_banks()
+
         # Arrange them around whichever radio is selected. No animation on
         # the way up - there is nothing to show a turn away from yet.
         self.apply_radio_directions(animate=False)
 
-        # Apply stylesheet
         apply_launcher_theme(self)
-        
+
         # Load last position or center if none exists
         self.load_window_position()
-        
+        self._relayout()
+
+    # ------------------------------------------------------------ the page
+    def _build_rail(self):
+        """The header: wordmark, which radio is selected, and the gear.
+
+        The wordmark is the browser front end's, because these are two
+        front ends onto one bench and reading a different name on each
+        makes them look like different programs.
+        """
+        rail = QWidget()
+        rail.setObjectName('rail')
+        rail.setFixedHeight(RAIL_HEIGHT)
+        # The rule under the rail runs the full width; what sits on it
+        # lines up with the tiles below.
+        row = QHBoxLayout(centred_column(rail))
+        row.setContentsMargins(GUTTER, 0, GUTTER, 0)
+        row.setSpacing(14)
+
+        mark = QLabel("RF Bench Toolkit")
+        mark.setObjectName('mark')
+        mark.setFont(token_font('s_lg', 'f_num', QFont.DemiBold))
+        row.addWidget(mark)
+        row.addStretch(1)
+
+        self.radio_tag = QLabel("—")
+        self.radio_tag.setObjectName('radio-tag')
+        self.radio_tag.setFont(token_font('s_xs'))
+        self.radio_tag.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        row.addWidget(self.radio_tag, 0, Qt.AlignVCenter)
+
+        gear = QPushButton()
+        gear.setObjectName('gear')
+        gear.setFixedSize(32, 32)
+        gear.setCursor(Qt.PointingHandCursor)
+        gear.setIcon(QIcon(svg_icon(theme.gear_svg(), 17)))
+        gear.setIconSize(QSize(17, 17))
+        gear.setToolTip("Settings")
+        gear.clicked.connect(self.show_settings)
+        row.addWidget(gear)
+        return rail
+
+    def _build_banks(self):
+        """A heading and a grid for each row of APP_TILES."""
+        rows = {}
+        for row, col, faces in APP_TILES:
+            rows.setdefault(row, []).append((col, faces))
+
+        for row in sorted(rows):
+            self._body.addSpacing(BANK_GAP)
+
+            head = QHBoxLayout()
+            head.setSpacing(12)
+            name = QLabel(BANK_NAMES.get(row, f"Row {row}"))
+            name.setObjectName('bank-name')
+            name.setFont(token_font('s_sm'))
+            head.addWidget(name)
+            # The hairline that runs off the end of the heading. In the
+            # page that is a ::after with an empty content; Qt's :: are
+            # sub-controls of a known widget, not pseudo-elements anyone
+            # can invent, so it is a widget.
+            rule = QFrame()
+            rule.setObjectName('hairline')
+            rule.setFixedHeight(1)
+            rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            head.addWidget(rule, 1)
+            self._body.addLayout(head)
+            self._body.addSpacing(10)
+
+            grid = QGridLayout()
+            grid.setSpacing(TILE_GAP)
+            grid.setContentsMargins(0, 0, 0, 0)
+            tiles = [self.create_tile(faces) for _col, faces in sorted(rows[row])]
+            self._body.addLayout(grid)
+            self._banks.append((grid, tiles))
+
+        self._body.addStretch(1)
+
+    def _relayout(self):
+        """Fit as many tiles to a row as the window has room for.
+
+        The page says ``repeat(auto-fill, minmax(150px, 1fr))`` inside a
+        column capped at 1080; this is the same arithmetic, done by hand,
+        because a Qt stylesheet does no layout at all. Nothing moves unless
+        the answer actually changed - a resize otherwise re-adds every tile
+        to its grid on every pixel of drag.
+
+        **It never makes more columns than the widest bank has tiles.** No
+        bank has more than five, so a sixth column was always empty - and
+        worse, it arrived right at the default window width: 980 wide gave
+        five tiles of 181 px, 1000 gave six of 153, three pixels off the
+        minimum, with the sixth slot holding nothing in any bank. Capped,
+        a wider window makes the five tiles wider instead. Taken from the
+        table rather than written down as 5, so a bank that gains a sixth
+        tile gets a sixth column without anyone remembering to raise it.
+        """
+        if not self._banks:
+            return
+        available = self._scroll.viewport().width() - 2 * GUTTER
+        content = max(MIN_TILE, min(MAX_CONTENT, available))
+        columns = max(1, (content + TILE_GAP) // (MIN_TILE + TILE_GAP))
+        columns = min(columns, self._widest_bank())
+        width = min(MAX_TILE, (content - TILE_GAP * (columns - 1)) // columns)
+        self._lay_out(columns, width)
+
+    def _widest_bank(self):
+        return max(len(tiles) for _grid, tiles in self._banks)
+
+    def _lay_out(self, columns, width):
+        """Put every tile in its cell at this many columns of this width."""
+        if (columns, width) == self._layout_at:
+            return
+        self._layout_at = (columns, width)
+
+        caption = max(tile.caption_height(width)
+                      for _grid, tiles in self._banks for tile in tiles)
+        for grid, tiles in self._banks:
+            for tile in tiles:
+                grid.removeWidget(tile)
+            for index, tile in enumerate(tiles):
+                tile.set_width(width)
+                tile.set_caption_height(caption)
+                grid.addWidget(tile, index // columns, index % columns,
+                               Qt.AlignTop | Qt.AlignLeft)
+            # One spare column on the right soaks up the slack, so a bank
+            # with fewer tiles than columns still starts at the left.
+            for column in range(columns + 1):
+                grid.setColumnStretch(column, 1 if column == columns else 0)
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Resize
+                and obj is self._scroll.viewport()):
+            self._relayout()
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
     def center_window(self):
-        """Center the window on the screen and save position"""
+        """Open at the default size, centred, and save that.
+
+        This is the no-saved-geometry path, so it is also where the default
+        size belongs - every caller is a case of there being nothing to
+        restore.
+        """
+        self.resize_to_default()
         # Get the screen geometry
         screen = self.app.primaryScreen().geometry()
         # Calculate center position
@@ -450,6 +761,53 @@ class GNURadioLauncher(QMainWindow):
         # Save position to config file
         self.save_window_position()
         
+    def natural_size(self):
+        """The size the launcher wants: every bank in view, none wrapped.
+
+        Wide enough for the widest bank's tiles in one row at
+        PREFERRED_TILE, and tall enough that nothing has to scroll. The
+        height is *measured* - the grid is laid out at that width and the
+        page asked how tall it came out - rather than worked out, because
+        it depends on how tall this machine sets a line of text. A size
+        written down by hand was 1000x820, which fitted here by 2 px and
+        would have shown a scroll bar on a machine whose fonts run a pixel
+        taller; measured, it is right wherever it is measured.
+
+        The stylesheet has to have reached every label first, since it is
+        what sets their type size, and Qt only applies it when a widget is
+        polished - which otherwise happens when it is first shown.
+        """
+        self.ensurePolished()
+        columns = self._widest_bank()
+        self._lay_out(columns, PREFERRED_TILE)
+        width = (columns * PREFERRED_TILE + (columns - 1) * TILE_GAP
+                 + 2 * GUTTER)
+        # The column's own layout, not the scroll area's widget: Qt
+        # invalidates a layout by *posting* an event, so before the window
+        # has run its event loop the outer widget still answers from its
+        # cache - 143x196 against a real 997x766, measured.
+        self._body.invalidate()
+        height = RAIL_HEIGHT + self._body.sizeHint().height()
+        return width, height
+
+    def resize_to_default(self):
+        """The natural size, or as much of it as the screen has room for.
+
+        Measured against *available* geometry rather than the whole screen,
+        so a panel or a dock does not leave part of the window under it. A
+        screen too short for all three banks - the 1366x768 laptop is one -
+        gets a window that scrolls, which is better than one that does not
+        fit.
+
+        Before any of this there was no default at all: with nothing saved
+        the window fell back to its 800x600 minimum, which wrapped the first
+        bank onto two rows on a screen with room to spare.
+        """
+        width, height = self.natural_size()
+        available = self.app.primaryScreen().availableGeometry()
+        self.resize(min(width, available.width()),
+                    min(height, available.height()))
+
     def save_window_position(self):
         """Save the current window position and size to settings file"""
         try:
@@ -503,17 +861,19 @@ class GNURadioLauncher(QMainWindow):
             print(f"Error loading window position: {e}")
             self.center_window()
 
-    def create_tile(self, faces, grid, row, col):
-        """Put one tile in the grid. Two or more faces makes it a flip tile."""
+    def create_tile(self, faces):
+        """Make one tile. Two or more faces makes it a flip tile.
+
+        Where it lands is ``_relayout``'s business, not this one's: which
+        column a tile sits in depends on how wide the window is.
+        """
         tile = FlipTile(self, faces)
         self.tiles[tile.key] = tile
-        grid.addWidget(tile, row, col, Qt.AlignCenter)
         return tile
 
-    def create_app_button(self, name, module_name, icon_name, grid, row, col):
+    def create_app_button(self, name, module_name, icon_name, direction):
         """One app, one tile - the single-face case of ``create_tile``."""
-        return self.create_tile([(name, module_name, icon_name)],
-                                grid, row, col)
+        return self.create_tile([(name, module_name, icon_name, direction)])
 
     # ------------------------------------------------- following the radio
     def apply_radio_directions(self, animate=True):
@@ -528,6 +888,11 @@ class GNURadioLauncher(QMainWindow):
         directions = RADIO_DIRECTIONS.get(radio_type, {'tx', 'rx'})
         for tile in self.tiles.values():
             tile.set_directions(directions, radio_type, animate=animate)
+        # The rail says which radio the grid is arranged around, so a
+        # dimmed row has its reason on screen rather than only in a
+        # tooltip nobody hovers.
+        self.radio_tag.setText(RADIO_NAMES.get(radio_type, radio_type)
+                               .replace('The ', ''))
         return radio_type
 
     # ---------------------------------------------------------- flip state
@@ -583,30 +948,28 @@ class GNURadioLauncher(QMainWindow):
             
             # Load saved dialog position/size from per-app config file
             app_config_file = os.path.join(self.config_dir, f"{module_name}_config.json")
-            screen = self.app.primaryScreen().geometry()
-            default_pos = self.pos() + QPoint(50, 50)
 
+            # With nothing saved, a dialog opens in the middle of the
+            # launcher - where the eye already is, having just clicked a
+            # tile. It used to be the launcher's top-left corner plus fifty
+            # pixels, which on a wide window put it well off to one side of
+            # what was clicked.
             try:
+                position = {}
                 if os.path.exists(app_config_file):
                     with open(app_config_file, 'r') as f:
-                        app_config = json.load(f)
-                    position = app_config.get('dialog_position')
-                    if position:
-                        if geometry_is_reachable(self.app, position):
-                            # Size first: moving then resizing can push the
-                            # dialog somewhere the saved position never meant.
-                            if 'width' in position and 'height' in position:
-                                config_dialog.resize(position['width'], position['height'])
-                            config_dialog.move(QPoint(position['x'], position['y']))
-                        else:
-                            config_dialog.move(default_pos)
-                    else:
-                        config_dialog.move(default_pos)
+                        position = json.load(f).get('dialog_position') or {}
+                if position and geometry_is_reachable(self.app, position):
+                    # Size first: moving then resizing can push the dialog
+                    # somewhere the saved position never meant.
+                    if 'width' in position and 'height' in position:
+                        config_dialog.resize(position['width'], position['height'])
+                    config_dialog.move(QPoint(position['x'], position['y']))
                 else:
-                    config_dialog.move(default_pos)
+                    centre_on(config_dialog, self, self.app)
             except Exception as e:
                 print(f"Error loading dialog position: {e}")
-                config_dialog.move(default_pos)
+                centre_on(config_dialog, self, self.app)
 
             # Track geometry before the dialog is hidden (covers OK, Cancel, and window close)
             tracker = DialogGeometryTracker(config_dialog)

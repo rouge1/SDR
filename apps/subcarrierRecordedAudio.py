@@ -35,15 +35,15 @@ from PyQt5 import QtCore  # type: ignore
 from PyQt5.QtCore import pyqtSlot  # type: ignore
 
 # Local imports
+from apps.media import WAV, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
-import glob
 
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Subcarrier Recorded Audio Configuration")
+        self.setWindowTitle("FM Subcarrier Generator Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "subcarrierRecordedAudio_config.json")
@@ -138,14 +138,13 @@ class ConfigDialog(Qt.QDialog):
             if not media_dir or not os.path.exists(media_dir):
                 raise FileNotFoundError("Error - Setup Media directory in Settings")
                 
-            # Get all wav files
-            wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+            # Every WAV file, subfolders included and whatever the case of
+            # its extension - see apps/media.py.
+            wav_files = choices(media_dir, WAV)
             if not wav_files:
                 raise FileNotFoundError("No WAV files found in media directory")
                 
-            for wav_file in wav_files:
-                # Get just the filename without extension and replace hyphens with spaces
-                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+            for display_name, wav_file in wav_files:
                 self.audio_combo.addItem(display_name, wav_file)
                 
             # Only enable OK button if we have both IP addresses and media files
@@ -301,9 +300,9 @@ class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
         else:
             values = config_values
             
-        gr.top_block.__init__(self, "Subcarrier Transmitter with Recorded Audio", catch_exceptions=True)
+        gr.top_block.__init__(self, "FM Subcarrier Generator", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("Subcarrier Transmitter with Recorded Audio")
+        self.setWindowTitle("FM Subcarrier Generator")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))

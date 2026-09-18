@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: GPL-3.0
 #
 # GNU Radio Python Flow Graph
-# Title: NTSC Analog Video - Recorded
+# Title: NTSC Video Transmitter
 # Author: student
 # GNU Radio version: 3.10.1.1
 
@@ -47,6 +47,7 @@ import sip #type: ignore
 # Local imports
 from fractions import Fraction
 
+from apps.media import WAV, choices
 from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
 from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, dat_files,
                               dat_resample_ratio, has_audio, have_ffmpeg,
@@ -182,7 +183,7 @@ class NtscModulator(gr.hier_block2):
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("NTSC Analog Video Configuration")
+        self.setWindowTitle("NTSC Video Transmitter Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "ntscAnalogVideoRecorded_config.json")
@@ -349,16 +350,11 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo.addItem("Silence - aural carrier only",
                                  ('silence', None))
 
-        wavs = []
-        if self.media_dir and os.path.isdir(self.media_dir):
-            wavs = sorted(f for f in os.listdir(self.media_dir)
-                          if f.lower().endswith('.wav'))
+        wavs = choices(self.media_dir, WAV)     # subfolders too
         if wavs:
             self.audio_combo.insertSeparator(self.audio_combo.count())
-        for name in wavs:
-            self.audio_combo.addItem(
-                os.path.splitext(name)[0].replace('-', ' '),
-                ('file', os.path.join(self.media_dir, name)))
+        for label, path in wavs:
+            self.audio_combo.addItem(label, ('file', path))
 
         self.layout.addWidget(self.audio_combo)
         # The first entry only means something when a clip is selected, so
@@ -494,9 +490,9 @@ class ConfigDialog(Qt.QDialog):
 class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
 
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "NTSC Analog Video - Recorded", catch_exceptions=True)
+        gr.top_block.__init__(self, "NTSC Video Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("NTSC Analog Video - Recorded")
+        self.setWindowTitle("NTSC Video Transmitter")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))

@@ -8,7 +8,7 @@ flowgraph window actually appears, and that closing it brings the launcher
 back. Everything is driven with real X input through xdotool, so the app is
 exercised exactly as a person would.
 
-    python scripts/test_launcher_gui.py "RDS Receiver"
+    python scripts/test_launcher_gui.py "FM + RDS Receiver"
     python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
     python scripts/test_launcher_gui.py "ATSC Video Receiver"
 
@@ -38,7 +38,7 @@ from scipy import ndimage  # type: ignore
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETTINGS = os.path.join(ROOT, 'config', 'window_settings.json')
-LAUNCHER_TITLE = 'GNU Radio Applications Launcher'
+LAUNCHER_TITLE = 'RF Bench Toolkit'
 # xdotool reports the frame geometry; the close button sits this far inside it.
 CLOSE_DX, CLOSE_DY = 33, 30
 
@@ -90,8 +90,16 @@ def button_grid(shot, rect):
 
     xdotool needs screen coordinates and the grid metrics are not visible from
     outside the process - high-DPI scaling moves them - so locate the buttons
-    by their own pixels. The icons are large bright squares on a dark window,
-    which separates them cleanly from the text labels and the settings gear.
+    by their own pixels. Each tile's picture is a large bright block on a dark
+    window, which separates it cleanly from the captions, the rail and the
+    gear: every part of the tile's own chrome is below the threshold, the
+    panel at 0x28 and even its border at 0x43.
+
+    The size window allows for a picture that is 4:3 rather than square, and
+    for a tile as narrow as the grid will make one: 150 px, at the width
+    where a fifth column has only just fitted (about 840 px of window),
+    which leaves a picture 148 wide and 111 high. Narrower than that the
+    grid drops to four columns and the tiles get wider again.
     """
     wx, wy, ww, wh = rect
     win = np.asarray(Image.open(shot).convert('RGB')).astype(np.int16)[
@@ -100,7 +108,7 @@ def button_grid(shot, rect):
     cells = []
     for sl in ndimage.find_objects(lab):
         h, w = sl[0].stop - sl[0].start, sl[1].stop - sl[1].start
-        if 120 <= h <= 400 and 120 <= w <= 400:      # icon-sized blobs only
+        if 100 <= h <= 400 and 120 <= w <= 400:      # picture-sized blobs only
             cells.append((sl[0].start + h // 2, sl[1].start + w // 2))
     if not cells:
         raise RuntimeError("no app buttons found in the launcher window")
@@ -165,6 +173,14 @@ def registered_apps():
     return found
 
 
+def occupied_rows():
+    """Grid row -> the columns it actually has a tile in."""
+    rows = {}
+    for row, col, _faces in launcher_literal('APP_TILES'):
+        rows.setdefault(row, []).append(col)
+    return rows
+
+
 def selected_radio():
     """The radio Settings names, and the directions it can go."""
     try:
@@ -224,7 +240,7 @@ def close_window(wid):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('app', help='button label, e.g. "RDS Receiver"')
+    ap.add_argument('app', help='button label, e.g. "FM + RDS Receiver"')
     ap.add_argument('--hold', type=float, default=15.0,
                     help='seconds to leave the application running')
     ap.add_argument('--shots', default='/tmp', help='where to write screenshots')
@@ -275,6 +291,19 @@ def run(args, row, col):
         grid = button_grid(shot, geometry(wid))
         counts = ', '.join(str(len(r)) for r in grid)
         print(f"  found {sum(len(r) for r in grid)} buttons (rows: {counts})")
+
+        # The grid wraps now - it fits as many tiles to a row as the window
+        # has room for - so a narrow launcher puts one bank on two rows and
+        # every click after it lands on the wrong tile. Say so here, where
+        # it is one line to fix, rather than let it look like a broken
+        # button several steps later.
+        expected = [len(cols) for _row, cols in sorted(occupied_rows().items())]
+        if [len(r) for r in grid] != expected:
+            print(f"FAIL: the launcher window is too narrow - its banks "
+                  f"should be {expected} tiles and came out {counts}. Widen "
+                  f"it (or delete window_position from "
+                  f"config/window_settings.json) and run again.")
+            return 1
         # The launcher's grid rows start at 1; row 0 holds the title. The
         # column here is the tile's position within its row, which is not
         # its grid column once a row has a gap in it.

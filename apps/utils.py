@@ -5,6 +5,8 @@ from PyQt5 import Qt  #type: ignore
 from PyQt5.QtCore import (QObject, QEvent, QRect, Qt as QtNs,  #type: ignore
                           pyqtSignal)
 
+from apps import theme
+
 
 # --- Buffers ----------------------------------------------------------------
 
@@ -211,6 +213,53 @@ class DialogGeometryTracker(QObject):
         return False
 
 
+def centre_on(dialog, window, app=None):
+    """Put a dialog in the middle of the window that opened it.
+
+    This is where a dialog goes when nothing has been saved for it yet.
+    The config dialogs are built with no parent - each app's
+    ``ConfigDialog()`` takes none - so Qt has nothing to centre them on and
+    would drop them in the middle of the *screen*, which on a wide desktop
+    is nowhere near the launcher. The settings dialog does have a parent
+    and Qt already centres that one.
+
+    Called before the dialog is shown, so its size has to be asked for
+    rather than read: ``adjustSize`` settles it against the layout
+    ``tidy_dialog`` built and the minimum width ``apply_dark_theme`` sets.
+
+    The result is clamped into the screen the launcher is actually on. A
+    launcher parked against an edge, or one taller than the dialog's screen
+    has room for, would otherwise centre part of the dialog off it - the
+    same failure ``geometry_is_reachable`` guards the *restored* positions
+    against.
+    """
+    dialog.adjustSize()
+    size = dialog.size()
+    centre = window.frameGeometry().center()
+    x = centre.x() - size.width() // 2
+    y = centre.y() - size.height() // 2
+
+    instance = app or Qt.QApplication.instance()
+    screen = None
+    if instance is not None:
+        at = getattr(instance, 'screenAt', None)
+        screen = at(centre) if at else None
+        if screen is None:
+            screen = instance.primaryScreen()
+    if screen is not None:
+        area = screen.availableGeometry()
+        if size.width() <= area.width():
+            x = max(area.left(), min(x, area.right() - size.width() + 1))
+        else:
+            x = area.left()
+        if size.height() <= area.height():
+            y = max(area.top(), min(y, area.bottom() - size.height() + 1))
+        else:
+            y = area.top()
+    dialog.move(x, y)
+    return x, y
+
+
 #: Where a flowgraph window's own geometry lives, in the same per-app file
 #: as ``dialog_position`` and in the same shape.
 FLOWGRAPH_POSITION = 'flowgraph_position'
@@ -375,44 +424,15 @@ def adopt_legacy_config(config_dir, legacy_name, config_file):
 
 #This function is called to apply the theme to the launcher
 def apply_launcher_theme(widget):
-    stylesheet = """
-    QMainWindow {
-        background-color: #2e2e2e;
-    }
-    QLabel {
-        color: #ffffff;
-    }
-    QPushButton {
-        background-color: #4b4b4b;
-        color: #ffffff;
-        border: 2px solid #5c5c5c;
-        border-radius: 10px;
-        padding: 0px;  /* Remove padding to allow icon to fill */
-    }
-    QPushButton:hover {
-        background-color: #656565;
-        border: 2px solid #767676;
-    }
-    QPushButton:pressed {
-        background-color: #3d3d3d;
-        border: 2px solid #4e4e4e;
-    }
-    /* A tile the selected radio cannot run: still there, plainly not
-       available, and its tooltip says which way the radio goes. */
-    QPushButton:disabled {
-        background-color: #383838;
-        color: #6e6e6e;
-        border: 2px dashed #4a4a4a;
-    }
-    QLabel:disabled {
-        color: #6e6e6e;
-    }
-    QMessageBox {
-        background-color: #2e2e2e;
-        color: #ffffff;
-    }
+    """Paint the launcher window from the shared design tokens.
+
+    The palette, the type scale and the faces live in ``apps/theme.py``,
+    which the browser front end reads too - they are deliberately not
+    written down twice, because two front ends drawn separately drift on
+    the first edit to either.
     """
-    widget.setStyleSheet(stylesheet)
+    theme.load_fonts()
+    widget.setStyleSheet(theme.launcher_qss())
 
 # --- Dialog layout ----------------------------------------------------------
 
@@ -581,133 +601,24 @@ def icon_url(name):
 
 #This function is called to apply the theme to the dialog
 def apply_dark_theme(widget):
+    """Paint a config dialog, and straighten its layout.
+
+    The paint comes from the same tokens as the launcher window and the
+    browser page; the layout is ``tidy_dialog``, which is unchanged - a Qt
+    stylesheet does no layout at all.
+
+    The three image paths are absolute, worked out from this file rather
+    than the working directory, because a stylesheet resolves ``url()``
+    against the process's cwd and an app can be started from anywhere.
+    """
     # A floor on the width only. There used to be one of 400 on the height
     # too, which made every short dialog too tall - see tidy_dialog.
     if isinstance(widget, Qt.QDialog):
         widget.setMinimumWidth(360)
-
-    stylesheet = """
-    QDialog, QWidget {
-        background-color: #2e2e2e;
-        color: #ffffff;
-    }
-    QLabel {
-        color: #ffffff;
-    }
-    QPushButton {
-        background-color: #4b4b4b;
-        color: #ffffff;
-        border: 2px solid #5c5c5c;
-        border-radius: 5px;
-        padding: 5px;
-        min-width: 80px;
-    }
-    QPushButton:hover {
-        background-color: #656565;
-        border: 2px solid #767676;
-    }
-    QPushButton:pressed {
-        background-color: #3d3d3d;
-        border: 2px solid #4e4e4e;
-    }
-    QComboBox {
-        background-color: #4b4b4b;
-        color: #ffffff;
-        border: 2px solid #5c5c5c;
-        border-radius: 5px;
-        padding: 5px;
-    }
-    QComboBox:hover {
-        background-color: #656565;
-        border: 2px solid #767676;
-    }
-    /* Typed-in controls, matching the combo boxes. Without these they fall
-       through to the plain QWidget rule and come out as flat dark boxes,
-       so two controls doing the same job - pick a number, type a number -
-       looked like they belonged to different applications. */
-    QLineEdit, QAbstractSpinBox {
-        background-color: #4b4b4b;
-        color: #ffffff;
-        border: 2px solid #5c5c5c;
-        border-radius: 5px;
-        padding: 4px;
-        selection-background-color: #767676;
-    }
-    QLineEdit:focus, QAbstractSpinBox:focus {
-        border: 2px solid #8a8a8a;
-    }
-    QLineEdit:disabled, QAbstractSpinBox:disabled {
-        color: #6e6e6e;
-        border: 2px solid #4a4a4a;
-    }
-    /* A spin box that a stylesheet touches at all stops drawing its own
-       arrows - the two buttons come out as empty boxes - and Qt's CSS
-       subset will not draw a triangle out of borders either; it renders
-       the four borders as a rectangle. So the arrows are images. */
-    QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {
-        subcontrol-origin: border;
-        background-color: #5c5c5c;
-        border: none;
-        width: 17px;
-    }
-    QAbstractSpinBox::up-button {
-        subcontrol-position: top right;
-        border-top-right-radius: 3px;
-        margin: 2px 2px 0px 0px;
-    }
-    QAbstractSpinBox::down-button {
-        subcontrol-position: bottom right;
-        border-bottom-right-radius: 3px;
-        margin: 0px 2px 2px 0px;
-    }
-    QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {
-        background-color: #767676;
-    }
-    QAbstractSpinBox::up-arrow {
-        image: url(%(up)s);
-        width: 9px;
-        height: 5px;
-    }
-    QAbstractSpinBox::down-arrow {
-        image: url(%(down)s);
-        width: 9px;
-        height: 5px;
-    }
-    QComboBox QAbstractItemView {
-        background-color: #4b4b4b;
-        color: #ffffff;
-        selection-background-color: #656565;
-        selection-color: #ffffff;
-        border: 1px solid #5c5c5c;
-    }
-    QSlider {
-        background-color: transparent;
-    }
-    QSlider::groove:horizontal {
-        background-color: #4b4b4b;
-        height: 8px;
-        border-radius: 4px;
-    }
-    QSlider::handle:horizontal {
-        background-color: #ffffff;
-        border: none;
-        width: 16px;
-        margin: -4px 0;
-        border-radius: 8px;
-    }
-    QSlider::handle:horizontal:hover {
-        background-color: #dddddd;
-    }
-    """
-    # There were QHBoxLayout and QVBoxLayout rules here too. A Qt stylesheet
-    # only ever applies to widgets, so they had never done anything; the
-    # spacing they were meant to give is set by tidy_dialog.
-    #
-    # The arrow paths are absolute and worked out from this file, not from
-    # the working directory, because a stylesheet resolves url() against the
-    # process's cwd and an app can be started from anywhere.
-    widget.setStyleSheet(stylesheet % {'up': icon_url('spin-up.png'),
-                                       'down': icon_url('spin-down.png')})
+    theme.load_fonts()
+    widget.setStyleSheet(theme.dialog_qss(icon_url('spin-up.png'),
+                                          icon_url('spin-down.png'),
+                                          icon_url('check.png')))
     tidy_dialog(widget)
 
 def read_settings():

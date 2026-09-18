@@ -59,7 +59,7 @@ BASEBAND_SCALE = 0.85
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("ATSC Transmitter Configuration")
+        self.setWindowTitle("ATSC Video Transmitter Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "atscXmitter_config.json")
@@ -220,15 +220,25 @@ class ConfigDialog(Qt.QDialog):
                 # directory can move, and a clip saved where it was a .ts
                 # should still be found where it is only a .mp4. 'ts_file' is
                 # what this was saved as when a .ts was all it took.
+                # The exact file wins if it is still offered: now that
+                # subfolders are searched, two folders can each hold a clip
+                # of the same name, and matching by name alone would take
+                # whichever happened to be listed first.
                 saved_file = config.get('video_file') or config.get('ts_file')
                 if saved_file:
+                    paths = [self.file_combo.itemData(i)
+                             for i in range(self.file_combo.count())]
                     stem = os.path.splitext(os.path.basename(saved_file))[0]
-                    for i in range(self.file_combo.count()):
-                        path = self.file_combo.itemData(i)
-                        if path and os.path.splitext(
-                                os.path.basename(path))[0] == stem:
-                            self.file_combo.setCurrentIndex(i)
-                            break
+                    match = next((i for i, p in enumerate(paths)
+                                  if p and os.path.normcase(p)
+                                  == os.path.normcase(saved_file)), None)
+                    if match is None:
+                        match = next((i for i, p in enumerate(paths)
+                                      if p and os.path.splitext(
+                                          os.path.basename(p))[0] == stem),
+                                     None)
+                    if match is not None:
+                        self.file_combo.setCurrentIndex(match)
             except:
                 pass
         else:
@@ -273,9 +283,9 @@ class ConfigDialog(Qt.QDialog):
 class atscXmitter2(gr.top_block, Qt.QWidget):
 
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "ATSC Transmitter", catch_exceptions=True)
+        gr.top_block.__init__(self, "ATSC Video Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("ATSC Transmitter")
+        self.setWindowTitle("ATSC Video Transmitter")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))

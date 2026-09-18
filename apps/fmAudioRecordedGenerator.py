@@ -28,7 +28,6 @@ import signal
 import sys
 import time
 from math import pi
-import glob
 
 # Third party imports 
 from PyQt5 import Qt, QtCore # type: ignore
@@ -40,6 +39,7 @@ from gnuradio.fft import window # type: ignore
 from gnuradio.qtgui import Range, RangeWidget # type: ignore
 
 # Local imports
+from apps.media import WAV, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
@@ -50,7 +50,8 @@ def get_wav_files(settings):
         if not media_dir or not os.path.exists(media_dir):
             return None
             
-        wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+        # Subfolders too, and .WAV as well as .wav - see apps/media.py.
+        wav_files = choices(media_dir, WAV)
         return wav_files if wav_files else []
     except:
         return None
@@ -182,8 +183,7 @@ class ConfigDialog(Qt.QDialog):
                 raise FileNotFoundError("No WAV files found in media directory")
                 
             # Add wav files found
-            for wav_file in wav_files:
-                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+            for display_name, wav_file in wav_files:
                 self.source_combo.addItem(display_name, wav_file)
                 
             # Always add these options

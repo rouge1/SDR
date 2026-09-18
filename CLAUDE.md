@@ -48,8 +48,10 @@ The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block`
 
 ### Shared Utilities (`apps/utils.py`)
 
-- `apply_launcher_theme(widget)` — dark stylesheet for the main launcher window.
-- `apply_dark_theme(widget)` — dark stylesheet for config dialogs, and it
+- `apply_launcher_theme(widget)` — paints the launcher window from the
+  shared tokens in `apps/theme.py` — see [one design, two front
+  ends](#one-design-two-front-ends).
+- `apply_dark_theme(widget)` — the same tokens for a config dialog, and it
   also straightens the layout — see [how every dialog gets laid
   out](#how-every-dialog-gets-laid-out).
 - `read_settings()` — reads `config/window_settings.json`, returns dict with `media_directory` and `ip_addresses`.
@@ -999,6 +1001,58 @@ encodes exactly as fast (32.3 ms a frame against 32.5).
   or three frames and the fault needed thirty, so `test_pal_loopback.py`
   now walks 100,000 frame boundaries.
 
+### How the pickers find media
+
+Every list of files in every dialog - the WAV lists in AM Audio, FM Audio,
+FM Subcarrier, PPM-OOK, FM + RDS and the two video transmitters' sound, the
+clips, the ATSC streams and the `.dat` stills - comes from
+`media_files()` in **`apps/media.py`**. They used to list the folder each
+in their own way, and disagreed:
+
+- **None of them looked in subfolders**, so a clip filed under
+  `media/Prelinger/` was invisible to every app. The walk goes to any
+  depth now, and an entry is labelled with its folder -
+  `Prelinger/Chevrolet 1955 Heres Looking`. A file at the top keeps exactly
+  the label it always had, and its full path is unchanged, which is what
+  keeps a choice saved before this pointing at the same file.
+- **Five matched `.wav` case-sensitively and the rest did not.** AM Audio,
+  FM Audio, FM Subcarrier, PPM-OOK and FM + RDS used `glob('*.wav')`, which
+  on Linux misses `SONG.WAV`, while the NTSC and FM video transmitters
+  lower-cased the name first. So one file could be offered by one
+  transmitter and not the next - on Linux only, since Windows filenames
+  are not case-sensitive at all. Every extension now matches whatever its
+  case.
+- **Two did not sort**, and came out in whatever order the filesystem
+  returned. Everything is top-level files first, then each subfolder's
+  grouped, alphabetical ignoring case.
+
+Things it skips on purpose: hidden folders and files - macOS leaves a
+`._song.wav` beside every file it copies to a foreign disk, which has the
+right extension and is not audio, and fails only once someone presses OK -
+and symbolic links to folders, so a link back up the tree cannot make the
+walk run forever. Labels use `/` on Windows too.
+
+`video_files()` still offers one entry per clip, but a clip is now a name
+*within a folder*: `Prelinger/clip.mp4` and `Prelinger/clip.ts` are one
+entry, and a `clip.mp4` in each of two folders is two. The ATSC transmitter
+used to find its saved clip by bare name, which with subfolders could land
+on a same-named clip in another folder; it tries the exact file first now
+and falls back to the name, so a choice saved where it was a `.ts` still
+finds the `.mp4` elsewhere.
+
+**The list is built when a dialog opens**, not while one is open: the
+launcher makes a fresh dialog on every click, so a new file or a new media
+folder shows up the next time an app is opened. A running FM + RDS
+transmitter's Next Track steps through the list its dialog was opened
+with.
+
+```sh
+python scripts/test_media.py    # no radio, no display; Linux and Windows
+```
+
+builds a throwaway folder with every case above and checks what comes
+back, including a link that points back up the tree.
+
 ### NTSC video sources
 
 `apps/ntsc_source.py` turns a *stream* of frames into a continuous signal,
@@ -1162,9 +1216,11 @@ every time Settings closes:
 - **The property is `flip_phase`, not `flip`.** `flip()` is the method that
   starts a turn; naming the `pyqtProperty` the same thing replaces the
   method with the property object and the badge stops working.
-- **The icon box is sized for every face, not the first.** Two icons with
-  different aspect ratios otherwise clip the second one - and a box that
-  resized mid-turn would shove the caption around while the tile moved.
+- **Every face is cropped to the same 4:3 box**, so two icons with
+  different aspect ratios cannot clip one another or shove the caption
+  around mid-turn. The caption is given the height of the longest name on
+  the grid, for the same reason: otherwise one long name makes its own
+  tile taller than the rest of its row.
 - **Which side is up lives in `window_settings.json`** under `tile_faces`,
   keyed by the tile's first module name, so a tile left showing the
   receiver is still showing it next time.
@@ -1855,6 +1911,42 @@ The saved size is clamped to the current screen but the position is not:
 a window deliberately parked against an edge, or on a second monitor,
 should come back there.
 
+**Where each of them goes the first time, before anything is saved:**
+
+- The launcher **works out its own size** (`natural_size`): wide enough
+  for the widest bank's five tiles in one row at `PREFERRED_TILE`, 185 px,
+  and exactly tall enough for every bank - which on this machine is
+  **997x826**, centred on the primary screen at (941, 397) on a 2880x1620
+  display. The width is arithmetic; the height is *measured*, by laying
+  the grid out at that width and asking the column how tall it came out,
+  because it depends on how tall the machine sets a line of text. A size
+  written down by hand, 1000x820, fitted here by 2 px and would have
+  scrolled on any machine whose fonts run a pixel taller; measured, it is
+  right wherever it runs - make the type a pixel taller and it picks 835,
+  four pixels and the captions wrap and it picks 928, with nothing to
+  scroll and 2 px less scrolling every time. It is then clamped to the
+  screen's *available* geometry, so a 1366x768 laptop, which cannot show
+  all three banks, gets as much as fits and a scroll bar rather than a
+  window partly under the panel. Before any of this there was no default
+  at all: with no `window_position` it fell back to its 800x600
+  *minimum*, which wrapped the first bank onto two rows on a screen with
+  room to spare.
+- A config dialog opens **in the middle of the launcher**, which is where
+  the eye already is, having just clicked a tile. It used to be the
+  launcher's top-left corner plus fifty pixels, which on a wide window put
+  it well off to one side of what was clicked. `centre_on` in
+  `apps/utils.py` does it, and has to `adjustSize()` first: the dialog has
+  not been shown yet, so its size must be asked for rather than read.
+  It clamps into the screen the launcher is on, because a launcher parked
+  against an edge would otherwise centre part of the dialog off it -
+  measured, a launcher at (2600, 1300) on a 2880x1620 screen wants a
+  centre of (3099, 1739) and the dialog is pulled back to (2497, 1111).
+- The settings dialog needs none of this: it is built with `parent=self`,
+  so Qt centres it on the launcher already. The config dialogs cannot be,
+  because each app's `ConfigDialog()` takes no parent - which is why Qt
+  would otherwise drop them in the middle of the *screen*, nowhere near
+  the launcher on a wide desktop.
+
 ### How every dialog gets laid out
 
 Each of the fifteen `ConfigDialog`s is assembled by hand out of
@@ -1900,11 +1992,12 @@ Two things about doing it centrally:
   that it falls through to the plain `QWidget` rule and comes out as a flat
   dark box - leaves the up and down buttons as empty rectangles. Qt's CSS
   subset will not draw a triangle out of borders either; it renders the
-  four borders as a rectangle. So the arrows are images, `icons/spin-up.png`
-  and `icons/spin-down.png`, referenced through `icon_url()` by absolute
-  path: a stylesheet resolves `url()` against the process's working
-  directory, and forward slashes are required on Windows because a
-  backslash is an escape to the stylesheet parser.
+  four borders as a rectangle. So they are images - `icons/spin-up.png`,
+  `icons/spin-down.png`, which the combo boxes use for their own arrow
+  too, and `icons/check.png` for a ticked box - referenced through
+  `icon_url()` by absolute path: a stylesheet resolves `url()` against the
+  process's working directory, and forward slashes are required on Windows
+  because a backslash is an escape to the stylesheet parser.
 
 ```sh
 python scripts/test_dialog_layout.py                  # all 15, all 4 radios
@@ -1927,7 +2020,7 @@ window appears, and that closing it brings the launcher back - by driving real
 X input through xdotool (`apt install xdotool`):
 
 ```sh
-python scripts/test_launcher_gui.py "RDS Receiver"
+python scripts/test_launcher_gui.py "FM + RDS Receiver"
 python scripts/test_launcher_gui.py "FM + RDS Transmitter" --hold 30
 python scripts/test_launcher_gui.py "ATSC Video Receiver"
 ```
@@ -1992,6 +2085,7 @@ python web/server.py --host 0.0.0.0  # prints a URL with a token in it
 |------|------|
 | `web/server.py` | Serves the page, its icons and its fonts, reads and writes the settings file, starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
 | `web/index.html` | The page: grid, settings, and what is running. |
+| `apps/theme.py` | The palette, the type scale and the faces, for both front ends. Stdlib only, which is why the server may import it. |
 | `apps/_run.py` | Runs one app module with its own Qt event loop. |
 | `scripts/probe_radio.py` | Asks whether a radio is there, in a process that then exits. |
 | `web/prototype/index.html` | A mockup of a browser *panel* for a running app, drawn from simulated AM. Nothing behind it - it is the design reference for that step, not part of the launcher. |
@@ -2088,6 +2182,125 @@ edits: `apps/_run.py` already takes `--config values.json` and skips the
 dialog when given one. What it needs is a parameter manifest per app, which
 would also retire the duplication where a range is stated once in
 `ConfigDialog` and again in the flowgraph's `RangeWidget`.
+
+### One design, two front ends
+
+The desktop launcher and the browser page are meant to look like one
+program, and for a while they did not: the page was drawn to a design and
+the launcher kept the grey stylesheet it had always had. So the palette,
+the type scale and the faces live in **`apps/theme.py`** and both sides
+read them - `apply_launcher_theme` and `apply_dark_theme` take Qt style
+sheets from it, and `web/server.py` generates `/theme.css` from the same
+`TOKENS` and the page links that instead of declaring its own `:root`.
+Edit a colour there and both front ends move.
+
+`apps/theme.py` **imports nothing but the standard library at module
+level**, which is what lets the server import it: everything else in
+`apps/` pulls GNU Radio or Qt, and a web server must have neither. It is
+the one import the server makes from `apps/`; the tile tables it still
+reads out of the launcher's *source* with `ast`, as before.
+
+```sh
+python scripts/test_theme.py    # no radio, no display, no GNU Radio
+```
+
+checks that every `var()` the page uses is a name `/theme.css` defines,
+that the page asks nothing of the network, that neither Qt stylesheet has
+an unsubstituted token, that the six faces and their licence are in
+`fonts/`, and that every row of tiles has a heading. That is the check
+that stops the two drifting, which is the whole point of the arrangement.
+
+**A Qt stylesheet is not CSS, and four of the things the page does have no
+QSS equivalent at all.** They are done to the pixels instead, in
+`gnuradio_launcher.py`:
+
+| The page says | Qt has no such thing, so |
+|---|---|
+| `--ground` and the rest of `:root` | Python formats the tokens into the sheet, the way `icon_url()` already got absolute paths into a `url()` |
+| `object-fit: cover` with `filter: saturate(.82)` | `cover_pixmap()` crops each icon to 4:3 about its middle and pulls the colour back, once, with PIL and numpy |
+| `letter-spacing` on the TRANSMIT/RECEIVE line | `token_font()`, because only a QFont has it |
+| `.bank-name::after`, the hairline running off the heading | a `QFrame` in the row - Qt's `::` are sub-controls of a known widget, not pseudo-elements anyone can invent |
+
+A fifth, `opacity` on a tile the radio cannot run, was already solved: the
+picture is dimmed by the painter in `_draw` and the caption by the
+stylesheet's own `:disabled` colours, because the two caption labels carry
+an opacity effect each for the flip and effects do not nest predictably.
+
+**The grid wraps now**, which is the page's
+`repeat(auto-fill, minmax(150px, 1fr))` done by hand in `_relayout` -
+a stylesheet does no layout at all. Tiles are at least 150 px wide, as
+many to a row as fit, inside a column capped at 1080 and centred in the
+window, as the page's `max-width: 1080px; margin: 0 auto` does for both
+the rail's contents and the body (`centred_column`). Without the centring
+a maximised launcher kept its tiles in the leftmost 1080 px while the
+rail and the bank hairlines ran on across the whole screen.
+
+**It never makes more columns than the widest bank has tiles**, which is
+five. A sixth column could only ever be empty, and it arrived right at
+the default width: 980 px of window gave five tiles of 181, 1000 gave six
+of 153 - three pixels off the minimum, the sixth slot holding nothing in
+any bank. Capped, a wider window widens the five instead, until the
+column reaches 1080 and they stop at 208. Measured: four columns below
+about 840 px of window, five from there to a full 1920, and at the
+launcher's own size five of 185 with nothing to scroll. The cap is read off
+`APP_TILES` rather than written down as 5, so a bank that gains a sixth
+tile gets a sixth column. Two more things worth knowing:
+
+- **Watch the scroll area's viewport, not the window.** The viewport
+  changes width without the window being resized - the scroll bar
+  appearing is enough - so a `resizeEvent` on the window alone left the
+  grid laid out for whatever width it had before it was first shown: six
+  columns of room, three columns of tiles, measured. It is an event filter
+  on `viewport()` instead.
+- **`scripts/test_launcher_gui.py` finds tiles as bright blobs**, and a
+  wrapped bank puts one row of tiles on two rows of blobs, after which
+  every click lands on the wrong tile. It compares the blob rows against
+  `APP_TILES` now and says the window is too narrow, rather than failing
+  several steps later like a broken button. The size window it accepts
+  also had to come down: a picture is 4:3 rather than a 200 px square, and
+  as short as 111 px at the width where a fifth column has only just
+  fitted.
+
+Two smaller traps, both found by looking at a screenshot:
+
+- **A child widget paints its own background over its parent's border.**
+  The rail's `border-bottom` came out interrupted under the wordmark, and
+  would have vanished under the centred column its contents now sit in,
+  so everything inside `#rail` is transparent.
+- **A QFont sizes in points and a stylesheet in pixels.** A font built the
+  obvious way from a token meant for QSS comes out about a third too big
+  on a 96 dpi screen; `token_font()` calls `setPixelSize`.
+- **A layout does not know a stylesheet drew a border.** The tile's layout
+  began at the button's edge, so its picture sat on the 1 px border at the
+  top and left and left a strip of panel before the one on the right. The
+  layout is inset by 1 px all round.
+
+Three more, all found making the launcher measure its own height before
+it is shown - each one made it come out at its 600 px minimum:
+
+- **A QPushButton ignores the layout it holds.** It sizes itself from its
+  own text and icon, and a tile has neither, so its size hint was a small
+  empty button. On screen that never showed, because showing a window
+  activates each layout and pushes the real size on as a minimum - too
+  late to measure from. `FlipTile.sizeHint` returns its layout's.
+- **Qt invalidates a layout by posting an event.** Before the event loop
+  has run, the outer widget answers from its cache: 143x196 for a page
+  really 997x766. `natural_size` asks the column's own layout.
+- **A stylesheet's type sizes arrive when a widget is polished**, which is
+  otherwise on first show; `ensurePolished()` first, or every label is
+  measured in the default font.
+
+The launcher also gained a **header rail** - wordmark, the radio Settings
+has chosen, and the gear - and a **scroll area**, which it badly needed:
+the old grid had none, so on a 768-high laptop the video row sat below the
+bottom edge with no way to reach it. The gear is the page's own SVG of
+three faders, rendered through QtSvg, which retired twenty lines of PIL
+that brightened a photograph of a cog and keyed its background out.
+
+The one part of the browser page deliberately **not** carried across is the
+ON AIR panel. That is not paint, it is a running-apps list the desktop
+launcher has never kept - and in single mode it hides itself while an app
+runs, so there would be nothing to show it to.
 
 ### The typefaces
 

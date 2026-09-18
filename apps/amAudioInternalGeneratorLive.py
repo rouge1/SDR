@@ -22,7 +22,6 @@ if __name__ == '__main__':
             print("Warning: failed to XInitThreads()")
 
 # Standard library imports
-import glob
 import json
 import os
 import signal
@@ -43,6 +42,7 @@ from PyQt5 import QtCore # type: ignore
 from PyQt5.QtCore import pyqtSlot # type: ignore
 
 # Local imports
+from apps.media import WAV, choices
 from apps.utils import (apply_dark_theme, read_settings, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
@@ -52,7 +52,8 @@ def get_wav_files(settings):
         media_dir = settings.get('media_directory', '')
         if not media_dir or not os.path.exists(media_dir):
             return None
-        wav_files = glob.glob(os.path.join(media_dir, "*.wav"))
+        # Subfolders too, and .WAV as well as .wav - see apps/media.py.
+        wav_files = choices(media_dir, WAV)
         return wav_files if wav_files else []
     except:
         return None
@@ -210,8 +211,7 @@ class ConfigDialog(Qt.QDialog):
             if not wav_files:
                 raise FileNotFoundError("No WAV files found in media directory")
 
-            for wav_file in wav_files:
-                display_name = os.path.splitext(os.path.basename(wav_file))[0].replace('-', ' ')
+            for display_name, wav_file in wav_files:
                 self.source_combo.addItem(display_name, wav_file)
 
             self.source_combo.addItem("Sinewave", "sinewave")

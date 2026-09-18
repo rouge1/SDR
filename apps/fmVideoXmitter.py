@@ -37,6 +37,7 @@ try:                 # PyQt5 ships sip inside the package; some builds also
 except ImportError:  # pragma: no cover - depends on the PyQt5 build
     from PyQt5 import sip  # type: ignore
 
+from apps.media import WAV, choices
 from apps.fm_video_core import (DEFAULT_PROFILE, PREEMPHASIS_CHOICES,
                                 PROFILES, VIDEO_CENTRE, compensation_band,
                                 fm_integrator_gain,
@@ -361,16 +362,11 @@ class ConfigDialog(Qt.QDialog):
         self.audio_combo.addItem("From the video clip", ('clip', None))
         self.audio_combo.addItem("Silence - unmodulated subcarriers",
                                  ('silence', None))
-        wavs = []
-        if self.media_dir and os.path.isdir(self.media_dir):
-            wavs = sorted(f for f in os.listdir(self.media_dir)
-                          if f.lower().endswith('.wav'))
+        wavs = choices(self.media_dir, WAV)     # subfolders too
         if wavs:
             self.audio_combo.insertSeparator(self.audio_combo.count())
-        for name in wavs:
-            self.audio_combo.addItem(
-                os.path.splitext(name)[0].replace('-', ' '),
-                ('file', os.path.join(self.media_dir, name)))
+        for label, path in wavs:
+            self.audio_combo.addItem(label, ('file', path))
         self.layout.addWidget(self.audio_combo)
         self.sound_label = Qt.QLabel("")
         self.layout.addWidget(self.sound_label)

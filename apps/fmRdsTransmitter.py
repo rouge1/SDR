@@ -10,7 +10,6 @@
 # Test it with the RDS Receiver app (or a car radio): everything this sends is
 # something apps/rds_core.py can read back.
 
-import glob
 import json
 import os
 import signal
@@ -29,6 +28,7 @@ from gnuradio.fft import window  # type: ignore
 from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
+from apps.media import WAV, choices
 from apps.rds_core import PTY_RBDS, clock_text
 from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
 from apps.utils import (apply_dark_theme, power_percent, read_settings,
@@ -76,10 +76,13 @@ def wav_channels(path):
 
 
 def wav_files(settings):
-    media = settings.get('media_directory', '')
-    if not media or not os.path.isdir(media):
-        return []
-    return sorted(glob.glob(os.path.join(media, '*.wav')))
+    """(label, path) for every WAV in the media folder, subfolders included.
+
+    The label carries the folder a track sits in; ``track_name`` does not,
+    because that one goes out over the air as RDS Now Playing and a
+    listener's radio should say the song, not where it is filed.
+    """
+    return choices(settings.get('media_directory', ''), WAV)
 
 
 class ConfigDialog(Qt.QDialog):
@@ -162,8 +165,8 @@ class ConfigDialog(Qt.QDialog):
     def create_audio_control(self, settings):
         self.layout.addWidget(Qt.QLabel("Audio Source:"))
         self.audio_combo = Qt.QComboBox()
-        for path in wav_files(settings):
-            self.audio_combo.addItem(track_name(path), path)
+        for label, path in wav_files(settings):
+            self.audio_combo.addItem(label, path)
         self.audio_combo.addItem("1 kHz Tone", "tone")
         self.audio_combo.addItem("Silence (RDS only)", "silence")
         self.layout.addWidget(self.audio_combo)

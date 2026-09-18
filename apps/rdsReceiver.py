@@ -69,7 +69,7 @@ def rx_gain_plan(percent, radio_type):
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("RDS Receiver Configuration")
+        self.setWindowTitle("FM + RDS Receiver Configuration")
         self.layout = Qt.QVBoxLayout(self)
         self.config_dir = "config"
         self.config_file = os.path.join(self.config_dir, "rdsReceiver_config.json")
@@ -104,7 +104,7 @@ class ConfigDialog(Qt.QDialog):
         The Signal Hound VSG60 is a signal generator. Rejecting here means the
         launcher never gets as far as opening a device.
         """
-        self.setWindowTitle("RDS Receiver")
+        self.setWindowTitle("FM + RDS Receiver")
         row = Qt.QHBoxLayout()
         icon = Qt.QLabel()
         icon.setPixmap(self.style().standardIcon(
@@ -291,9 +291,9 @@ class rds_sink(gr.sync_block):
 
 class rdsReceiver(gr.top_block, Qt.QWidget):
     def __init__(self, config_values=None):
-        gr.top_block.__init__(self, "RDS Receiver", catch_exceptions=True)
+        gr.top_block.__init__(self, "FM + RDS Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("RDS / RBDS Receiver")
+        self.setWindowTitle("FM + RDS Receiver")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
