@@ -167,3 +167,30 @@ antenna connected the signal jumped to 66.3 dB and the capture rms rose 44 dB.
 Validate the receiver against a known-strong station first - a wideband sweep
 that finds 57 FM carriers proves the fault is on the transmit side before you
 go looking for it there.
+
+## Building the environment on a new Linux machine
+
+```sh
+conda env create -f linux/environment.yml --name gnu
+```
+
+`linux/environment.yml` is a full pinned solve, and it has twice been
+wrong in a way only a fresh machine shows. Both were found on 2026-09-18.
+
+- **It pins conda-forge builds only, so it solves under
+  `channel_priority: strict`**, which is Miniforge's default. It was once
+  a `conda env export` holding eleven builds from `defaults` - the
+  `h5eee18b` and `h06a4308` build strings - and strict priority refuses
+  every `defaults` build of a name conda-forge also carries. The failure is
+  `LibMambaUnsatisfiableError: ... excluded by strict repo priority`. It
+  had only ever solved on a flexible config. Check a fresh export for
+  anything not from conda-forge before committing it:
+  `conda list -n gnu --json` gives each package's channel.
+- **The HackRF needs `soapysdr-module-hackrf` inside the environment.**
+  Built without it, `lsusb` and the system `hackrf_info` both see the
+  radio while the launcher reports no HackRF. conda's SoapySDR searches
+  only its own `lib/SoapySDR/modules0.8`, where `SoapySDRUtil --info` then
+  prints `No modules found!`, and `SoapySDRUtil --find` is the quick check
+  that it is fixed. `windows/environment.yml` always had the module. The
+  system one under `/usr/lib/x86_64-linux-gnu/SoapySDR` is no substitute:
+  it links the system `libSoapySDR` and `libhackrf`, not the environment's.

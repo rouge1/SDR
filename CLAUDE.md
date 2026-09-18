@@ -74,7 +74,7 @@ fixed.
 | [radios.md](devnotes/radios.md) | `vsg_sink`, `bb60_source` | the VSG60's and the BB60D's limits, locks, gain and traps |
 | [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back, dialog layout, the one theme for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
 | [web.md](devnotes/web.md) | `web/`, `apps/_run.py`, `scripts/probe_radio.py` | the browser front end, and the Stop that does not stop |
-| [machines.md](devnotes/machines.md) | `windows/`, anything run on TVAdemo or the Windows laptop | TVAdemo, and running on Windows |
+| [machines.md](devnotes/machines.md) | `windows/`, `linux/environment.yml`, anything run on TVAdemo or the Windows laptop | TVAdemo, running on Windows, and building the environment on a new Linux machine |
 
 Something learned goes into its subject's file. If it could bite anywhere,
 it also gets a line below.
@@ -288,5 +288,6 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 ## Environment
 
 - Conda environment name: `gnu` (defined in `linux/environment.yml`, prefix: `/home/user/miniconda3/envs/gnu`; on Windows `windows/environment.yml`)
+- `linux/environment.yml` pins conda-forge builds only, the HackRF's SoapySDR module included - see [machines](devnotes/machines.md#building-the-environment-on-a-new-linux-machine).
 - Python 3.12, GNU Radio 3.10.12, PyQt5 5.15, UHD 4.8
 - `linux/start_app.sh` activates `gnu` from `~/miniconda3`; edit its `source` line if conda lives elsewhere.
