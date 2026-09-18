@@ -27,6 +27,13 @@ taste:
   each clip as both a ``.mp4`` and a ``.ts``, so the NTSC video picker
   offered forty entries with every title in it twice, spelled identically.
 - **A dialog must fit on the smallest screen here**, the 1366x768 laptop.
+- **OK must work on every radio that can run the app** whenever it works
+  on a HackRF, which runs everything. The four audio transmitters asked
+  for "a HackRF, or an IP address", so on a VSG60 - no address, being USB -
+  OK stayed grey whatever was chosen; only a USRP needs an address. The
+  test gives the USRP one, and compares with the HackRF rather than
+  requiring OK outright, so a machine with no media, where the audio
+  dialogs grey it out on purpose, still passes.
 
 It needs no radio and no display: Qt's offscreen platform renders the real
 widgets, and ``--save`` writes the PNGs if you want to look.
@@ -200,6 +207,7 @@ def main():
     app = Qt.QApplication(sys.argv[:1])
     failures = 0
     checked = 0
+    ok_enabled = {}
 
     for radio in (args.radio or RADIOS):
         print(f'\nradio: {radio}')
@@ -216,6 +224,9 @@ def main():
             dialog.show()
             dialog.resize(dialog.sizeHint())
             app.processEvents()
+            box = dialog.findChild(Qt.QDialogButtonBox)
+            ok = box.button(Qt.QDialogButtonBox.Ok) if box else None
+            ok_enabled[name, radio] = ok.isEnabled() if ok else None
             problems = check(Qt, name, radio, dialog, args.save)
             checked += 1
             size = f'{dialog.width()}x{dialog.height()}'
@@ -229,6 +240,28 @@ def main():
             dialog.close()
             dialog.deleteLater()
             app.processEvents()
+
+    # OK on every radio that can run the app, if it is on a HackRF.
+    radios = args.radio or RADIOS
+    if 'hackrf' in radios:
+        from RFbenchToolkit import RADIO_DIRECTIONS, face_directions
+        directions = face_directions()
+        print('\nOK on every radio that can run the app')
+        bad = 0
+        for name in (args.app or MODULES):
+            for radio in radios:
+                if radio == 'hackrf' or (name, radio) not in ok_enabled \
+                        or directions.get(name) not in RADIO_DIRECTIONS[radio]:
+                    continue
+                if ok_enabled[name, radio] != ok_enabled.get((name, 'hackrf')):
+                    bad += 1
+                    print(f'  {name:30s} OK is '
+                          f"{'on' if ok_enabled[name, radio] else 'off'} with "
+                          f"{radio}, "
+                          f"{'on' if ok_enabled.get((name, 'hackrf')) else 'off'}"
+                          f' with hackrf')
+        print('  ok' if not bad else f'  {bad} problem(s)')
+        failures += bad
 
     print(f'\n{checked} dialogs checked')
     if failures:

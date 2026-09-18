@@ -26,8 +26,12 @@ What it checks, on the window as rendered:
   canvas, the WCAG figure for a graphic that has to be made out.
 - **Every label can be read**: 4.5:1 against what is behind it, including
   the receivers' own status colours.
+- **Nothing in the window moves until it has been clicked.** A pointer
+  passing over a slider, or a scroll wheel turning over any control, used
+  to set it - see ``ClickToMove`` in ``apps/utils.py``. Dragging still
+  has to work.
 - **The power and frequency set in the window are what the dialog opens
-  on next time** - gain, on a receiver. The window's own controls are set
+  on next time** - gain, on a receiver, and deviation on FM video. The window's own controls are set
   as a user would set them, to their finest digit, and saved as the
   launchers save them on close: only what changed may be written, and a
   fresh dialog must read it back exactly. Its OK must then keep the
@@ -96,6 +100,7 @@ WINDOW_CONTROL = {
     'cf': ('_cf_win', '_centerFrequency_win'),
     'centerFreq': ('_centerFreq_win',),
     'center_mhz': ('freq_spin',), 'freq_mhz': ('freq_spin',),
+    'deviation_mhz': ('_dev_win',),
 }
 
 #: The dialog's control that reads each saved key back, the same way.
@@ -103,7 +108,7 @@ DIALOG_CONTROL = {
     'power_level': ('pwr_slider',), 'power_percent': ('pwr_slider',),
     'gain_percent': ('gain_slider',),
     'center_freq': ('cf_chooser', 'cf_slider'), 'center_mhz': ('cf_chooser',),
-    'frequency_mhz': ('freq_spin',),
+    'frequency_mhz': ('freq_spin',), 'deviation_mhz': ('deviation_spin',),
 }
 
 
@@ -237,6 +242,7 @@ def child(name, save, no_media=False):
         time.sleep(0.02)
 
     problems = [] if no_media else (inspect(Qt, tb, name, save)
+                                    + click_to_move(Qt, tb)
                                     + settings_round_trip(Qt, module, tb, name))
     try:
         tb.stop()
@@ -368,6 +374,81 @@ def inspect(Qt, tb, name, save):
         problems.append(f"the application font is "
                         f"{Qt.QApplication.font().family()}, so the plots' "
                         f"axis titles are not in {theme.TOKENS['f_ui']}")
+    return problems
+
+
+def click_to_move(Qt, tb):
+    """Nothing in the window moves until it has been clicked.
+
+    Every slider, spin box and combo box is sent what a pointer passing
+    over it sends - a move with no button down, and a turn of the wheel
+    each way - and must stay where it was. Then one slider is pressed and
+    dragged, which must still move it.
+    """
+    from PyQt5 import QtCore, QtGui
+    app = Qt.QApplication.instance()
+    problems = []
+
+    def state(control):
+        if isinstance(control, Qt.QComboBox):
+            return control.currentIndex()
+        return control.value() if hasattr(control, 'value') else control.text()
+
+    def mouse(control, kind, fraction, buttons):
+        x = int(control.width() * fraction)
+        pos = QtCore.QPointF(x, control.height() / 2)
+        button = QtCore.Qt.NoButton if kind == QtCore.QEvent.MouseMove \
+            else QtCore.Qt.LeftButton
+        app.sendEvent(control, QtGui.QMouseEvent(
+            kind, pos, button, buttons, QtCore.Qt.NoModifier))
+
+    def wheel(control, notch):
+        centre = QtCore.QPointF(control.width() / 2, control.height() / 2)
+        app.sendEvent(control, QtGui.QWheelEvent(
+            centre, QtCore.QPointF(control.mapToGlobal(centre.toPoint())),
+            QtCore.QPoint(0, 0), QtCore.QPoint(0, 120 * notch),
+            QtCore.Qt.NoButton, QtCore.Qt.NoModifier, QtCore.Qt.NoScrollPhase,
+            False))
+
+    # Not the scroll bars: scrolling is what the wheel is for.
+    controls = [w for w in tb.findChildren(Qt.QWidget) if w.isVisible()
+                and isinstance(w, (Qt.QAbstractSlider, Qt.QAbstractSpinBox,
+                                   Qt.QComboBox))
+                and not isinstance(w, Qt.QScrollBar)]
+    for control in controls:
+        what = f"a {type(control).__name__} at {state(control)}"
+        if control.focusPolicy() == QtCore.Qt.WheelFocus:
+            problems.append(f"{what} takes focus from the wheel")
+        control.clearFocus()
+        before = state(control)
+        if isinstance(control, Qt.QAbstractSlider):
+            for fraction in (0.1, 0.9):
+                mouse(control, QtCore.QEvent.MouseMove, fraction,
+                      QtCore.Qt.NoButton)
+            if state(control) != before:
+                problems.append(f"{what} moved to {state(control)} with the "
+                                f"pointer passing over it, nothing clicked")
+                continue
+        for notch in (1, -1):
+            wheel(control, notch)
+        if state(control) != before:
+            problems.append(f"{what} moved to {state(control)} under the "
+                            f"wheel without being clicked")
+
+    sliders = [c for c in controls if isinstance(c, Qt.QAbstractSlider)]
+    if sliders:
+        slider = sliders[0]
+        before = slider.value()
+        low = before < (slider.minimum() + slider.maximum()) / 2
+        start, end = (0.1, 0.9) if low else (0.9, 0.1)
+        mouse(slider, QtCore.QEvent.MouseButtonPress, start,
+              QtCore.Qt.LeftButton)
+        mouse(slider, QtCore.QEvent.MouseMove, end, QtCore.Qt.LeftButton)
+        mouse(slider, QtCore.QEvent.MouseButtonRelease, end,
+              QtCore.Qt.NoButton)
+        if slider.value() == before:
+            problems.append(f"a slider at {before} did not move when pressed "
+                            f"and dragged")
     return problems
 
 

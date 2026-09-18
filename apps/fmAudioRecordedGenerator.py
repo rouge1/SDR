@@ -189,7 +189,8 @@ class ConfigDialog(Qt.QDialog):
             self.source_combo.addItem("No Modulation", "none")
             
             # Only enable OK button if we have media files (and IP addresses when using USRP)
-            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
+            ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')
+                                  or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
                 
         except Exception as e:

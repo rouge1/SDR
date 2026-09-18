@@ -208,7 +208,7 @@ keys the dialog already reads:
 
 | Apps | Power key | Frequency key | Window attributes |
 |------|-----------|---------------|-------------------|
-| The other eleven transmitters | `power_level` | `center_freq` | `rfPwr`, and `cf` or `centerFreq` |
+| The other eleven transmitters | `power_level` | `center_freq` | `rfPwr`, and `cf` or `centerFreq` - and on FM video, `deviation_mhz` from `deviation_mhz` too |
 | FM + RDS Transmitter | `power_percent` | `frequency_mhz` | `power_percent`, `freq_mhz` |
 | RDS Receiver | `gain_percent` | `frequency_mhz` | `gain_percent`, `freq_mhz` |
 | The three video receivers | `gain_percent` | `center_mhz` | `gain_percent`, `center_mhz` |
@@ -581,6 +581,38 @@ to build and run. The dialog greys out OK there, but `apps/_run.py
 handed no file died on `None` where the other audio apps play silence.
 The first pass caught that only because it ran on a new machine; the
 second pass fails on it on any machine.
+
+**The stylesheet made the sliders follow the mouse, and the fix lives
+beside it.** A Qt stylesheet with hover rules turns on mouse tracking, so
+a slider hears every movement of the pointer across it, button or not:
+off with no stylesheet, on with this one, measured. GNU Radio's
+`RangeWidget` slider has its own `mouseMoveEvent`, which jumps to wherever
+the pointer is without asking whether a button is down. So once the
+windows were themed, passing the mouse over a power slider set the
+power, from 50 % to 89 % on the way across, on every window with one:
+AM Sine, ASK, FSK and PSK, the NTSC, ATSC and FM video transmitters,
+and the rest. The user found it on 2026-09-18. The scroll wheel did the same by
+another route: most windows scroll on the laptop, and a scroll that
+passed over a slider, spin box or combo box moved that instead, and a
+spin box took focus from the wheel alone.
+
+`ClickToMove` in `apps/utils.py`, which `apply_flowgraph_theme` installs,
+takes on every slider, spin box and combo box when the window is first
+shown:
+
+- a mouse move with no button down is dropped;
+- a wheel turn over one that has not been clicked is passed on to the
+  scroll area;
+- the wheel no longer gives focus.
+
+Clicking gives focus, and dragging, typing and the wheel then work as
+before. The scroll bars are left out: scrolling is what the wheel is
+for. `test_flowgraph_windows.py` sends every control a buttonless move
+and a wheel turn each way, requires it to stay put, and requires a press
+and drag to still move a slider. With the guard switched off it fails
+on all of them, the power slider included. It sends the events to the
+controls directly. On a real display, and a real scroll reaching the
+scroll area, it has not been tried.
 
 ## The typefaces
 

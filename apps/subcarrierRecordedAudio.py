@@ -150,7 +150,8 @@ class ConfigDialog(Qt.QDialog):
                 self.audio_combo.addItem(display_name, wav_file)
                 
             # Only enable OK button if we have both IP addresses and media files
-            ok_button.setEnabled(self.radio_type == 'hackrf' or bool(self.ipList))
+            ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')
+                                  or bool(self.ipList))
             ok_button.setGraphicsEffect(None)
                 
         except Exception as e:

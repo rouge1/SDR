@@ -50,7 +50,7 @@ from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, has_audio,
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
                         read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
-                        FrequencyChooser)
+                        FrequencyChooser, TrimmedSpinBox)
 
 #: The rate each format's composite is encoded at, before it is interpolated
 #: up to the radio's. NTSC at 10 MS/s: its encoder manages about twice real
@@ -323,8 +323,11 @@ class ConfigDialog(Qt.QDialog):
     def create_modulation_controls(self):
         row = Qt.QHBoxLayout()
         row.addWidget(Qt.QLabel("Deviation (MHz p-p):"))
-        self.deviation_spin = Qt.QDoubleSpinBox()
-        self.deviation_spin.setDecimals(2)
+        # Four decimals, as many as the window's own deviation counter
+        # takes, so what it is left at comes back here exactly
+        # (SAVED_SETTINGS); trimmed, so 3.8 still reads 3.8.
+        self.deviation_spin = TrimmedSpinBox()
+        self.deviation_spin.setDecimals(4)
         self.deviation_spin.setSingleStep(0.25)
         self.deviation_spin.setRange(DEVIATION_MIN_MHZ, DEVIATION_MAX_MHZ)
         self.deviation_spin.setToolTip(
@@ -532,7 +535,8 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
     # What this window's own controls change that its dialog should
     # open on next time - see apps/utils.py: save_flowgraph_settings.
     SAVED_SETTINGS = {'power_level': 'rfPwr',
-                      'center_freq': 'cf'}
+                      'center_freq': 'cf',
+                      'deviation_mhz': 'deviation_mhz'}
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "FM Video Transmitter", catch_exceptions=True)
@@ -579,6 +583,8 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
         self.standard = standard = STANDARDS.get(values.get('video_format'), NTSC)
         self.video_rate = VIDEO_RATES[standard.key]
         self.deviation_pp = float(values.get('deviation_pp') or profile.deviation_pp)
+        # The same in the dialog's unit, for SAVED_SETTINGS.
+        self.deviation_mhz = self.deviation_pp / 1e6
         self.preemphasis_key = preemphasis_for(
             values.get('preemphasis', profile.preemphasis), standard.lines)
         self.samp_rate = RF_RATE
@@ -789,7 +795,8 @@ class fmVideoXmitter(gr.top_block, Qt.QWidget):
             self.radio_sink.set_frequency(0, self.cf * 1e6)
 
     def set_deviation(self, mhz):
-        self.deviation_pp = float(mhz) * 1e6
+        self.deviation_mhz = float(mhz)
+        self.deviation_pp = self.deviation_mhz * 1e6
         self.modulator.set_deviation(self.deviation_pp)
 
 

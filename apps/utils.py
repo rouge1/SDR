@@ -64,7 +64,7 @@ FREQ_STEP_MHZ = 0.1
 FREQ_DECIMALS = 5
 
 
-class _TrimmedSpinBox(Qt.QDoubleSpinBox):
+class TrimmedSpinBox(Qt.QDoubleSpinBox):
     """A spin box that shows only the decimals its value needs.
 
     All five always shown would put 533.00000 in front of anyone tuning a
@@ -144,7 +144,7 @@ class FrequencyChooser(Qt.QWidget):
 
         row = Qt.QHBoxLayout()
         row.addWidget(Qt.QLabel(label))
-        self.spin = _TrimmedSpinBox()
+        self.spin = TrimmedSpinBox()
         self.spin.setDecimals(FREQ_DECIMALS)
         self.spin.setSingleStep(FREQ_STEP_MHZ)
         self.spin.setRange(self._min, self._max)
@@ -885,6 +885,65 @@ def apply_flowgraph_theme(window):
     window.setStyleSheet(theme.flowgraph_qss(icon_url('spin-up.png'),
                                              icon_url('spin-down.png'),
                                              icon_url('check.png')))
+    window.installEventFilter(ClickToMove(window))
+
+
+class ClickToMove(QObject):
+    """A control in a flowgraph window moves only when it has been clicked.
+
+    **The stylesheet made GNU Radio's sliders follow the mouse.** A Qt
+    stylesheet with hover rules turns on mouse tracking, so a slider hears
+    every movement of the pointer across it, button or not - measured, off
+    with no stylesheet and on with the flowgraph one. GNU Radio's
+    ``RangeWidget`` slider has its own ``mouseMoveEvent``, which jumps to
+    wherever the pointer is without asking whether a button is down. So
+    passing the mouse over a power slider set the power: 50 % to 89 % on
+    the way across. Every window with a ``RangeWidget`` slider did it.
+
+    **The wheel was the same thing by another route.** Most windows scroll
+    on a laptop, and a scroll that passed over a slider, a spin box or a
+    combo box moved that instead - power, frequency, deviation - and a spin
+    box took focus from the wheel alone.
+
+    So, on every slider, spin box and combo box in the window, a mouse
+    move with no button down is dropped; a wheel turn over one that has
+    not been clicked goes on to the scroll area behind it; and the wheel no
+    longer gives focus. Clicking gives it, and dragging, typing and the
+    wheel then work as they always did. The scroll bars are left alone:
+    scrolling is what the wheel is for. Installed on the window by
+    ``apply_flowgraph_theme``; it takes on the controls the first time the
+    window is shown, when every one of them exists.
+    """
+
+    CONTROLS = (Qt.QAbstractSlider, Qt.QAbstractSpinBox, Qt.QComboBox)
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+        self._guarded = False
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if obj is self._window:
+            if kind == QEvent.Show and not self._guarded:
+                self._guarded = True
+                for control in self._window.findChildren(self.CONTROLS):
+                    if isinstance(control, Qt.QScrollBar):
+                        continue
+                    if control.focusPolicy() == QtNs.WheelFocus:
+                        control.setFocusPolicy(QtNs.StrongFocus)
+                    control.installEventFilter(self)
+            return False
+        if kind == QEvent.MouseMove and not int(event.buttons()) \
+                and isinstance(obj, Qt.QAbstractSlider):
+            return True
+        if kind == QEvent.Wheel and not obj.hasFocus():
+            # Ignored and filtered: Qt then offers it to the parent, and
+            # so on up to the scroll area.
+            event.ignore()
+            return True
+        return False
+
 
 def read_settings():
     """Read settings from window_settings.json and ensure required fields exist"""

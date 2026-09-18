@@ -124,7 +124,10 @@ damage something. Each links to the why.
   whole file deleted the window's saved position every time OK was pressed.
   [ui](devnotes/ui.md#what-the-windows-own-controls-were-left-at)
 - **`apply_flowgraph_theme(self)` comes first in a flowgraph's `__init__`**,
-  and no flowgraph stylesheet sets a font on `QWidget` or `QLabel`.
+  and no flowgraph stylesheet sets a font on `QWidget` or `QLabel`. It
+  also installs `ClickToMove`: the stylesheet turns on mouse tracking, and
+  GNU Radio's slider then follows the pointer with no button down - a
+  power slider set by the mouse passing over it.
   [ui](devnotes/ui.md#the-flowgraph-windows-wear-it-too)
 - **`APP_TILES` stays a plain literal, and `apps/theme.py` imports only the
   standard library**: the web server reads both without importing Qt, and
