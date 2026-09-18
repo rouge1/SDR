@@ -229,7 +229,7 @@ Nothing in `config/` is committed - window positions, radio choice and the
 media folder are per machine - so a pull never overwrites them.
 The launcher opens at a size it works out for itself - the widest bank's tiles
 in one row, every bank in view - centred on the screen, and after that comes
-back wherever it was left.
+back wherever it was left - maximized, if it was left maximized.
 
 ---
 

@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import ( # type: ignore
     QGraphicsOpacityEffect,
     QMessageBox
 )
-from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint,  # type: ignore
+from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint, QTimer,  # type: ignore
                           QPropertyAnimation, QEasingCurve, pyqtProperty)
 from PyQt5.QtGui import (QIcon, QImage, QPixmap, QFont,  # type: ignore
                          QFontMetrics, QPainter)
@@ -808,24 +808,46 @@ class GNURadioLauncher(QMainWindow):
         self.resize(min(width, available.width()),
                     min(height, available.height()))
 
+    def _normal_geometry(self):
+        """Where the window sits when it is not maximized, as x, y, w, h.
+
+        In the same terms as ``pos()`` and ``size()`` - the frame's corner
+        and the inside's size - because that is what ``load_window_position``
+        hands back to ``move()`` and ``resize()``. Maximized, those two
+        report the whole screen, so the size to come back to is Qt's
+        ``normalGeometry()``, which measures the inside's corner instead and
+        is moved out by the frame; saved as it stands, every maximized
+        close would put the window a title bar lower. None when Qt does not
+        know it, and the last one saved is kept.
+        """
+        if not self.isMaximized():
+            return (self.pos().x(), self.pos().y(),
+                    self.width(), self.height())
+        normal = self.normalGeometry()
+        if not normal.isValid():
+            return None
+        frame = self.geometry().topLeft() - self.frameGeometry().topLeft()
+        return (normal.x() - frame.x(), normal.y() - frame.y(),
+                normal.width(), normal.height())
+
     def save_window_position(self):
-        """Save the current window position and size to settings file"""
+        """Save the window's position, size and whether it is maximized."""
         try:
             # Load existing settings
             settings = {}
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
                     settings = json.load(f)
-            
-            # Update window position and size
-            settings['window_position'] = {
-                'x': self.pos().x(),
-                'y': self.pos().y(),
-                'width': self.width(),
-                'height': self.height()
-            }
 
-            
+            # The normal geometry even when maximized, so un-maximizing after
+            # a restart gives back the size the window had before.
+            position = dict(settings.get('window_position') or {})
+            normal = self._normal_geometry()
+            if normal is not None:
+                position.update(zip(('x', 'y', 'width', 'height'), normal))
+            position['maximized'] = self.isMaximized()
+            settings['window_position'] = position
+
             # Save updated settings
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=4)
@@ -833,13 +855,25 @@ class GNURadioLauncher(QMainWindow):
             print(f"Error saving window position: {e}")
             
     def load_window_position(self):
-        """Load the saved window position and size from settings file or center if none exists"""
+        """Put the window back as it was left, or centre it if nothing was.
+
+        A window left maximized comes back maximized. It is placed at its
+        normal geometry first and only maximized once it is on screen (see
+        ``showEvent``), so un-maximizing after a restart gives back the
+        size it had rather than whatever Qt defaults to.
+        """
+        maximized = False
+        # Normal first, or the move and resize below would be applied to a
+        # window that is still maximized - which is the state it is hidden
+        # in, in single mode, while an app runs.
+        self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
                     settings = json.load(f)
                     if 'window_position' in settings:
                         position = settings['window_position']
+                        maximized = bool(position.get('maximized'))
                         screen = self.app.primaryScreen().availableGeometry()
 
                         # Size first, so the reachability test and the move both
@@ -860,6 +894,23 @@ class GNURadioLauncher(QMainWindow):
         except Exception as e:
             print(f"Error loading window position: {e}")
             self.center_window()
+        self._maximize_on_show = maximized
+
+    def showEvent(self, event):
+        """Maximize here, not before, if the window was left maximized.
+
+        Set on a window that is not yet on screen, the maximized state never
+        reaches GNOME: Qt reports the window maximized, GNOME maps it at its
+        normal size, and a moment later Qt agrees with GNOME - measured,
+        and Qt's own ``showMaximized()`` fails the same way. Asked for once
+        the window is up, GNOME maximizes it. The cost is a glimpse of the
+        normal-sized window first.
+        """
+        super().showEvent(event)
+        if getattr(self, '_maximize_on_show', False):
+            self._maximize_on_show = False
+            QTimer.singleShot(0, lambda: self.setWindowState(
+                self.windowState() | Qt.WindowMaximized))
 
     def create_tile(self, faces):
         """Make one tile. Two or more faces makes it a flip tile.

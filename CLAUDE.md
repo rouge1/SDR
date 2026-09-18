@@ -1903,6 +1903,30 @@ when the saved position would land somewhere still reachable
 (`geometry_is_reachable` in `apps/utils.py`, which looks across every
 screen rather than just the primary one).
 
+**The launcher also remembers being maximized**, as `"maximized": true`
+beside the other four - which then hold its *normal* geometry, from Qt's
+`normalGeometry()`, so un-maximizing after a restart gives back the size it
+had. Saved as `pos()` and `size()` while maximized, as it used to be, they
+held the whole screen instead. Two things about it:
+
+- **On GNOME a window cannot be maximized before it is on screen.** Set on
+  the hidden window, the state never reaches the window manager: Qt reports
+  the window maximized, GNOME maps it at its normal size, and a moment later
+  Qt agrees with GNOME. Qt's own `showMaximized()` fails the same way,
+  measured. So `load_window_position` places the window at its normal
+  geometry and `showEvent` asks for maximized once it is up - which costs a
+  glimpse of the normal-sized window first. The same path serves single
+  mode, where the launcher is hidden while an app runs and shown again.
+- **The Windows side has not been seen working.** Everything started over
+  SSH on the laptop runs in session 0, where Windows reports no window as
+  visible, and Qt only asks Windows to maximize a window it believes is
+  visible - so nothing there can be maximized from inside, whatever the
+  code does. On a real desktop the request is the same `ShowWindow` a click
+  on the maximize button makes. Verified on GNOME, through the window
+  manager rather than through Qt: maximized, closed, reopened maximized,
+  restored to exactly the geometry it had, and through single mode's hide
+  and show, with no drift.
+
 | Window | Where it is kept |
 |--------|------------------|
 | The launcher | `window_position` in `config/window_settings.json` |
