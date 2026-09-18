@@ -2045,15 +2045,18 @@ things about it:
   maximized by the WM's own `_NET_WM_STATE` request, saved, reopened
   maximized, un-maximized to exactly 1000x700 at (200, 150), and reopened
   there, with no drift.
-- **The Windows side has not been seen working.** Everything started over
-  SSH on the laptop runs in session 0, where Windows reports no window as
-  visible, and Qt only asks Windows to maximize a window it believes is
-  visible - so nothing there can be maximized from inside, whatever the
-  code does. On a real desktop the request is the same `ShowWindow` a click
-  on the maximize button makes. Verified on GNOME, through the window
-  manager rather than through Qt: maximized, closed, reopened maximized,
-  restored to exactly the geometry it had, and through single mode's hide
-  and show, with no drift.
+- **On Windows it works for a flowgraph window; the launcher's own has
+  not been tried.** Nothing started over SSH can show it: the laptop runs
+  those in session 0, where Windows reports no window as visible, and Qt
+  only asks Windows to maximize a window it believes is visible - so
+  nothing there can be maximized from inside, whatever the code does. It
+  was checked by hand on the laptop's own desktop instead, on 2026-09-18:
+  a flowgraph window left maximized came back maximized. The launcher
+  sends the same request - the `ShowWindow` a click on the maximize button
+  makes - but nobody has looked. On GNOME both are verified through the
+  window manager rather than through Qt: the launcher maximized, closed,
+  reopened maximized, restored to exactly the geometry it had, and
+  through single mode's hide and show, with no drift.
 
 | Window | Where it is kept |
 |--------|------------------|
