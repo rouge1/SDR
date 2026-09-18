@@ -33,7 +33,7 @@ from apps.media import AUDIO, choices
 from apps.rds_core import PTY_RBDS, clock_text
 from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        power_percent, read_settings,
+                        power_percent, read_settings, update_app_config,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
 MPX_RATE = 200e3          # everything below 100 kHz fits comfortably
@@ -275,9 +275,7 @@ class ConfigDialog(Qt.QDialog):
             'track_in_rt': self.track_check.isChecked(),
             'audio': self.audio_combo.currentData(),
         }
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -439,6 +437,11 @@ class audio_source(gr.sync_block):
 
 
 class fmRdsTransmitter(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_percent': 'power_percent',
+                      'frequency_mhz': 'freq_mhz'}
+
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "FM + RDS Transmitter", catch_exceptions=True)
         Qt.QWidget.__init__(self)

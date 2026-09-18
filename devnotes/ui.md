@@ -102,18 +102,27 @@ things about it:
   maximized by the WM's own `_NET_WM_STATE` request, saved, reopened
   maximized, un-maximized to exactly 1000x700 at (200, 150), and reopened
   there, with no drift.
-- **On Windows it works for a flowgraph window; the launcher's own has
-  not been tried.** Nothing started over SSH can show it: the laptop runs
-  those in session 0, where Windows reports no window as visible, and Qt
-  only asks Windows to maximize a window it believes is visible - so
-  nothing there can be maximized from inside, whatever the code does. It
-  was checked by hand on the laptop's own desktop instead, on 2026-09-18:
-  a flowgraph window left maximized came back maximized. The launcher
-  sends the same request - the `ShowWindow` a click on the maximize button
-  makes - but nobody has looked. On GNOME both are verified through the
-  window manager rather than through Qt: the launcher maximized, closed,
-  reopened maximized, restored to exactly the geometry it had, and
-  through single mode's hide and show, with no drift.
+- **On Windows a flowgraph window came back maximized, but not by this
+  code; the launcher's own has not been tried.** Nothing started over SSH
+  can show it: the laptop runs those in session 0, where Windows reports
+  no window as visible, and Qt only asks Windows to maximize a window it
+  believes is visible - so nothing there can be maximized from inside,
+  whatever the code does. It was checked by hand on the laptop's own
+  desktop instead, on 2026-09-18: a flowgraph window left maximized came
+  back maximized. It was found later the same day that the dialog's OK
+  had been deleting the saved position before the window could read it
+  (see [what the window's own controls were left
+  at](#what-the-windows-own-controls-were-left-at)), so what brought it
+  back was the app's own `QSettings` `restoreGeometry`, which works there
+  because that screen never changes size. Through the launcher, on
+  Windows, the JSON path has not been looked at since the fix. The
+  launcher's own window sends the same request - the `ShowWindow` a click on the
+  maximize button makes - but nobody has looked. On GNOME both are
+  verified through the window manager rather than through Qt: the
+  launcher maximized, closed, reopened maximized, restored to exactly the
+  geometry it had, and through single mode's hide and show, with no
+  drift. The flowgraph window's check there called the save and restore
+  directly, which is why it did not catch the dialog.
 
 | Window | Where it is kept |
 |--------|------------------|
@@ -142,10 +151,11 @@ So the geometry is applied *after* `main()` has shown the window - and
 after the window manager has put it up, see above - by whichever launcher
 started it: `RFbenchToolkit.py` for the desktop grid, `apps/_run.py` for
 the browser. It is saved from the close-event wrapper the launcher already
-installs, read before the app's own `closeEvent` stops the flowgraph. **No
-app needed changing**, and each keeps its `QSettings` calls, which is what
-an app run directly still uses. `scripts/test_flowgraph_windows.py` checks
-the round trip, maximized and not, into a throwaway folder.
+installs, read before the app's own `closeEvent` stops the flowgraph. Each
+app keeps its `QSettings` calls, which is what an app run directly still
+uses. `scripts/test_flowgraph_windows.py` checks the round trip, maximized
+and not, into a throwaway folder - and that a dialog's OK leaves the saved
+position alone, which for the first day it did not.
 
 The saved size is clamped to the current screen but the position is not:
 a window deliberately parked against an edge, or on a second monitor,
@@ -186,6 +196,78 @@ should come back there.
   because each app's `ConfigDialog()` takes no parent - which is why Qt
   would otherwise drop them in the middle of the *screen*, nowhere near
   the launcher on a wide desktop.
+
+### What the window's own controls were left at
+
+**The power and the centre frequency set in a flowgraph window are kept
+too** - gain, on a receiver - so the dialog opens next time on what the
+window was left at. Before, a change made in the window lasted only as
+long as the window: the dialog opened on its own last value, and pressing
+OK put that back on the air. They go into the same per-app file, under the
+keys the dialog already reads:
+
+| Apps | Power key | Frequency key | Window attributes |
+|------|-----------|---------------|-------------------|
+| The other eleven transmitters | `power_level` | `center_freq` | `rfPwr`, and `cf` or `centerFreq` |
+| FM + RDS Transmitter | `power_percent` | `frequency_mhz` | `power_percent`, `freq_mhz` |
+| RDS Receiver | `gain_percent` | `frequency_mhz` | `gain_percent`, `freq_mhz` |
+| The three video receivers | `gain_percent` | `center_mhz` | `gain_percent`, `center_mhz` |
+
+Each flowgraph class names what it keeps in `SAVED_SETTINGS`, from that
+key to the attribute its setter keeps current, and `save_flowgraph_settings`
+in `apps/utils.py` writes them from the same close hook as the geometry, in
+both launchers. **Only what was changed in the window is written**: each
+launcher takes `flowgraph_settings` as the window opens and passes it as
+`since`, so a control nobody touched is left as the dialog saved it - and
+two windows of one app open at once, in multi mode, cannot put back each
+other's unchanged values. To keep another control, add it to that dict.
+The dialog must read the key and the setter must update the attribute, or
+it saves the value the window started with.
+
+**A saved value has to fit the dialog control that reads it back**, and
+for frequency most of them did not:
+
+- **A window's counter takes two more decimals than its step.** GNU
+  Radio's `Range` sets its counter's precision that way, and a typed value
+  is not snapped to the step. So a window stepping in 0.01 MHz takes
+  433.9234, one stepping in 0.1 takes 533.012, and the NTSC transmitter's,
+  stepping in 0.001, takes 10 Hz. `FrequencyChooser` held 0.1 MHz; it now
+  holds `FREQ_DECIMALS`, five, and its box shows only the digits a value
+  needs - 533.0, 433.92 - so the television dialogs look as they did.
+- **Seven dialogs chose frequency with a whole-MHz `QSlider`** - ASK, FSK,
+  PSK, AM Sine, AM Audio, FM Audio and PPM-OOK - while their windows tune
+  in 0.01. They use `FrequencyChooser` now, as the ATSC, NTSC and FM video
+  dialogs already did. That is a looks change the user chose on
+  2026-09-18, over rounding what the window saved to what the slider
+  could show.
+- **`QSlider.setValue` raises on a float, and `load_config`'s bare
+  `except` then drops every setting after it** - power included, since it
+  is loaded after frequency. The subcarrier dialog kept its whole-MHz
+  slider, because its window steps in whole megahertz, but it loads the
+  frequency through `int(round(...))` all the same.
+
+**Everything that writes an app's file merges into it**, through
+`update_app_config` in `apps/utils.py`. Three things share each file and
+none of them owns it: the dialog writes its settings, the launcher the
+dialog's position, the window its geometry and its controls. Every
+dialog's `save_config` used to write the whole file from its own dict, so
+OK deleted `flowgraph_position` a moment before the window came up to
+read it. This was found on 2026-09-18 while adding the power saving: the
+JSON restore described above had never once run through either launcher.
+A dialog's `load_config` defaults whatever the file lacks, so a key left
+over from an older version does no harm.
+
+`scripts/test_flowgraph_windows.py` sets each window's own controls to a
+new value in their finest digit - 301.0007 on a 0.01 window - and saves
+them the way the launchers do. Only what it changed may be in the file,
+a fresh dialog must open on exactly those values, and its OK must keep
+the window's position. It was also driven through
+`RFbenchToolkit.launch_application` and `apps/_run.py` themselves, in a
+copy of the repo with its own `config/`. That covered a whole-MHz dialog
+turned `FrequencyChooser`, the two RDS apps, a video receiver and three
+video transmitters. Each opened on the power and frequency its window
+closed at, two opens running, and a window closed untouched left another
+save of the frequency alone.
 
 ## How every dialog gets laid out
 

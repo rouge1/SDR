@@ -64,7 +64,7 @@ from apps.fmVideoXmitter import (DEVIATION_MAX_MHZ, DEVIATION_MIN_MHZ,
 from apps.ntscReceiver import CompositeFrameSink, find_player, rx_gain_plan
 from apps.theme import TOKENS
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, SPECTRUM_Y_AXIS,
+                        read_settings, update_app_config, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
 DEFAULT_FORMAT = NTSC.key
@@ -814,9 +814,7 @@ class ConfigDialog(Qt.QDialog):
         }
         if hasattr(self, 'usrp_combo'):
             config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -843,6 +841,11 @@ class ConfigDialog(Qt.QDialog):
 # --------------------------------------------------------------------------
 
 class fmVideoReceiver(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'gain_percent': 'gain_percent',
+                      'center_mhz': 'center_mhz'}
+
     GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
 
     def __init__(self, config_values=None):

@@ -99,7 +99,8 @@ def main(argv=None):
     _init_x11_threads()
 
     from PyQt5 import Qt  # after XInitThreads, before any widget exists
-    from apps.utils import restore_window_geometry, save_window_geometry
+    from apps.utils import (flowgraph_settings, restore_window_geometry,
+                            save_flowgraph_settings, save_window_geometry)
 
     # argv[:1] so the app module never re-parses our arguments as Qt's.
     qapp = Qt.QApplication(sys.argv[:1])
@@ -120,9 +121,11 @@ def main(argv=None):
         restore_window_geometry(tb, args.module, qapp)
     if hasattr(tb, 'closeEvent'):
         original_close_event = tb.closeEvent
+        opened_with = flowgraph_settings(tb)
 
         def closed(event):
             save_window_geometry(tb, args.module)
+            save_flowgraph_settings(tb, args.module, since=opened_with)
             original_close_event(event)
 
         tb.closeEvent = closed

@@ -50,8 +50,9 @@ from PyQt5.QtCore import pyqtSlot #type: ignore
 
 # Local imports
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
+                        read_settings, update_app_config, power_percent,
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
+                        FrequencyChooser)
 
 class ConfigDialog(Qt.QDialog):
     def __init__(self, parent=None):
@@ -116,17 +117,12 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
-        self.cf_layout = Qt.QHBoxLayout()
-        self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.cf_slider.setMinimum(50)
-        self.cf_slider.setMaximum(2200)
-        self.cf_slider.setValue(300)
-        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
-        self.cf_slider.valueChanged.connect(
-            lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
-        self.cf_layout.addWidget(self.cf_label)
-        self.cf_layout.addWidget(self.cf_slider)
-        self.layout.addLayout(self.cf_layout)
+        # Not a whole-MHz slider: the window tunes far finer, and what it
+        # was left at comes back here (SAVED_SETTINGS), so this has to
+        # hold it exactly - see FrequencyChooser.
+        self.cf_chooser = FrequencyChooser(minimum=50.0, maximum=2200.0,
+                                           value=300.0)
+        self.layout.addWidget(self.cf_chooser)
 
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
@@ -164,7 +160,7 @@ class ConfigDialog(Qt.QDialog):
                     config = json.load(f)
                     
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
-                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.cf_chooser.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.psk_combo.setCurrentIndex(config.get('psk_mode', 0))
                 self.sym_rate.setValue(config.get('symbol_rate', 100))
@@ -178,14 +174,13 @@ class ConfigDialog(Qt.QDialog):
     def save_config(self):
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
-            'center_freq': self.cf_slider.value(),
+            'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'psk_mode': self.psk_combo.currentIndex(),
             'symbol_rate': self.sym_rate.value()
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     # Modify accept method to save config
     def accept(self):
@@ -205,13 +200,17 @@ class ConfigDialog(Qt.QDialog):
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
-            'cf': self.cf_slider.value(),
+            'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
             'pskMode': self.psk_combo.currentIndex() + 1,  # 1=BPSK, 2=QPSK, 3=8PSK
             'symRate': self.sym_rate.value()
         }
 
 class pskGenerator(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_level': 'rfPwr',
+                      'center_freq': 'cf'}
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "PSK Signal Generator", catch_exceptions=True)

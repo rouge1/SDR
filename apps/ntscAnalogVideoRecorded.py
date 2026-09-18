@@ -54,7 +54,7 @@ from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, dat_files,
                               dat_resample_ratio, has_audio, have_ffmpeg,
                               ntsc_source, video_files)
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, power_percent,
+                        read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
@@ -457,9 +457,7 @@ class ConfigDialog(Qt.QDialog):
             'polarity': self.polarity_combo.currentData(),
         }
 
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -490,6 +488,10 @@ class ConfigDialog(Qt.QDialog):
         }
 
 class ntscAnalogVideoRecorded(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_level': 'rfPwr',
+                      'center_freq': 'cf'}
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "NTSC Video Transmitter", catch_exceptions=True)

@@ -49,9 +49,47 @@ def align_output_buffer(block, port, item_size):
 
 # --- Tuning -----------------------------------------------------------------
 
-#: The resolution every frequency control works in. 0.1 MHz is finer than
-#: any radio here needs to be set and keeps the slider a manageable length.
+#: The step every frequency control moves by - an arrow key, a notch of
+#: the slider. 0.1 MHz keeps the slider a manageable length.
 FREQ_STEP_MHZ = 0.1
+
+#: How finely a frequency is *held*: five decimals of a megahertz, 10 Hz.
+#: A typed or saved value keeps every digit up to this, whatever the step.
+#: Five because that is the finest any flowgraph window's own counter
+#: takes - GNU Radio's ``Range`` gives its counter two decimals more than
+#: its step, and the NTSC transmitter's steps in 0.001 - so a frequency
+#: tuned in a window comes back in its dialog exactly
+#: (`save_flowgraph_settings`). Held to 0.1 MHz, as it once was, 433.92
+#: came back as 433.9.
+FREQ_DECIMALS = 5
+
+
+class _TrimmedSpinBox(Qt.QDoubleSpinBox):
+    """A spin box that shows only the decimals its value needs.
+
+    All five always shown would put 533.00000 in front of anyone tuning a
+    television channel; this shows 533.0, and 433.92 as 433.92. At least
+    one decimal stays, as the box always had. Typing takes all five.
+    """
+
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        point = self.locale().decimalPoint()
+        if point in text:
+            whole, _, fraction = text.partition(point)
+            text = whole + point + (fraction.rstrip('0') or '0')
+        return text
+
+    def sizeHint(self):
+        # Wide enough for every digit it can hold, not only the trimmed
+        # maximum Qt measures - or a typed 433.92345 scrolls out of sight.
+        hint = super().sizeHint()
+        metrics = self.fontMetrics()
+        full = self.locale().toString(self.maximum(), 'f', self.decimals())
+        hint.setWidth(hint.width() + metrics.horizontalAdvance(full)
+                      - metrics.horizontalAdvance(
+                          self.textFromValue(self.maximum())))
+        return hint
 
 
 class FrequencyChooser(Qt.QWidget):
@@ -67,7 +105,7 @@ class FrequencyChooser(Qt.QWidget):
     So there are three ways in, and they stay in step with each other:
 
     - a **spin box**, which is the only one that can be exact, and which
-      takes a typed number;
+      takes a typed number to ``FREQ_DECIMALS`` places;
     - a **channel picker**, when the caller passes a channel plan, because
       "UHF 24" is how anyone actually thinks about a television channel;
     - a **slider** for sweeping, now stepping in tenths of a megahertz,
@@ -106,8 +144,8 @@ class FrequencyChooser(Qt.QWidget):
 
         row = Qt.QHBoxLayout()
         row.addWidget(Qt.QLabel(label))
-        self.spin = Qt.QDoubleSpinBox()
-        self.spin.setDecimals(1)
+        self.spin = _TrimmedSpinBox()
+        self.spin.setDecimals(FREQ_DECIMALS)
         self.spin.setSingleStep(FREQ_STEP_MHZ)
         self.spin.setRange(self._min, self._max)
         # Without this the box emits on every keystroke, so typing "533"
@@ -137,10 +175,14 @@ class FrequencyChooser(Qt.QWidget):
 
     def setValue(self, mhz):
         try:
-            mhz = round(min(max(float(mhz), self._min), self._max), 1)
+            mhz = round(min(max(float(mhz), self._min), self._max),
+                        FREQ_DECIMALS)
         except (TypeError, ValueError):
             return
-        if self._value is not None and abs(mhz - self._value) < FREQ_STEP_MHZ / 2:
+        # Half the finest digit, not half a step: 433.92 after 433.9 is a
+        # change.
+        if self._value is not None and \
+                abs(mhz - self._value) < 0.5 * 10 ** -FREQ_DECIMALS:
             return
         self._value = mhz
         self._refresh()
@@ -271,6 +313,98 @@ def _app_config_path(module_name, config_dir='config'):
     return os.path.join(config_dir, f"{module_name}_config.json")
 
 
+def update_app_config(path, changes):
+    """Write these keys into an app's JSON config, keeping every other one.
+
+    **Three things share each app's file** and none of them owns it: the
+    config dialog writes its settings there, the launcher the dialog's
+    position, and the flowgraph window its geometry and whatever its
+    controls were left at (`save_flowgraph_settings`). Every dialog used to
+    write the whole file from its own dict, so pressing OK threw away the
+    window's ``flowgraph_position`` a moment before the window came up to
+    read it - and the position never came back. A file that cannot be read
+    is started afresh rather than stopping the save.
+    """
+    config = {}
+    try:
+        with open(path) as fh:
+            config = json.load(fh)
+        if not isinstance(config, dict):
+            config = {}
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"Could not read {path}, so it is being started afresh: {exc}",
+              file=sys.stderr)
+        config = {}
+    config.update(changes)
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as fh:
+        json.dump(config, fh, indent=4)
+    os.replace(tmp, path)
+    return config
+
+
+def flowgraph_settings(window):
+    """What the controls a flowgraph names in ``SAVED_SETTINGS`` stand at.
+
+    Keyed by the dialog's config key. A float is rounded to 1 Hz of a
+    megahertz, which clears the float noise a counter's arrows leave -
+    433.93000000000006 - and one that is then whole is written as an int,
+    as the dialog's own sliders write it.
+    """
+    values = {}
+    for key, attribute in (getattr(window, 'SAVED_SETTINGS', None) or {}).items():
+        value = getattr(window, attribute, None)
+        if value is None:
+            continue
+        if isinstance(value, float):
+            value = round(value, 6)
+            if value.is_integer():
+                value = int(value)
+        values[key] = value
+    return values
+
+
+def save_flowgraph_settings(window, module_name, config_dir='config',
+                            since=None):
+    """Keep what a flowgraph window's own controls were left at.
+
+    Every window has a power control of its own - gain, on a receiver - and
+    a centre frequency, and a change made there used to last only as long
+    as the window: the dialog opened next time on the value it had been
+    given, and pressing OK put that back on the air. Each flowgraph class
+    names what to keep in ``SAVED_SETTINGS``, from the dialog's config key
+    to the attribute the window's setter keeps current -
+    ``{'power_level': 'rfPwr', 'center_freq': 'cf'}`` on a transmitter - so
+    the dialog, which already reads those keys, opens on the window's last
+    values.
+
+    ``since`` is ``flowgraph_settings`` as the window opened, and only
+    what has changed from it is written. What was not touched is left as
+    the dialog saved it - so two windows of one app open at once, in multi
+    mode, cannot put back each other's unchanged values. Saved from the
+    close hook both launchers put on the window, beside
+    ``save_window_geometry``.
+    """
+    changes = flowgraph_settings(window)
+    if since is not None:
+        changes = {key: value for key, value in changes.items()
+                   if since.get(key) != value}
+    if not changes:
+        return False
+    try:
+        update_app_config(_app_config_path(module_name, config_dir), changes)
+        return True
+    except Exception as exc:
+        print(f"Could not save the window's settings for {module_name}: "
+              f"{exc}", file=sys.stderr)
+        return False
+
+
 def normal_geometry(window):
     """Where a window sits when it is not maximized, as x, y, w, h.
 
@@ -365,19 +499,15 @@ def save_window_geometry(window, module_name, config_dir='config',
     """
     path = _app_config_path(module_name, config_dir)
     try:
-        config = {}
+        position = {}
         if os.path.exists(path):
             with open(path) as fh:
-                config = json.load(fh)
-        position = dict(config.get(key) or {})
+                position = dict(json.load(fh).get(key) or {})
         normal = normal_geometry(window)
         if normal is not None:
             position.update(zip(('x', 'y', 'width', 'height'), normal))
         position['maximized'] = window.isMaximized()
-        config[key] = position
-        os.makedirs(config_dir, exist_ok=True)
-        with open(path, 'w') as fh:
-            json.dump(config, fh, indent=4)
+        update_app_config(path, {key: position})
         return True
     except Exception as exc:
         print(f"Could not save the window position for {module_name}: {exc}",

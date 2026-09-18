@@ -37,7 +37,7 @@ from apps.atsc_rx_core import (Afc, SYMBOL_RATE, TsAnalyzer,
                                tv_channel_items)
 from apps.theme import TOKENS
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, SPECTRUM_Y_AXIS,
+                        read_settings, update_app_config, SPECTRUM_Y_AXIS,
                         FrequencyChooser, align_output_buffer)
 
 # Each radio's own rate, chosen from what it will actually accept:
@@ -519,9 +519,7 @@ class ConfigDialog(Qt.QDialog):
         }
         if hasattr(self, 'usrp_combo'):
             config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -574,6 +572,11 @@ def find_player():
 
 
 class atscReceiver(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'gain_percent': 'gain_percent',
+                      'center_mhz': 'center_mhz'}
+
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "ATSC Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)

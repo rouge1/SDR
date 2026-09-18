@@ -45,8 +45,9 @@ from PyQt5.QtCore import pyqtSlot # type: ignore
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, power_percent,
-                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
+                        read_settings, update_app_config, power_percent,
+                        resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
+                        FrequencyChooser)
 
 def get_wav_files(settings):
     """Get list of WAV and MP3 files from media directory"""
@@ -138,17 +139,12 @@ class ConfigDialog(Qt.QDialog):
         self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
-        self.cf_layout = Qt.QHBoxLayout()
-        self.cf_slider = Qt.QSlider(QtCore.Qt.Horizontal)
-        self.cf_slider.setMinimum(50)
-        self.cf_slider.setMaximum(2200)
-        self.cf_slider.setValue(300)
-        self.cf_label = Qt.QLabel("Center Frequency: 300 MHz")
-        self.cf_slider.valueChanged.connect(
-            lambda v: self.cf_label.setText(f"Center Frequency: {v} MHz"))
-        self.cf_layout.addWidget(self.cf_label)
-        self.cf_layout.addWidget(self.cf_slider)
-        self.layout.addLayout(self.cf_layout)
+        # Not a whole-MHz slider: the window tunes far finer, and what it
+        # was left at comes back here (SAVED_SETTINGS), so this has to
+        # hold it exactly - see FrequencyChooser.
+        self.cf_chooser = FrequencyChooser(minimum=50.0, maximum=2200.0,
+                                           value=300.0)
+        self.layout.addWidget(self.cf_chooser)
 
     def create_power_control(self):
         self.pwr_layout = Qt.QHBoxLayout()
@@ -261,7 +257,7 @@ class ConfigDialog(Qt.QDialog):
                     config = json.load(f)
 
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
-                self.cf_slider.setValue(config.get('center_freq', 300))
+                self.cf_chooser.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
                 self.sideband_combo.setCurrentIndex(config.get('sideband_index', 0))
@@ -293,7 +289,7 @@ class ConfigDialog(Qt.QDialog):
     def save_config(self):
         config = {
             'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
-            'center_freq': self.cf_slider.value(),
+            'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'carrier_index': self.carrier_combo.currentIndex(),
             'sideband_index': self.sideband_combo.currentIndex(),
@@ -302,8 +298,7 @@ class ConfigDialog(Qt.QDialog):
             'sine_freq': self.sine_slider.value(),
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -336,7 +331,7 @@ class ConfigDialog(Qt.QDialog):
             'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'mikePort': 2020 + ipNum,
-            'cf': self.cf_slider.value(),
+            'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
             'carrierDefault': self.carrier_combo.currentIndex(),
             'sidebandDefault': sidebandDefault,
@@ -347,6 +342,10 @@ class ConfigDialog(Qt.QDialog):
         }
 
 class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_level': 'rfPwr',
+                      'center_freq': 'centerFreq'}
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "AM Audio Signal Generator", catch_exceptions=True)

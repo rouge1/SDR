@@ -72,7 +72,7 @@ fixed.
 | [fm-video.md](devnotes/fm-video.md) | `fmVideoXmitter`, `fmVideoReceiver`, `fm_video_core` | the FPV and F.405 profiles, the receiver as a measuring instrument, and a real FPV transmitter measured |
 | [media.md](devnotes/media.md) | `media`, `audio_file`, any file picker | how media is found, MP3, song tags, and plain-ASCII RDS text |
 | [radios.md](devnotes/radios.md) | `vsg_sink`, `bb60_source` | the VSG60's and the BB60D's limits, locks, gain and traps |
-| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back, dialog layout, the one theme for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
+| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back and what their controls were left at, dialog layout, the one theme for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
 | [web.md](devnotes/web.md) | `web/`, `apps/_run.py`, `scripts/probe_radio.py` | the browser front end, and the Stop that does not stop |
 | [machines.md](devnotes/machines.md) | `windows/`, `linux/environment.yml`, anything run on TVAdemo or the Windows laptop | TVAdemo, running on Windows, and building the environment on a new Linux machine |
 
@@ -118,6 +118,11 @@ damage something. Each links to the why.
   its `closeEvent` saves.
   [ui](devnotes/ui.md#how-every-dialog-gets-laid-out),
   [ui](devnotes/ui.md#the-flowgraph-windows-wear-it-too)
+- **An app's `config/<module>_config.json` is written only through
+  `update_app_config`**, which merges. The dialog, the launcher and the
+  flowgraph window each keep something in it, and a dialog that wrote the
+  whole file deleted the window's saved position every time OK was pressed.
+  [ui](devnotes/ui.md#what-the-windows-own-controls-were-left-at)
 - **`apply_flowgraph_theme(self)` comes first in a flowgraph's `__init__`**,
   and no flowgraph stylesheet sets a font on `QWidget` or `QLabel`.
   [ui](devnotes/ui.md#the-flowgraph-windows-wear-it-too)
@@ -155,10 +160,10 @@ This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applic
 ### App Module Contract
 
 Every module in `apps/` must implement:
-- `ConfigDialog(QDialog)` — shows configuration UI; must implement `get_values()` returning a dict of config params; saves/loads its own per-app JSON config to `config/<module_name>_config.json`.
+- `ConfigDialog(QDialog)` — shows configuration UI; must implement `get_values()` returning a dict of config params; saves/loads its own per-app JSON config to `config/<module_name>_config.json`, saving through `update_app_config` so it keeps what the launcher and the window put there.
 - `main(top_block_cls=..., options=None, app=None, config_values=None)` — creates and starts the GNU Radio `top_block`, returns the `top_block` instance (not `app.exec_()`).
 
-The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block` and `Qt.QWidget`, and its `__init__` calls `apply_flowgraph_theme(self)` before it builds any widget.
+The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block` and `Qt.QWidget`, and its `__init__` calls `apply_flowgraph_theme(self)` before it builds any widget. Its `SAVED_SETTINGS` names the controls in the window whose last value goes back into the app's config when it closes, if it was changed there - power (gain on a receiver) and centre frequency - under the key the dialog reads, so the dialog opens on it next time.
 
 ### Shared Utilities (`apps/utils.py`)
 
@@ -183,7 +188,7 @@ All settings are stored in `config/window_settings.json`:
 - `radio_mode` — `"single"` or `"multi"` (multi requires ≥2 IP addresses).
 - `radio_type` — `"hackrf"`, `"usrp"`, or `"vsg"`.
 
-Per-app configs are saved separately as `config/<module_name>_config.json`.
+Per-app configs are saved separately as `config/<module_name>_config.json`: the dialog's settings, `dialog_position`, `flowgraph_position`, and whatever the window's `SAVED_SETTINGS` names, all merged in by `update_app_config`.
 
 ### USRP / Hardware
 
@@ -271,8 +276,12 @@ frequency and sample-rate callbacks work through the existing HackRF path.
 
 1. Create `apps/<module_name>.py` implementing `ConfigDialog` and `main()`,
    with `apply_flowgraph_theme(self)` as the first thing the flowgraph's
-   `__init__` does, and add it to `MODULES` in
-   `scripts/test_flowgraph_windows.py`.
+   `__init__` does, `SAVED_SETTINGS` on the flowgraph class naming its
+   power and frequency controls - with a dialog control fine enough to
+   read back what the window saves; `FrequencyChooser` for frequency - and
+   `save_config` writing through `update_app_config`.
+   Add it to `MODULES` in `scripts/test_flowgraph_windows.py`, which checks
+   all three.
 2. Add an icon to `icons/`.
 3. Add a row to `APP_TILES` in `RFbenchToolkit.py`, saying whether the
    app transmits or receives. To give an existing app a second side instead

@@ -38,7 +38,7 @@ from PyQt5.QtCore import pyqtSlot  # type: ignore
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, power_percent,
+                        read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
 
@@ -224,7 +224,11 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                 if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
-                self.cf_slider.setValue(config.get('center_freq', 315))
+                # An int: the window saves what it was left at here,
+                # and a QSlider refuses a float - which load_config's
+                # bare except turns into losing every later setting.
+                self.cf_slider.setValue(
+                    int(round(float(config.get('center_freq', 315)))))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.submod_combo.setCurrentIndex(config.get('submod', 0))
                 self.scfreq_slider.setValue(config.get('scfreq', 20))
@@ -262,8 +266,7 @@ class ConfigDialog(Qt.QDialog):
             'audio_file': self.audio_combo.currentData()
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -293,6 +296,11 @@ class ConfigDialog(Qt.QDialog):
         return values
 
 class subcarrierRecordedAudio(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_level': 'rfPwr',
+                      'center_freq': 'cf'}
+
     def __init__(self, config_values=None):
         if config_values is None:
             config_dialog = ConfigDialog()

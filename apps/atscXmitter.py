@@ -44,7 +44,7 @@ from apps.atsc_source import (COLOUR_BARS, TransportStream, atsc_video_files,
                               describe, needs_encoding)
 from apps.ntsc_source import have_ffmpeg
 from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
-                        read_settings, power_percent,
+                        read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         adopt_legacy_config, FrequencyChooser)
 
@@ -271,8 +271,7 @@ class ConfigDialog(Qt.QDialog):
             'video_file': os.path.basename(path) if path else None
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        update_app_config(self.config_file, config)
 
     def accept(self):
         self.save_config()
@@ -298,6 +297,10 @@ class ConfigDialog(Qt.QDialog):
         }
 
 class atscXmitter2(gr.top_block, Qt.QWidget):
+    # What this window's own controls change that its dialog should
+    # open on next time - see apps/utils.py: save_flowgraph_settings.
+    SAVED_SETTINGS = {'power_level': 'rfPwr',
+                      'center_freq': 'cf'}
 
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "ATSC Video Transmitter", catch_exceptions=True)

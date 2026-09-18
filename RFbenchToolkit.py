@@ -40,8 +40,9 @@ from apps import theme
 from apps.utils import (apply_launcher_theme, apply_dark_theme,
                        centre_on, DialogGeometryTracker,
                        geometry_is_reachable, maximize_when_shown,
-                       normal_geometry, read_settings,
-                       restore_window_geometry, save_window_geometry)
+                       flowgraph_settings, normal_geometry, read_settings,
+                       restore_window_geometry, save_flowgraph_settings,
+                       save_window_geometry)
 from apps.settings_dialog import SettingsDialog
 
 # Which way each radio goes. Two of the four are one-way instruments, and
@@ -1130,10 +1131,17 @@ class RFbenchToolkit(QMainWindow):
 
                 if hasattr(tb, 'closeEvent'):
                     original_close_event = tb.closeEvent
+                    # What the window's power and frequency start at, so
+                    # only what is changed in it gets saved.
+                    opened_with = flowgraph_settings(tb)
                     def new_close_event(event):
                         # Read the geometry before the app's own closeEvent,
-                        # which stops the flowgraph and accepts the event.
+                        # which stops the flowgraph and accepts the event -
+                        # and what its own controls were left at, so the
+                        # dialog opens on that next time.
                         save_window_geometry(tb, module_name)
+                        save_flowgraph_settings(tb, module_name,
+                                                since=opened_with)
                         original_close_event(event)
                         # Bringing the launcher back is single mode's job; in
                         # multi mode it never went away.

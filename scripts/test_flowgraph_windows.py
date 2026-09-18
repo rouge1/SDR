@@ -26,6 +26,13 @@ What it checks, on the window as rendered:
   canvas, the WCAG figure for a graphic that has to be made out.
 - **Every label can be read**: 4.5:1 against what is behind it, including
   the receivers' own status colours.
+- **The power and frequency set in the window are what the dialog opens
+  on next time** - gain, on a receiver. The window's own controls are set
+  as a user would set them, to their finest digit, and saved as the
+  launchers save them on close: only what changed may be written, and a
+  fresh dialog must read it back exactly. Its OK must then keep the
+  window's position, which lives in the same file. Into a throwaway
+  folder, never the real ``config/``.
 
 Then every app again with no media folder, which is how a machine starts
 before Settings has been opened: each must still build its flowgraph and
@@ -79,6 +86,25 @@ TEXT_CONTRAST = 4.5
 #: At most this share of a window may be near white. Text in the theme's
 #: ink is near white, so it is not zero; an unthemed panel is far more.
 BRIGHT_SHARE = 0.03
+
+#: The window's control behind each attribute a ``SAVED_SETTINGS`` keeps -
+#: a RangeWidget on the older windows, a plain slider or spin box on the
+#: rest. The first of the names that the window has is the one.
+WINDOW_CONTROL = {
+    'rfPwr': ('_rfPwr_win',), 'power_percent': ('pwr_slider',),
+    'gain_percent': ('gain_slider',),
+    'cf': ('_cf_win', '_centerFrequency_win'),
+    'centerFreq': ('_centerFreq_win',),
+    'center_mhz': ('freq_spin',), 'freq_mhz': ('freq_spin',),
+}
+
+#: The dialog's control that reads each saved key back, the same way.
+DIALOG_CONTROL = {
+    'power_level': ('pwr_slider',), 'power_percent': ('pwr_slider',),
+    'gain_percent': ('gain_slider',),
+    'center_freq': ('cf_chooser', 'cf_slider'), 'center_mhz': ('cf_chooser',),
+    'frequency_mhz': ('freq_spin',),
+}
 
 
 def contrast(a, b):
@@ -210,7 +236,8 @@ def child(name, save, no_media=False):
         app.processEvents()
         time.sleep(0.02)
 
-    problems = [] if no_media else inspect(Qt, tb, name, save)
+    problems = [] if no_media else (inspect(Qt, tb, name, save)
+                                    + settings_round_trip(Qt, module, tb, name))
     try:
         tb.stop()
         tb.wait()
@@ -341,6 +368,99 @@ def inspect(Qt, tb, name, save):
         problems.append(f"the application font is "
                         f"{Qt.QApplication.font().family()}, so the plots' "
                         f"axis titles are not in {theme.TOKENS['f_ui']}")
+    return problems
+
+
+def first_of(owner, names):
+    return next((getattr(owner, n) for n in names if hasattr(owner, n)), None)
+
+
+def nudged(Qt, control, current):
+    """A value the control can take that differs from ``current`` down to
+    its finest digit, so that a save or a dialog that rounds is caught."""
+    if isinstance(control, Qt.QSlider):
+        return 63 if round(current) == 37 else 37
+    places = control.decimals()
+    step = 10 ** -places if places else 1
+    want = current + 1 + 7 * step
+    if want > control.maximum():
+        want = current - 1 - 7 * step
+    return round(want, places)
+
+
+def settings_round_trip(Qt, module, tb, name):
+    """What the window's own controls were left at, back in its dialog."""
+    import json
+    import tempfile
+    from apps.utils import (FLOWGRAPH_POSITION, flowgraph_settings,
+                            save_flowgraph_settings)
+    saved = getattr(tb, 'SAVED_SETTINGS', None)
+    if not saved:
+        return ["the window has no SAVED_SETTINGS, so a power change made "
+                "in it is lost when it closes"]
+    problems = []
+    opened = flowgraph_settings(tb)
+    moved = {}
+
+    def move(key, attribute):
+        control = first_of(tb, WINDOW_CONTROL.get(attribute, ()))
+        if control is not None and \
+                not isinstance(control, (Qt.QSlider, Qt.QDoubleSpinBox)):
+            control = (control.findChild(Qt.QDoubleSpinBox)
+                       or control.findChild(Qt.QSlider))
+        if control is None:
+            problems.append(f"no control in the window sets {attribute}")
+            return
+        want = nudged(Qt, control, float(getattr(tb, attribute)))
+        control.setValue(want)
+        if abs(float(getattr(tb, attribute)) - want) > 1e-9:
+            problems.append(f"setting the window's control to {want} left "
+                            f"{attribute} at {getattr(tb, attribute)}")
+        moved[key] = want
+
+    with tempfile.TemporaryDirectory() as folder:
+        # Only what was changed in the window is saved: move the first,
+        # and the rest must stay out of the file.
+        (first, attribute), *rest = saved.items()
+        move(first, attribute)
+        partial = os.path.join(folder, 'partial')
+        save_flowgraph_settings(tb, name, config_dir=partial, since=opened)
+        with open(os.path.join(partial, f'{name}_config.json')) as fh:
+            written = set(json.load(fh))
+        if written != {first}:
+            problems.append(f"with only {first} changed, the window saved "
+                            f"{sorted(written)}")
+        for key, attribute in rest:
+            move(key, attribute)
+
+        path = os.path.join(folder, f'{name}_config.json')
+        position = {'x': 10, 'y': 20, 'width': 900, 'height': 600,
+                    'maximized': True}
+        with open(path, 'w') as fh:
+            json.dump({FLOWGRAPH_POSITION: position}, fh)
+        save_flowgraph_settings(tb, name, config_dir=folder, since=opened)
+        with open(path) as fh:
+            config = json.load(fh)
+        for key, want in moved.items():
+            if not isinstance(config.get(key), (int, float)) or \
+                    abs(config[key] - want) > 1e-9:
+                problems.append(f"the window saved {key} as "
+                                f"{config.get(key)!r}, not {want}")
+
+        dialog = module.ConfigDialog()
+        dialog.config_dir, dialog.config_file = folder, path
+        dialog.load_config()
+        for key, want in moved.items():
+            got = first_of(dialog, DIALOG_CONTROL.get(key, ())).value()
+            if abs(float(got) - want) > 1e-9:
+                problems.append(f"the dialog opened with {key} at {got}, "
+                                f"not the window's {want}")
+        dialog.save_config()
+        with open(path) as fh:
+            if json.load(fh).get(FLOWGRAPH_POSITION) != position:
+                problems.append("the dialog's OK threw away the window's "
+                                "position")
+        dialog.deleteLater()
     return problems
 
 
