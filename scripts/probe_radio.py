@@ -2,7 +2,7 @@
 """Ask whether a radio is present, in a process that then goes away.
 
 Enumerating a HackRF leaves a USB handle open in whoever did the asking.
-CLAUDE.md records what that costs: a launcher sitting on a config dialog
+devnotes/ui.md records what that costs: a launcher sitting on a config dialog
 still holds ``/dev/bus/usb/...``, so ``SoapySDR.Device.enumerate`` returns
 nothing in the app launched next and it fails with ``Device::make() no
 match``. The desktop launcher gets away with it because it is the same
