@@ -132,12 +132,12 @@ def launcher_literal(name):
     instead. That also copes with shapes a regular expression reads wrongly,
     such as a flip tile's nested list of faces.
     """
-    src = open(os.path.join(ROOT, 'gnuradio_launcher.py')).read()
+    src = open(os.path.join(ROOT, 'RFbenchToolkit.py')).read()
     for node in ast.parse(src).body:
         if isinstance(node, ast.Assign) and any(
                 getattr(t, 'id', None) == name for t in node.targets):
             return ast.literal_eval(node.value)
-    raise RuntimeError(f"no {name} in gnuradio_launcher.py")
+    raise RuntimeError(f"no {name} in RFbenchToolkit.py")
 
 
 RADIO_DIRECTIONS = launcher_literal('RADIO_DIRECTIONS')

@@ -188,7 +188,7 @@ Or activate the environment manually first:
 
 ```sh
 conda activate gnu
-python gnuradio_launcher.py
+python RFbenchToolkit.py
 ```
 
 > `linux/start_app.sh` assumes Miniconda is installed at `~/miniconda3`. If your installation is elsewhere (e.g., `/opt/miniconda3`), edit the `source` line in that script accordingly.
@@ -259,7 +259,7 @@ SDR/
 ├── config/                       # Auto-created; gitignored
 │   └── window_settings.json      # Global settings (radio type, IPs, media dir)
 ├── vendor/                       # Gitignored; holds libvsg_api.so.1 if used
-└── gnuradio_launcher.py          # The desktop launcher
+└── RFbenchToolkit.py             # The desktop launcher
 ```
 
 ---
@@ -308,7 +308,7 @@ Directory** set in Settings.
    - `ConfigDialog(QDialog)` — configuration UI; must implement `get_values()` returning a dict
    - `main(top_block_cls=..., options=None, app=None, config_values=None)` — creates and starts the GNU Radio flowgraph, returns the `top_block` instance
 2. Add an icon to `icons/`
-3. Add a row to `APP_TILES` near the top of `gnuradio_launcher.py` -
+3. Add a row to `APP_TILES` near the top of `RFbenchToolkit.py` -
    `(row, column, [(label, module, icon, 'tx' or 'rx')])`. To give an existing
    app its other end, such as a receiver for a transmitter, add a second face
    to that tile's list instead of a new row. Both front ends read this table

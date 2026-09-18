@@ -17,7 +17,7 @@ Qt Style Sheets are not CSS, and four of the things the page does have no
 QSS equivalent at all - custom properties, ``object-fit: cover`` with
 ``filter: saturate()``, ``letter-spacing``, and the ``::after`` rule that
 runs a hairline off the end of a bank name. Those are done in Python, in
-``gnuradio_launcher.py``; everything that *is* expressible lives here.
+``RFbenchToolkit.py``; everything that *is* expressible lives here.
 """
 
 import os

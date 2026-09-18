@@ -64,7 +64,7 @@ def main():
     # Both front ends read these out of the launcher's source; the server
     # parses them with ast, so they have to stay plain literals.
     import ast
-    source = open(os.path.join(ROOT, 'gnuradio_launcher.py')).read()
+    source = open(os.path.join(ROOT, 'RFbenchToolkit.py')).read()
     found = {}
     for node in ast.parse(source).body:
         if isinstance(node, ast.Assign):

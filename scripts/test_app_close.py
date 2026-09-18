@@ -95,7 +95,7 @@ def child(name):
         launcher.hide()
         tb = module.main(top_block_cls=StandIn, app=app, config_values={})
         state['returned'] = type(tb).__name__
-        # As gnuradio_launcher.py launch_application does, in single mode.
+        # As RFbenchToolkit.py launch_application does, in single mode.
         if hasattr(tb, 'closeEvent'):
             original_close_event = tb.closeEvent
 

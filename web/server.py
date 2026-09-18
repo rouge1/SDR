@@ -9,7 +9,7 @@ dialog are the ones that already exist, unchanged, and they open on the
 display this server can reach - a browser on a phone picks and configures,
 the window comes up on the bench monitor.
 
-``gnuradio_launcher.py`` is untouched and still works; this is a second
+``RFbenchToolkit.py`` is untouched and still works; this is a second
 front end onto the same tables and the same settings file, not a
 replacement.
 
@@ -74,13 +74,13 @@ def launcher_literal(name):
     same tables the same way and for the same reason - keep APP_TILES a
     plain literal and both keep working.
     """
-    with open(os.path.join(ROOT, 'gnuradio_launcher.py')) as fh:
+    with open(os.path.join(ROOT, 'RFbenchToolkit.py')) as fh:
         src = fh.read()
     for node in ast.parse(src).body:
         if isinstance(node, ast.Assign) and any(
                 getattr(t, 'id', None) == name for t in node.targets):
             return ast.literal_eval(node.value)
-    raise RuntimeError(f"no {name} in gnuradio_launcher.py")
+    raise RuntimeError(f"no {name} in RFbenchToolkit.py")
 
 
 def banks():

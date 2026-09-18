@@ -9,7 +9,7 @@ conda activate gnu
 python web/server.py            # http://127.0.0.1:8730
 ```
 
-`gnuradio_launcher.py` is untouched and still works. This is a second front
+`RFbenchToolkit.py` is untouched and still works. This is a second front
 end onto the same `APP_TILES` table and the same
 `config/window_settings.json`, not a replacement - run either, or both.
 

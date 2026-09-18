@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Or directly (requires the 'gnu' conda environment to be active):
 conda activate gnu
-python gnuradio_launcher.py
+python RFbenchToolkit.py
 ```
 
 The app requires a display (X11/Wayland) and either a HackRF One (USB) or Ettus USRP (network) connected. Radio type is selected in the Settings dialog.
@@ -32,7 +32,7 @@ python web/server.py                 # http://127.0.0.1:8730
 ## Where things live: linux/ and windows/
 
 Every line of Python runs on both operating systems, so the code is not
-split by OS at all: `gnuradio_launcher.py`, `apps/`, `web/`, `icons/`,
+split by OS at all: `RFbenchToolkit.py`, `apps/`, `web/`, `icons/`,
 `fonts/` and `scripts/` are shared, and a difference between the two is a
 branch at run time in the one place it matters (`vsg_sink.py`'s library
 search, say), never a second copy of a file. Only the edges differ - how
@@ -60,7 +60,7 @@ This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applic
 
 ### Launch Flow
 
-1. `gnuradio_launcher.py` — Main window (`GNURadioLauncher`). Dynamically imports app modules from `apps/` using `importlib`.
+1. `RFbenchToolkit.py` — Main window (`GNURadioLauncher`). Dynamically imports app modules from `apps/` using `importlib`.
 2. When a button is clicked → `launch_application(module_name)` instantiates the module's `ConfigDialog` → user configures parameters → on OK, calls `module.main(app=..., config_values=...)`.
 3. In **single mode**: launcher hides itself while the app runs, then shows again when the app closes. In **multi mode**: launcher stays visible.
 
@@ -1196,7 +1196,7 @@ video in the repo and are worth keeping as a reference.
 
 ### The launcher grid, and tiles that flip
 
-Every tile is declared in `APP_TILES` at the top of `gnuradio_launcher.py`
+Every tile is declared in `APP_TILES` at the top of `RFbenchToolkit.py`
 as `(row, column, [face, ...])`, where a face is
 `(label, module, icon, direction)` and direction is `'tx'` or `'rx'`.
 A tile with more than one face is a **flip tile**: a badge in its corner
@@ -1927,7 +1927,7 @@ x1161 at (215, 258) and so on. Two things stopped them coming back:
   size once the widgets are in.
 
 So the geometry is applied *after* `main()` has shown the window, by
-whichever launcher started it - `gnuradio_launcher.py` for the desktop
+whichever launcher started it - `RFbenchToolkit.py` for the desktop
 grid, `apps/_run.py` for the browser - and saved from the close-event
 wrapper the launcher already installs, read before the app's own
 `closeEvent` stops the flowgraph. **No app needed changing**, and each
@@ -2099,7 +2099,7 @@ it (see its notes); nothing else did.
 starts each app as its own process. The flowgraph and its configuration
 dialog are the ones that already exist, unchanged: this is a second front end
 onto the same `APP_TILES` table and the same `window_settings.json`, not a
-replacement, and `gnuradio_launcher.py` is untouched. Run either, or both.
+replacement, and `RFbenchToolkit.py` is untouched. Run either, or both.
 
 ```sh
 conda activate gnu
@@ -2238,7 +2238,7 @@ that stops the two drifting, which is the whole point of the arrangement.
 
 **A Qt stylesheet is not CSS, and four of the things the page does have no
 QSS equivalent at all.** They are done to the pixels instead, in
-`gnuradio_launcher.py`:
+`RFbenchToolkit.py`:
 
 | The page says | Qt has no such thing, so |
 |---|---|
@@ -2644,7 +2644,7 @@ go looking for it there.
 
 1. Create `apps/<module_name>.py` implementing `ConfigDialog` and `main()`.
 2. Add an icon to `icons/`.
-3. Add a row to `APP_TILES` in `gnuradio_launcher.py`, saying whether the
+3. Add a row to `APP_TILES` in `RFbenchToolkit.py`, saying whether the
    app transmits or receives. To give an existing app a second side instead
    of a square of its own - a receiver for a transmitter, say - add a face
    to that tile's list rather than a row. The direction is all the grid

@@ -46,5 +46,5 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-python gnuradio_launcher.py
+python RFbenchToolkit.py
 exit $LASTEXITCODE
