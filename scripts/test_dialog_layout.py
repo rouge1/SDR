@@ -10,6 +10,7 @@ four radios, and measures them.
     python scripts/test_dialog_layout.py
     python scripts/test_dialog_layout.py --radio vsg
     python scripts/test_dialog_layout.py --save /tmp/shots
+    python scripts/test_dialog_layout.py --theme reading-room --save /tmp/shots
 
 What it measures, and why each one was a real fault rather than a matter of
 taste:
@@ -69,8 +70,9 @@ COLUMN_TOLERANCE = 2
 MAX_WIDTH, MAX_HEIGHT = 1000, 700
 
 
-def install_radio(radio):
-    """Make every dialog believe this radio is the one in Settings.
+def install_radio(radio, theme_name='slate'):
+    """Make every dialog believe this radio is the one in Settings, and
+    paint it in this theme rather than whichever the user has chosen.
 
     Patches the function rather than the settings file: a test must never
     write into the user's own configuration, and this one runs four times.
@@ -82,6 +84,7 @@ def install_radio(radio):
     def read_settings():
         settings = original()
         settings['radio_type'] = radio
+        settings['theme'] = theme_name
         if radio == 'usrp' and not settings.get('ip_addresses'):
             settings['ip_addresses'] = ['192.168.10.2']
         return settings
@@ -199,6 +202,9 @@ def main():
     parser.add_argument('--app', action='append', help='only this module')
     parser.add_argument('--save', metavar='DIR',
                         help='write a PNG of every dialog here')
+    parser.add_argument('--theme', default='slate',
+                        help='paint them in this theme - the layout is the '
+                             'same in all of them, so this is for --save')
     args = parser.parse_args()
 
     from PyQt5 import Qt
@@ -211,7 +217,7 @@ def main():
 
     for radio in (args.radio or RADIOS):
         print(f'\nradio: {radio}')
-        install_radio(radio)
+        install_radio(radio, args.theme)
         for name in (args.app or MODULES):
             module = importlib.import_module('apps.' + name)
             importlib.reload(module)      # pick up the patched read_settings

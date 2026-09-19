@@ -287,6 +287,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _page(self):
+        """index.html, opened in the saved theme.
+
+        The attribute goes on ``<html>`` here, rather than from the page's
+        own script once ``/api/state`` has answered, so the first paint is
+        already in the right theme - set later, every load would show
+        Slate first and then change. ``theme.valid`` means only a theme's
+        own name can reach the page, whatever the settings file holds.
+        """
+        try:
+            with open(os.path.join(WEB, 'index.html'), encoding='utf-8') as fh:
+                page = fh.read()
+        except OSError:
+            return self._json({'error': 'not found'}, 404)
+        name = theme.valid(read_settings().get('theme'))
+        if name != theme.DEFAULT:
+            page = page.replace('<html lang="en">',
+                                '<html lang="en" data-theme="%s">' % name, 1)
+        body = page.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        # It changes with the setting now, so it must not be cached.
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _body(self):
         try:
             n = int(self.headers.get('Content-Length', 0))
@@ -307,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
 
         if path in ('/', '/index.html'):
-            return self._file(os.path.join(WEB, 'index.html'))
+            return self._page()
 
         # Generated rather than a file: the page's :root and its @font-face
         # rules come from apps/theme.py, the same tokens the launcher
@@ -346,9 +373,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authorised(query):
                 return self._json({'error': 'bad token'}, 403)
             settings = read_settings()
+            settings['theme'] = theme.valid(settings.get('theme'))
             return self._json({
                 'banks': banks(),
                 'settings': settings,
+                # The order the disc steps through, default first.
+                'themes': [[key, theme.NAMES[key]] for key in theme.THEMES],
                 'running': RUNNING.list(),
                 'directions': {k: sorted(v) for k, v in
                                launcher_literal('RADIO_DIRECTIONS').items()},
@@ -377,6 +407,16 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 return self._json({'ok': False, 'detail': 'no pid'}, 400)
             return self._json({'ok': RUNNING.stop(pid)})
+
+        # The theme on its own, not through /api/settings: the disc sends
+        # nothing else, and a settings save it rode along with would be
+        # refused whenever the radio settings already in the file are.
+        if url.path == '/api/theme':
+            name = body.get('theme')
+            if name not in theme.THEMES:
+                return self._json({'ok': False, 'detail': 'no such theme'}, 400)
+            write_settings({'theme': name})
+            return self._json({'ok': True, 'theme': name})
 
         if url.path == '/api/settings':
             changes = {}

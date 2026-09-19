@@ -90,6 +90,12 @@ Things worth knowing before changing it:
   out of the source the same way `scripts/test_launcher_gui.py` does and for
   the same reason, so keep `APP_TILES` a plain literal and all three keep
   working.
+- **The theme is a setting of the bench, not of the browser.** The disc
+  in the page's header posts to `/api/theme`, not to `/api/settings`, so
+  a click cannot be refused because of the radio settings already in the
+  file. The server also puts the saved theme on `<html>` as it serves the
+  page, so the page opens in that theme. See [two
+  themes](ui.md#two-themes-and-the-disc-that-picks-one).
 - **Settings are merged, not replaced.** `window_position`, `dialog_position`
   and the tile-face state the desktop app keeps in the same file all survive
   being edited from a browser. Which side a tile is showing is per-viewer

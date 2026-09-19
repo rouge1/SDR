@@ -10,6 +10,7 @@ import importlib.util
 
 # Third party imports
 from PyQt5.QtWidgets import ( # type: ignore
+    QAbstractButton,
     QMainWindow,
     QWidget,
     QGridLayout,
@@ -25,13 +26,13 @@ from PyQt5.QtWidgets import ( # type: ignore
     QGraphicsOpacityEffect,
     QMessageBox
 )
-from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint,  # type: ignore
+from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint, QPointF,  # type: ignore
                           QPropertyAnimation, QEasingCurve, pyqtProperty)
-from PyQt5.QtGui import (QIcon, QImage, QPixmap, QFont,  # type: ignore
-                         QFontMetrics, QPainter)
+from PyQt5.QtGui import (QColor, QIcon, QImage, QPixmap, QFont,  # type: ignore
+                         QFontMetrics, QPainter, QPen)
 from PyQt5.QtSvg import QSvgRenderer # type: ignore
 
-# PIL and numpy prepare the tile pictures - see cover_pixmap.
+# PIL and numpy prepare the tile pictures - see cover_crop and picture_pixmap.
 from PIL import Image # type: ignore
 import numpy as np # type: ignore
 
@@ -42,7 +43,7 @@ from apps.utils import (apply_launcher_theme, apply_dark_theme,
                        geometry_is_reachable, maximize_when_shown,
                        flowgraph_settings, normal_geometry, read_settings,
                        restore_window_geometry, save_flowgraph_settings,
-                       save_window_geometry)
+                       save_window_geometry, use_saved_theme)
 from apps.settings_dialog import SettingsDialog
 
 # Which way each radio goes. Two of the four are one-way instruments, and
@@ -154,16 +155,15 @@ FLIP_MS = 380
 PICTURE_REF = 420
 
 
-def cover_pixmap(path, width, saturation=0.82):
-    """A tile's picture: ``object-fit: cover`` at 4:3, ``saturate(.82)``.
+def cover_crop(path, width):
+    """A tile's picture cropped ``object-fit: cover`` at 4:3, as RGB pixels.
 
-    A Qt stylesheet has neither property, so the pixels are prepared here
-    instead - crop to the tile's shape about the middle, then pull the
-    colour back a little so the photographs sit down into the panel rather
-    than shouting off it. Thirteen of the sixteen icons are already 4:3
-    and lose nothing; the three squarer ones give up a little top and
-    bottom, so anything written near an edge of a new icon wants it
-    exported at 4:3.
+    A Qt stylesheet has no such property, so the pixels are prepared here
+    instead - crop to the tile's shape about the middle. Thirteen of the
+    sixteen icons are already 4:3 and lose nothing; the three squarer ones
+    give up a little top and bottom, so anything written near an edge of a
+    new icon wants it exported at 4:3. Kept as pixels, so the picture
+    under the pointer is only a recolouring - see :func:`picture_pixmap`.
     """
     height = int(round(width * 3 / 4))
     image = Image.open(path).convert('RGB')
@@ -173,12 +173,21 @@ def cover_pixmap(path, width, saturation=0.82):
                          Image.LANCZOS)
     left = (image.width - width) // 2
     top = (image.height - height) // 2
-    image = image.crop((left, top, left + width, top + height))
+    return np.asarray(image.crop((left, top, left + width, top + height)))
 
-    data = np.asarray(image).astype(np.float32)
+
+def picture_pixmap(pixels, saturation=0.82):
+    """Pixels from :func:`cover_crop` at the page's ``saturate(.82)``.
+
+    The colour is pulled back a little so the photographs sit down into
+    the panel rather than shouting off it; under the pointer it comes back,
+    at 1.0, as the page's does.
+    """
+    data = pixels.astype(np.float32)
     luma = (data * (0.299, 0.587, 0.114)).sum(axis=2, keepdims=True)
-    data = np.clip(luma + (data - luma) * saturation, 0, 255).astype(np.uint8)
-    buffer = data.tobytes()
+    data = luma + (data - luma) * saturation
+    height, width = pixels.shape[:2]
+    buffer = np.clip(data, 0, 255).astype(np.uint8).tobytes()
     # QImage does not own the buffer it is handed, and this one is a local:
     # copy() before the bytes go out of scope, or the picture is garbage.
     picture = QImage(buffer, width, height, 3 * width, QImage.Format_RGB888)
@@ -239,6 +248,77 @@ def svg_icon(markup, size):
     return pixmap
 
 
+class ThemeDisc(QAbstractButton):
+    """The theme in force, as a disc, and a click moves on to the next.
+
+    voice-summary's picker, carried across: the disc *is* the theme - its
+    ground, ringed in its rule, with the colour its plots draw a signal in
+    at the centre. There is no name on it, because the window round it is
+    the theme and would say the same thing; the name is in the tooltip,
+    and the accessible name also says where a click goes, since a control
+    that cycles otherwise gives no clue.
+
+    Painted rather than styled: a stylesheet has no circle, only a rounded
+    rectangle, and the dot would have to be a widget of its own.
+    """
+
+    #: The disc is 22 px, to sit level with the radio tag beside it; the
+    #: square that takes the click is the gear's 32.
+    DIAMETER = 22
+    DOT = 8
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(32, 32)
+        self.setCursor(Qt.PointingHandCursor)
+        # Focus from the keyboard only, and the ring only when Tab brought
+        # it - the page's :focus-visible. It is the first thing in the
+        # window that takes focus, so Qt hands it focus as the window
+        # opens, and a ring then would sit there from the start.
+        self.setFocusPolicy(Qt.TabFocus)
+        self._ring = False
+        # Repaint on the pointer arriving and leaving, for the hover growth.
+        self.setAttribute(Qt.WA_Hover, True)
+        self.describe()
+
+    def focusInEvent(self, event):
+        self._ring = event.reason() in (Qt.TabFocusReason,
+                                        Qt.BacktabFocusReason)
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self._ring = False
+        super().focusOutEvent(event)
+
+    def describe(self):
+        """Say which theme this is and which comes next; repaint."""
+        now = theme.current()
+        name = theme.NAMES[now]
+        self.setToolTip(f"Theme: {name}")
+        self.setAccessibleName(f"Theme: {name}. Activate for "
+                               f"{theme.NAMES[theme.after(now)]}.")
+        self.update()
+
+    def paintEvent(self, event):
+        colours = theme.TOKENS
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        centre = QPointF(self.width() / 2, self.height() / 2)
+        grow = 1.12 if self.underMouse() else 1.0
+        radius = self.DIAMETER * grow / 2
+        painter.setPen(QPen(QColor(colours['rule']), 1))
+        painter.setBrush(QColor(colours['ground']))
+        painter.drawEllipse(centre, radius - 0.5, radius - 0.5)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(colours['trace']))
+        painter.drawEllipse(centre, self.DOT * grow / 2, self.DOT * grow / 2)
+        if self.hasFocus() and self._ring:
+            painter.setPen(QPen(QColor(colours['ink']), 1.5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(centre, radius + 3, radius + 3)
+        painter.end()
+
+
 class FlipTile(QPushButton):
     """One tile of the launcher grid, which may have more than one face.
 
@@ -279,8 +359,12 @@ class FlipTile(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
-        self._pixmaps = [cover_pixmap(f"icons/{face[2]}", PICTURE_REF)
-                         for face in self.faces]
+        self._crops = [cover_crop(f"icons/{face[2]}", PICTURE_REF)
+                       for face in self.faces]
+        self._pixmaps = self._lit = []
+        self._fraction = 1.0
+        self._hover = False
+        self.load_pictures()
 
         layout = QVBoxLayout(self)
         # One pixel in from every edge, for the stylesheet's border: a Qt
@@ -526,8 +610,32 @@ class FlipTile(QPushButton):
     # property up by this attribute name.
     flip_phase = pyqtProperty(float, _get_flip, _set_flip)
 
+    def load_pictures(self):
+        """Colour the pictures from the crops, and redraw.
+
+        The colour is pulled back a little, and brought out again under
+        the pointer, as the page's is.
+        """
+        self._pixmaps = [picture_pixmap(crop) for crop in self._crops]
+        self._lit = [picture_pixmap(crop, saturation=1.0)
+                     for crop in self._crops]
+        # Not while the tile is still being built: set_face draws it then.
+        if getattr(self, 'picture', None) is not None:
+            self._draw(self._fraction)
+
+    def enterEvent(self, event):
+        self._hover = True
+        self._draw(self._fraction)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self._draw(self._fraction)
+        super().leaveEvent(event)
+
     def _draw(self, width_fraction):
         """Paint the current picture squeezed to a fraction of its width."""
+        self._fraction = width_fraction
         size = self._picture_size
         target = QPixmap(size)
         target.fill(Qt.transparent)
@@ -540,10 +648,12 @@ class FlipTile(QPushButton):
         # own :disabled colours instead.
         if not self.usable:
             painter.setOpacity(0.34)
+        lit = self._hover and self.usable
+        picture = (self._lit if lit else self._pixmaps)[self.face]
         painter.drawPixmap((size.width() - width) // 2, 0,
-                           self._pixmaps[self.face].scaled(
-                               width, size.height(), Qt.IgnoreAspectRatio,
-                               Qt.SmoothTransformation))
+                           picture.scaled(width, size.height(),
+                                          Qt.IgnoreAspectRatio,
+                                          Qt.SmoothTransformation))
         painter.end()
         self.picture.setPixmap(target)
 
@@ -563,6 +673,9 @@ class RFbenchToolkit(QMainWindow):
         self.settings_file = os.path.join(self.config_dir, "window_settings.json")
         os.makedirs(self.config_dir, exist_ok=True)
         
+        # Before anything is built: the gear and the theme disc are drawn
+        # in the theme's colours as they are made.
+        use_saved_theme()
         theme.load_fonts()
 
         central = QWidget()
@@ -609,7 +722,8 @@ class RFbenchToolkit(QMainWindow):
 
     # ------------------------------------------------------------ the page
     def _build_rail(self):
-        """The header: wordmark, which radio is selected, and the gear.
+        """The header: wordmark, which radio is selected, the theme, and
+        the gear.
 
         The wordmark is the browser front end's, because these are two
         front ends onto one bench and reading a different name on each
@@ -636,16 +750,58 @@ class RFbenchToolkit(QMainWindow):
         self.radio_tag.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         row.addWidget(self.radio_tag, 0, Qt.AlignVCenter)
 
-        gear = QPushButton()
-        gear.setObjectName('gear')
-        gear.setFixedSize(32, 32)
-        gear.setCursor(Qt.PointingHandCursor)
-        gear.setIcon(QIcon(svg_icon(theme.gear_svg(), 17)))
-        gear.setIconSize(QSize(17, 17))
-        gear.setToolTip("Settings")
-        gear.clicked.connect(self.show_settings)
-        row.addWidget(gear)
+        # The theme picker, as voice-summary has it: the word, then the
+        # disc. Held closer together than the rail's own spacing, since
+        # they are one control.
+        picker = QHBoxLayout()
+        picker.setSpacing(4)
+        label = QLabel("Themes")
+        label.setObjectName('theme-label')
+        label.setFont(token_font('s_sm'))
+        picker.addWidget(label, 0, Qt.AlignVCenter)
+        self.theme_disc = ThemeDisc()
+        self.theme_disc.clicked.connect(self.next_theme)
+        picker.addWidget(self.theme_disc)
+        row.addLayout(picker)
+
+        self.gear = QPushButton()
+        self.gear.setObjectName('gear')
+        self.gear.setFixedSize(32, 32)
+        self.gear.setCursor(Qt.PointingHandCursor)
+        self.gear.setIcon(QIcon(svg_icon(theme.gear_svg(), 17)))
+        self.gear.setIconSize(QSize(17, 17))
+        self.gear.setToolTip("Settings")
+        self.gear.clicked.connect(self.show_settings)
+        row.addWidget(self.gear)
         return rail
+
+    def next_theme(self):
+        """Move on to the next theme, keep it, and repaint in it.
+
+        Kept in ``window_settings.json``, beside the radio, rather than
+        anywhere of the launcher's own: the dialogs and the flowgraph
+        windows read it from there when they open, and so does the
+        browser page, which is the same bench.
+        """
+        self.save_setting('theme', theme.after(theme.current()))
+        apply_launcher_theme(self)
+        # The two things drawn in the theme's colours rather than styled.
+        self.gear.setIcon(QIcon(svg_icon(theme.gear_svg(), 17)))
+        self.theme_disc.describe()
+
+
+    def save_setting(self, key, value):
+        """Merge one setting into ``window_settings.json``."""
+        try:
+            settings = {}
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+            settings[key] = value
+            with open(self.settings_file, 'w') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Error saving {key}: {e}")
 
     def _build_banks(self):
         """A heading and a grid for each row of APP_TILES."""

@@ -28,6 +28,19 @@ input,select{font:inherit}
 .rail-r{margin-left:auto;display:flex;align-items:center;gap:12px}
 .radio-tag{font-size:var(--s-xs);color:var(--ink-2);padding:4px 9px;
   border:1px solid var(--rule);border-radius:2px}
+/* The theme picker, from voice-summary: one disc that IS the theme in force,
+   its ground ringed in its rule with its trace at the centre, and a click
+   moves on to the next. Drawn from the tokens rather than from colours of
+   its own, so it cannot stop resembling its theme. */
+.theme-picker{display:flex;align-items:center;gap:4px}
+.theme-label{font-size:var(--s-sm);color:var(--ink-2);user-select:none}
+.theme-chip{display:grid;place-items:center;width:32px;height:32px;border-radius:50%}
+.theme-chip::before,.theme-chip::after{content:"";grid-area:1/1;border-radius:50%;
+  transition:transform .15s}
+.theme-chip::before{width:22px;height:22px;background:var(--ground);border:1px solid var(--rule)}
+.theme-chip::after{width:8px;height:8px;background:var(--trace)}
+.theme-chip:hover::before,.theme-chip:hover::after{transform:scale(1.12)}
+.theme-chip:focus-visible{outline-offset:-3px}
 .gear{display:grid;place-items:center;width:32px;height:32px;border-radius:2px;color:var(--ink-2)}
 .gear:hover,.gear[aria-expanded="true"]{color:var(--ink);background:var(--panel)}
 
@@ -104,7 +117,7 @@ input[type=text]:focus,select:focus{border-color:var(--ink-3)}
   background:var(--panel-2);color:var(--ink);font-size:var(--s-sm)}
 .btn:hover{border-color:var(--ink-3)}
 .btn.primary{background:var(--ink);color:var(--ground);border-color:var(--ink)}
-.btn.primary:hover{background:#fff}
+.btn.primary:hover{background:var(--ink-0)}
 .sheet-foot{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
 .saved{font-size:var(--s-sm);color:var(--ink-3)}
 
@@ -128,6 +141,10 @@ input[type=text]:focus,select:focus{border-color:var(--ink-3)}
     <span class="mark">RF Bench Toolkit</span>
     <div class="rail-r">
       <span class="radio-tag" id="radio-tag">—</span>
+      <div class="theme-picker">
+        <span class="theme-label">Themes</span>
+        <button class="theme-chip" id="theme-chip" type="button" title="Theme"></button>
+      </div>
       <button class="gear" id="gear" type="button" aria-expanded="false" aria-controls="sheet" title="Settings">
         <svg width="17" height="17" viewBox="0 0 17 17" fill="none" aria-hidden="true">
           <path d="M2 4h5M10 4h5M2 8.5h9M14 8.5h1M2 13h3M8 13h7"
@@ -450,8 +467,54 @@ document.getElementById("close-sheet").addEventListener("click", () => {
   gear.focus();
 });
 
+/* ------------------------------------------------------------------- theme */
+// Switching sets one attribute on <html> and the browser re-resolves every
+// var() under it, so nothing is redrawn. The choice is kept in the settings
+// file, beside the radio, because the desktop launcher, its dialogs and the
+// app windows this page starts all read it from there - and the refresh
+// below follows a change made at the desktop.
+const chip = document.getElementById("theme-chip");
+// When the page last changed theme. A refresh that was asked for before
+// then may carry the theme from before the click, and must not put it back.
+let themeSetAt = 0;
+
+function themeKeys(){ return ((STATE && STATE.themes) || []).map(t => t[0]); }
+function themeName(key){
+  const hit = ((STATE && STATE.themes) || []).find(t => t[0] === key);
+  return hit ? hit[1] : key;
+}
+function liveTheme(){
+  // The default is the one that carries no attribute.
+  return document.documentElement.getAttribute("data-theme") || themeKeys()[0];
+}
+function nextTheme(){
+  const keys = themeKeys();
+  return keys[(Math.max(0, keys.indexOf(liveTheme())) + 1) % keys.length];
+}
+function setTheme(key){
+  const keys = themeKeys();
+  if (!keys.length) return;
+  if (key === keys[0] || !keys.includes(key)) document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", key);
+  // A cycling control has to say where it goes, or its only clue is the
+  // colour you are already looking at.
+  chip.title = "Theme: " + themeName(liveTheme());
+  chip.setAttribute("aria-label", "Theme: " + themeName(liveTheme())
+    + ". Activate for " + themeName(nextTheme()) + ".");
+}
+chip.addEventListener("click", async () => {
+  if (!themeKeys().length) return;
+  const next = nextTheme();
+  themeSetAt = Date.now();
+  setTheme(next);
+  const { data } = await api("/api/theme", { theme: next });
+  themeSetAt = Date.now();
+  if (!data.ok) alertBox("Could not keep the theme", data.detail || "");
+});
+
 /* -------------------------------------------------------------------- boot */
 async function refresh(){
+  const asked = Date.now();
   const { ok, data } = await api("/api/state");
   if (!ok){
     alertBox("Cannot reach the launcher",
@@ -464,6 +527,7 @@ async function refresh(){
   const keepIps = !first && !document.getElementById("sheet").hidden;
   const editing = keepIps ? STATE.settings : null;
   STATE = data;
+  if (asked > themeSetAt) setTheme(data.settings.theme);
   if (editing) STATE.settings = editing;   // don't wipe edits under the user
 
   document.getElementById("banner").hidden = STATE.display;

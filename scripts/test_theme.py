@@ -8,6 +8,10 @@ generates. That only stops them drifting if every name one side uses is a
 name the other side defines, which is what this checks. No radio, no
 display, no GNU Radio.
 
+It also holds both themes to the contrast their colours are there for,
+since a colour that reads on Slate can vanish on Reading Room's paper, and
+nothing else would say so until somebody looked.
+
     python scripts/test_theme.py
 """
 
@@ -21,6 +25,36 @@ sys.path.insert(0, ROOT)
 from apps import theme  # noqa: E402
 
 FAILURES = []
+
+#: (colour, what it sits on, the least contrast it may have, why). Slate's
+#: own figures set these; every theme has to meet them.
+CONTRAST = [
+    ('ink', ('ground', 'panel', 'panel_2', 'well'), 7.0, 'body text'),
+    ('ink_2', ('ground', 'panel', 'panel_2', 'well'), 4.5, 'labels'),
+    ('ink_3', ('ground', 'panel'), 3.0,
+     'the quietest thing still meant to be read'),
+    ('live', ('ground', 'panel'), 4.5, 'the ON AIR heading'),
+    ('warn', ('ground', 'panel'), 4.5, "a receiver's lock line"),
+    ('good', ('ground', 'panel'), 4.5, "a receiver's lock line"),
+    ('bad', ('ground', 'panel'), 4.5, "a receiver's lock line"),
+    ('trace', ('well',), 3.0, 'a plotted signal'),
+    ('ground', ('ink', 'ink_0'), 4.5, 'the OK button, and under the pointer'),
+]
+
+
+def lum(colour):
+    """The WCAG relative luminance of a #rrggbb colour."""
+    out = []
+    for i in (1, 3, 5):
+        v = int(colour[i:i + 2], 16) / 255
+        out.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def contrast(a, b):
+    """The WCAG contrast ratio of two #rrggbb colours."""
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
 
 
 def check(condition, message):
@@ -42,8 +76,48 @@ def main():
           and 'https://' not in page,
           'the page asks nothing of the network')
     check('/theme.css' in page, 'the page links the generated stylesheet')
+    # web/server.py puts the saved theme on exactly this tag as it serves
+    # the page; changed, the page would open in Slate every time.
+    check(page.count('<html lang="en">') == 1,
+          'the page\'s <html> tag is the one the server puts the theme on')
+    for key in theme.THEMES:
+        if key != theme.DEFAULT:
+            check(':root[data-theme="%s"]{' % key in css,
+                  f"/theme.css has a block for {theme.NAMES[key]}")
+
+    print('\nthe themes')
+    check(theme.DEFAULT == next(iter(theme.THEMES)),
+          'the default is the first the disc shows')
+    check(set(theme.NAMES) == set(theme.THEMES), 'every theme has a name')
+    for key, palette in theme.THEMES.items():
+        extra = set(palette) - set(theme.PALETTE) - {'scheme'}
+        missing = set(theme.PALETTE) - set(palette)
+        check(not extra and not missing and palette.get('scheme') in
+              ('dark', 'light'),
+              f"{theme.NAMES[key]} defines every colour and nothing else"
+              f"{'' if not missing else ': missing ' + ', '.join(sorted(missing))}"
+              f"{'' if not extra else ': unknown ' + ', '.join(sorted(extra))}")
+        if missing:
+            continue
+        low = []
+        for fg, grounds, least, _why in CONTRAST:
+            for bg in grounds:
+                ratio = contrast(palette[fg], palette[bg])
+                if ratio < least:
+                    low.append(f"{fg} on {bg} {ratio:.2f}:1 < {least}")
+        check(not low, f"{theme.NAMES[key]}'s colours read where they are used"
+                       f"{'' if not low else ': ' + '; '.join(low)}")
 
     print('\ntokens -> Qt')
+    for key in theme.THEMES:
+        theme.use(key)
+        sheets = (theme.launcher_qss(),
+                  theme.dialog_qss('u.png', 'd.png', 'c.png'),
+                  theme.flowgraph_qss('u.png', 'd.png', 'c.png'))
+        check(all(theme.TOKENS['ground'] in s for s in sheets),
+              f"all three stylesheets are painted in {theme.NAMES[key]} "
+              f"when it is in force")
+    theme.use(theme.DEFAULT)
     for name, sheet in (('launcher', theme.launcher_qss()),
                         ('dialog', theme.dialog_qss('u.png', 'd.png', 'c.png')),
                         ('flowgraph',

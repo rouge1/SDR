@@ -72,7 +72,7 @@ fixed.
 | [fm-video.md](devnotes/fm-video.md) | `fmVideoXmitter`, `fmVideoReceiver`, `fm_video_core` | the FPV and F.405 profiles, the receiver as a measuring instrument, and a real FPV transmitter measured |
 | [media.md](devnotes/media.md) | `media`, `audio_file`, any file picker | how media is found, MP3, song tags, and plain-ASCII RDS text |
 | [radios.md](devnotes/radios.md) | `vsg_sink`, `bb60_source` | the VSG60's and the BB60D's limits, locks, gain and traps |
-| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back and what their controls were left at, dialog layout, the one theme for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
+| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back and what their controls were left at, dialog layout, the dark and light themes and the disc that picks one, for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
 | [web.md](devnotes/web.md) | `web/`, `apps/_run.py`, `scripts/probe_radio.py` | the browser front end, and the Stop that does not stop |
 | [machines.md](devnotes/machines.md) | `windows/`, `linux/environment.yml`, anything run on TVAdemo or the Windows laptop | TVAdemo, running on Windows, and building the environment on a new Linux machine |
 
@@ -129,6 +129,12 @@ damage something. Each links to the why.
   GNU Radio's slider then follows the pointer with no button down - a
   power slider set by the mouse passing over it.
   [ui](devnotes/ui.md#the-flowgraph-windows-wear-it-too)
+- **A colour comes from `TOKENS` when a window is built, never at import
+  and never as a literal.** `TOKENS` is whichever of the two themes is
+  in force, and it changes under a running launcher. A colour copied at
+  import, or written in, is right in one theme and wrong in the other -
+  on Reading Room's paper, white goes on white.
+  [ui](devnotes/ui.md#two-themes-and-the-disc-that-picks-one)
 - **`APP_TILES` stays a plain literal, and `apps/theme.py` imports only the
   standard library**: the web server reads both without importing Qt, and
   the GUI test reads `APP_TILES` with `ast`.
@@ -190,6 +196,7 @@ All settings are stored in `config/window_settings.json`:
 - `media_directory` — path for recorded audio/video files.
 - `radio_mode` — `"single"` or `"multi"` (multi requires ≥2 IP addresses).
 - `radio_type` — `"hackrf"`, `"usrp"`, or `"vsg"`.
+- `theme` — `"slate"` (dark, the default) or `"reading-room"` (light), set by the disc in either front end's header and read by every window as it opens — see [two themes](devnotes/ui.md#two-themes-and-the-disc-that-picks-one).
 
 Per-app configs are saved separately as `config/<module_name>_config.json`: the dialog's settings, `dialog_position`, `flowgraph_position`, and whatever the window's `SAVED_SETTINGS` names, all merged in by `update_app_config`.
 

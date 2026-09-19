@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import tempfile
 import time
 from PyQt5 import Qt  #type: ignore
 from PyQt5.QtCore import (QObject, QEvent, QRect, QTimer,  #type: ignore
@@ -656,8 +657,23 @@ def apply_launcher_theme(widget):
     written down twice, because two front ends drawn separately drift on
     the first edit to either.
     """
+    use_saved_theme()
     theme.load_fonts()
     widget.setStyleSheet(theme.launcher_qss())
+    match_title_bar(widget)
+
+
+def use_saved_theme():
+    """Put the saved theme in force, and return its name.
+
+    It is ``theme`` in ``config/window_settings.json``, which the disc in
+    the launcher's header and the browser page's both write. Every
+    ``apply_*_theme`` calls this first, so a dialog or a flowgraph window
+    opened after a change wears the new one - including a window the
+    browser started, which is a process of its own that never saw the
+    change happen. A window already open keeps what it was painted in.
+    """
+    return theme.use(read_settings().get('theme'))
 
 # --- Dialog layout ----------------------------------------------------------
 
@@ -824,6 +840,135 @@ def icon_url(name):
     return os.path.join(ICON_DIR, name).replace('\\', '/')
 
 
+def themed_icon_url(name, colour):
+    """An icons/ picture redrawn in ``colour``, as :func:`icon_url` gives it.
+
+    The spin arrows and the tick are pictures, because a stylesheet cannot
+    draw them (see ``tidy_dialog``), and a picture has its colour baked
+    in: light arrows vanish on Reading Room's paper, and the tick, drawn in
+    the ground's colour to sit on an ink-filled box, vanishes on its dark
+    one. So the shape is kept and the colour replaced, and the result is
+    written once to a folder in the temp directory under a name that
+    carries the colour - a palette edited later gets a new file rather
+    than a stale one. If it cannot be written, the shipped picture is used
+    as it is, which is right for Slate.
+    """
+    stem, ext = os.path.splitext(name)
+    user = str(os.getuid()) if hasattr(os, 'getuid') else ''
+    folder = os.path.join(tempfile.gettempdir(), 'rfbench-icons-' + user)
+    target = os.path.join(folder, '%s-%s%s'
+                          % (stem, colour.lstrip('#').lower(), ext))
+    if not os.path.exists(target):
+        image = Qt.QImage(os.path.join(ICON_DIR, name))
+        if image.isNull():
+            return icon_url(name)
+        image = image.convertToFormat(Qt.QImage.Format_ARGB32_Premultiplied)
+        painter = Qt.QPainter(image)
+        # The picture's own alpha, with the new colour poured into it.
+        painter.setCompositionMode(Qt.QPainter.CompositionMode_SourceIn)
+        painter.fillRect(image.rect(), Qt.QColor(colour))
+        painter.end()
+        try:
+            os.makedirs(folder, exist_ok=True)
+            # Written aside and moved in, so two apps starting at once
+            # cannot hand Qt a half-written file.
+            partial = '%s.%d.tmp' % (target, os.getpid())
+            if not image.save(partial, 'PNG'):
+                return icon_url(name)
+            os.replace(partial, target)
+        except OSError:
+            return icon_url(name)
+    return target.replace('\\', '/')
+
+
+def match_title_bar(window):
+    """Have Windows draw this window's title bar in the theme.
+
+    Windows 10 and 11 take a dark-or-light switch per window, and
+    Windows 11 takes an exact colour for the caption, its text and the
+    border as well. Here those are the theme's ground, ink and rule, so on
+    the launcher the title bar runs straight on into the rail. Windows 10
+    refuses the colours and keeps the switch.
+
+    **Linux is left alone, because it cannot be done there.** On GNOME 46 -
+    Ubuntu 24.04, which both Linux machines here run - title bars are drawn
+    by ``mutter-x11-frames``, which follows the desktop's single light or
+    dark setting and reads no hint from the window. Measured:
+    ``_GTK_THEME_VARIANT=dark``, which older GNOME honoured, set on a
+    window while it was up or before it was mapped, left the bar #e8e8e8.
+
+    A window not yet created is done when it is first shown, rather than
+    by asking for its handle now, which would create it early.
+    """
+    if not sys.platform.startswith('win') or \
+            not isinstance(window, Qt.QWidget) or not window.isWindow():
+        return
+    if window.testAttribute(QtNs.WA_WState_Created):
+        _paint_windows_title_bar(window)
+    elif not window.property('_title_bar_follows'):
+        window.setProperty('_title_bar_follows', True)
+        window.installEventFilter(_TitleBarOnShow(window))
+
+
+class _TitleBarOnShow(QObject):
+    """Paint a window's title bar as it is shown - every time, since
+    single mode hides the launcher and shows it again."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show:
+            _paint_windows_title_bar(obj)
+        return False
+
+
+def _paint_windows_title_bar(window):
+    try:
+        import ctypes
+        from ctypes import byref, c_int, c_uint, c_void_p, sizeof
+        dwm = ctypes.windll.dwmapi
+        dwm.DwmSetWindowAttribute.argtypes = [c_void_p, c_uint, c_void_p, c_uint]
+        dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+        hwnd = c_void_p(int(window.winId()))
+
+        def colour(token):
+            # A COLORREF is 0x00BBGGRR.
+            value = theme.TOKENS[token].lstrip('#')
+            r, g, b = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+            return c_uint(b << 16 | g << 8 | r)
+
+        dark = c_int(1 if theme.TOKENS['scheme'] == 'dark' else 0)
+        # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 from Windows 10 20H1, 19 before.
+        if dwm.DwmSetWindowAttribute(hwnd, 20, byref(dark), sizeof(dark)) != 0:
+            dwm.DwmSetWindowAttribute(hwnd, 19, byref(dark), sizeof(dark))
+        # Windows 11's border, caption and caption text colours.
+        for attribute, token in ((34, 'rule'), (35, 'ground'), (36, 'ink')):
+            value = colour(token)
+            dwm.DwmSetWindowAttribute(hwnd, attribute, byref(value),
+                                      sizeof(value))
+        if window.isVisible():
+            # A title bar already on screen keeps its old colours until
+            # something makes Windows redraw the frame.
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [c_void_p, c_void_p, c_int, c_int,
+                                            c_int, c_int, c_uint]
+            # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)
+    except Exception as exc:
+        # A title bar is not worth failing a window over.
+        print(f"Could not colour the title bar: {exc}")
+
+
+def _control_pictures():
+    """The up arrow, the down arrow and the tick, in the theme in force.
+
+    The arrows sit on a button or a well, so they are in ink; the tick sits
+    on a box filled with ink, so it is in the ground's colour.
+    """
+    ink, ground = theme.TOKENS['ink'], theme.TOKENS['ground']
+    return (themed_icon_url('spin-up.png', ink),
+            themed_icon_url('spin-down.png', ink),
+            themed_icon_url('check.png', ground))
+
+
 #This function is called to apply the theme to the dialog
 def apply_dark_theme(widget):
     """Paint a config dialog, and straighten its layout.
@@ -840,10 +985,10 @@ def apply_dark_theme(widget):
     # too, which made every short dialog too tall - see tidy_dialog.
     if isinstance(widget, Qt.QDialog):
         widget.setMinimumWidth(360)
+    use_saved_theme()
     theme.load_fonts()
-    widget.setStyleSheet(theme.dialog_qss(icon_url('spin-up.png'),
-                                          icon_url('spin-down.png'),
-                                          icon_url('check.png')))
+    widget.setStyleSheet(theme.dialog_qss(*_control_pictures()))
+    match_title_bar(widget)
     tidy_dialog(widget)
 
 
@@ -872,6 +1017,7 @@ def apply_flowgraph_theme(window):
 
     It is paint only: every control and every plot is the app's own.
     """
+    use_saved_theme()
     theme.load_fonts()
     app = Qt.QApplication.instance()
     if app is not None:
@@ -882,9 +1028,8 @@ def apply_flowgraph_theme(window):
     # background only when asked to - without this the ground shows only
     # where the scroll area covers it.
     window.setAttribute(QtNs.WA_StyledBackground, True)
-    window.setStyleSheet(theme.flowgraph_qss(icon_url('spin-up.png'),
-                                             icon_url('spin-down.png'),
-                                             icon_url('check.png')))
+    window.setStyleSheet(theme.flowgraph_qss(*_control_pictures()))
+    match_title_bar(window)
     window.installEventFilter(ClickToMove(window))
 
 

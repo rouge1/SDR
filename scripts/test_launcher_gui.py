@@ -228,6 +228,40 @@ def tile_showing(key, face):
         write(original)
 
 
+@contextlib.contextmanager
+def theme_held(name='slate'):
+    """Run the launcher in a dark theme, and put the user's back afterwards.
+
+    ``button_grid`` finds the tiles as bright pictures on a dark window,
+    and on Reading Room's paper the whole window is bright - one blob, no
+    tiles. The same one-key write and restore as ``tile_showing``, for the
+    same reason.
+    """
+    def write(value):
+        settings = {}
+        if os.path.exists(SETTINGS):
+            with open(SETTINGS) as f:
+                settings = json.load(f)
+        if value is None:
+            settings.pop('theme', None)
+        else:
+            settings['theme'] = value
+        os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+        with open(SETTINGS, 'w') as f:
+            json.dump(settings, f, indent=4)
+
+    try:
+        with open(SETTINGS) as f:
+            original = json.load(f).get('theme')
+    except Exception:
+        original = None
+    write(name)
+    try:
+        yield
+    finally:
+        write(original)
+
+
 def click(x, y):
     xdo('mousemove', '--sync', str(x), str(y))
     xdo('click', '1')
@@ -273,7 +307,7 @@ def main():
     if tile['faces'] > 1:
         print(f"{args.app!r} is face {tile['face'] + 1} of {tile['faces']} on "
               f"the {tile['key']} tile - turning it over first")
-    with tile_showing(tile['key'], tile['face']):
+    with tile_showing(tile['key'], tile['face']), theme_held():
         return run(args, row, col)
 
 

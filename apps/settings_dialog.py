@@ -78,15 +78,10 @@ class SettingsDialog(QDialog):
         current_radio = self.settings.get('radio_type', 'hackrf')
         radio_index = self.radio_hw_combo.findData(current_radio)
         self.radio_hw_combo.setCurrentIndex(radio_index if radio_index >= 0 else 0)
-        self.radio_hw_combo.view().setStyleSheet("""
-            QAbstractItemView {
-                background-color: #4b4b4b;
-                color: #ffffff;
-                selection-background-color: #656565;
-                selection-color: #ffffff;
-                border: 1px solid #5c5c5c;
-            }
-        """)
+        # The list it drops down is painted by the dialog's stylesheet, in
+        # whichever theme is in force. It had grey of its own, left over
+        # from before there was a theme, which on Reading Room's paper
+        # dropped a dark box out of a light dialog.
         radio_hw_layout.addWidget(self.radio_hw_combo)
         radio_hw_group.setLayout(radio_hw_layout)
 

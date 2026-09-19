@@ -704,13 +704,16 @@ class ntscReceiver(gr.top_block, Qt.QWidget):
     SAVED_SETTINGS = {'gain_percent': 'gain_percent',
                       'center_mhz': 'center_mhz'}
 
-    GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
-
     def __init__(self, config_values=None):
         gr.top_block.__init__(self, "NTSC Video Receiver", catch_exceptions=True)
         Qt.QWidget.__init__(self)
         self.setWindowTitle("NTSC Video Receiver")
         apply_flowgraph_theme(self)
+        # The lock line's colours, from the theme the window was just
+        # painted in - not taken at import, when the launcher may have had
+        # another theme in force.
+        self.GOOD, self.WARN, self.BAD = (TOKENS['good'], TOKENS['warn'],
+                                          TOKENS['bad'])
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:

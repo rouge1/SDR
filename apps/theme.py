@@ -28,27 +28,118 @@ import os
 FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'fonts')
 
-#: Colours, faces and sizes. Sizes are in pixels here because that is what
-#: Qt takes; :func:`css` divides by 16 to give the page the rem it had.
-TOKENS = {
-    'ground': '#10151a',      # the page behind everything
-    'panel': '#1a2228',       # a tile, a card, a dialog
-    'panel_2': '#212b32',     # a tile under the pointer, a plain button
-    'well': '#0c1013',        # anything typed into
-    'rule': '#2e3a43',        # a border that should be seen
-    'rule_soft': '#222c33',   # one that should barely be
-    'ink': '#e6ecef',         # body text
-    'ink_2': '#93a3ad',       # labels, captions
-    'ink_3': '#5d6d78',       # the quietest thing still meant to be read
-    'live': '#ff9b21',        # on air
-    'warn': '#e8b04b',        # a banner that wants reading
-    'good': '#6fcf97',        # a receiver that has locked
-    'bad': '#f0716a',         # one that has lost it
-    'trace': '#cfe0e8',       # a plotted signal, on the well
+#: The type: the faces and the sizes, the same in both themes. Sizes are
+#: in pixels here because that is what Qt takes; :func:`css` divides by 16
+#: to give the page the rem it had.
+TYPE = {
     'f_num': 'Barlow Semi Condensed',
     'f_ui': 'Barlow',
     's_xs': 12, 's_sm': 13, 's_md': 15, 's_lg': 18, 's_xl': 24,
 }
+
+#: The palettes, in the order the disc in the header steps through them.
+#: A theme is a palette and nothing else: the faces, the sizes, the radii
+#: and every rule are written once and read these, so a theme can never
+#: move a control or change what the launcher measures its own size from.
+#:
+#: Each colour keeps the same job at the same contrast in both - ``ink_2``
+#: about 6:1 on a panel, ``ink_3`` about 3:1, the status colours at least
+#: 4.5:1 on the ground and the panel, because the receivers set their lock
+#: line in them. ``scripts/test_theme.py`` holds each theme to that.
+THEMES = {
+    # The default, and the dark one: blue-black slate, with an orange that
+    # means on air.
+    'slate': {
+        'scheme': 'dark',         # what the browser draws its own controls in
+        'ground': '#10151a',      # the page behind everything
+        'panel': '#1a2228',       # a tile, a card, a dialog
+        'panel_2': '#212b32',     # a tile under the pointer, a plain button
+        'well': '#0c1013',        # anything typed into
+        'rule': '#2e3a43',        # a border that should be seen
+        'rule_soft': '#222c33',   # one that should barely be
+        'ink': '#e6ecef',         # body text
+        'ink_0': '#ffffff',       # something already in ink, under the pointer
+        'ink_2': '#93a3ad',       # labels, captions
+        'ink_3': '#5d6d78',       # the quietest thing still meant to be read
+        'live': '#ff9b21',        # on air
+        'warn': '#e8b04b',        # a banner that wants reading
+        'good': '#6fcf97',        # a receiver that has locked
+        'bad': '#f0716a',         # one that has lost it
+        'trace': '#cfe0e8',       # a plotted signal, on the well
+    },
+    # The light one: paper, from voice-summary. The panels sit lighter than
+    # the ground, as they do in Slate - a sheet of paper on a desk - and the
+    # ink is iron-gall blue-black rather than black. Barlow stays:
+    # voice-summary sets its transcripts in a serif because they are read
+    # at length, and nothing here is.
+    'reading-room': {
+        'scheme': 'light',
+        'ground': '#e6e5df',
+        'panel': '#f7f6f2',
+        'panel_2': '#edebe4',
+        'well': '#fbfaf7',
+        'rule': '#c8c5b9',
+        'rule_soft': '#dcd9cf',
+        'ink': '#1c2229',
+        'ink_0': '#05080b',
+        'ink_2': '#4f5966',
+        'ink_3': '#7a818b',
+        'live': '#a13f0c',
+        'warn': '#765a00',
+        'good': '#2a6d32',
+        'bad': '#a8261f',
+        'trace': '#12657a',
+    },
+}
+
+#: The colours every theme has to define, in the order /theme.css lists
+#: them. ``scheme`` is not one: it is a word, not a colour.
+PALETTE = ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft', 'ink',
+           'ink_0', 'ink_2', 'ink_3', 'live', 'warn', 'good', 'bad', 'trace')
+
+#: What the disc's tooltip calls each one.
+NAMES = {'slate': 'Slate', 'reading-room': 'Reading Room'}
+
+DEFAULT = 'slate'
+
+#: The tokens of the theme in force in this process: one palette and the
+#: type. It is one dict, changed in place by :func:`use`, so a module that
+#: did ``from apps.theme import TOKENS`` still reads the theme in force -
+#: **but only when it reads it**. A colour copied out of it at import time,
+#: into a class attribute say, stays whatever theme was in force then.
+TOKENS = {}
+
+_current = None
+
+
+def valid(name):
+    """``name`` if it is a theme, else the default - a settings file may
+    hold anything, or nothing."""
+    return name if name in THEMES else DEFAULT
+
+
+def use(name):
+    """Make ``name`` the theme in force in this process, and return it."""
+    global _current
+    _current = valid(name)
+    TOKENS.clear()
+    TOKENS.update(THEMES[_current])
+    TOKENS.update(TYPE)
+    return _current
+
+
+def current():
+    """The name of the theme in force."""
+    return _current
+
+
+def after(name):
+    """The theme the disc goes to next."""
+    order = list(THEMES)
+    return order[(order.index(valid(name)) + 1) % len(order)]
+
+
+use(DEFAULT)
 
 #: What to fall back to before the vendored faces are loaded, or if they
 #: cannot be. Both front ends name the same stack.
@@ -57,8 +148,8 @@ FALLBACK = '"Helvetica Neue", Arial, sans-serif'
 
 #: Registered families, once. ``addApplicationFont`` on the same file
 #: twice hands back a second handle and registers the family again, which
-#: is wasteful rather than wrong - but both themes call this, and every
-#: dialog calls one of them.
+#: is wasteful rather than wrong - but every apply_*_theme calls this, and
+#: every dialog calls one of them.
 _loaded = None
 
 
@@ -109,6 +200,7 @@ QToolTip { background: %(panel_2)s; color: %(ink)s;
     font-size: %(s_lg)spx; color: %(ink)s; }
 #radio-tag { font-size: %(s_xs)spx; color: %(ink_2)s; padding: 4px 9px;
     border: 1px solid %(rule)s; border-radius: 2px; background: transparent; }
+#theme-label { font-size: %(s_sm)spx; color: %(ink_2)s; }
 #gear { border: none; border-radius: 2px; background: transparent;
     padding: 0; min-width: 0; }
 #gear:hover { background: %(panel)s; }
@@ -189,7 +281,7 @@ QPushButton:pressed { background: %(well)s; }
 /* OK is the page's .btn.primary. */
 QPushButton:default { background: %(ink)s; color: %(ground)s;
     border-color: %(ink)s; }
-QPushButton:default:hover { background: #ffffff; }
+QPushButton:default:hover { background: %(ink_0)s; }
 QPushButton:disabled { color: %(ink_3)s; border-color: %(rule_soft)s;
     background: %(panel)s; }
 
@@ -230,7 +322,7 @@ QSlider::groove:horizontal { background: %(well)s;
 QSlider::sub-page:horizontal { background: %(ink_3)s; border-radius: 2px; }
 QSlider::handle:horizontal { background: %(ink)s; border: none; width: 12px;
     margin: -5px 0; border-radius: 2px; }
-QSlider::handle:horizontal:hover { background: #ffffff; }
+QSlider::handle:horizontal:hover { background: %(ink_0)s; }
 QSlider::handle:horizontal:disabled { background: %(ink_3)s; }
 
 QCheckBox { background: transparent; color: %(ink_2)s; spacing: 8px; }
@@ -386,7 +478,18 @@ FACES = [
 
 
 def css():
-    """The page's ``@font-face`` rules and ``:root``, served as /theme.css.
+    """The page's ``@font-face`` rules and both themes' palettes, served as
+    /theme.css.
+
+    The default theme is ``:root`` and the other is
+    ``:root[data-theme=...]``, so the page changes theme by setting one
+    attribute on ``<html>`` and the browser re-resolves every ``var()``
+    under it - nothing is re-rendered. That selector is (0,2,0) against
+    ``:root``'s (0,1,0), so it wins wherever it sits in the file.
+
+    ``color-scheme`` goes out per theme and is not decoration: it is what
+    makes the browser draw a ``<select>``'s popup and the scroll bars to
+    match. CSS on the control itself only reaches the closed box.
 
     Sizes go out in rem, as the page has always had them, so a reader who
     scales their browser text still gets it; Qt has no such idea and takes
@@ -398,18 +501,20 @@ def css():
         lines.append(
             '@font-face{font-family:"%s";font-style:normal;font-weight:%d;'
             'font-display:swap;src:url("/fonts/%s") format("truetype")}'
-            % (TOKENS[family], weight, filename))
-    lines.append(':root{')
-    for name in ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft',
-                 'ink', 'ink_2', 'ink_3', 'live', 'warn', 'good', 'bad',
-                 'trace'):
-        lines.append('  --%s:%s;' % (name.replace('_', '-'), TOKENS[name]))
-    lines.append('  --f-num:"%s",%s;' % (TOKENS['f_num'], FALLBACK))
-    lines.append('  --f-ui:"%s",%s;' % (TOKENS['f_ui'], FALLBACK))
-    for name in ('s_xs', 's_sm', 's_md', 's_lg', 's_xl'):
-        lines.append('  --%s:%grem;'
-                     % (name.replace('_', '-'), TOKENS[name] / 16))
-    lines.append('}')
+            % (TYPE[family], weight, filename))
+    for key, palette in THEMES.items():
+        lines.append(':root{' if key == DEFAULT
+                     else ':root[data-theme="%s"]{' % key)
+        lines.append('  color-scheme:%s;' % palette['scheme'])
+        for name in PALETTE:
+            lines.append('  --%s:%s;' % (name.replace('_', '-'), palette[name]))
+        if key == DEFAULT:
+            lines.append('  --f-num:"%s",%s;' % (TYPE['f_num'], FALLBACK))
+            lines.append('  --f-ui:"%s",%s;' % (TYPE['f_ui'], FALLBACK))
+            for name in ('s_xs', 's_sm', 's_md', 's_lg', 's_xl'):
+                lines.append('  --%s:%grem;'
+                             % (name.replace('_', '-'), TYPE[name] / 16))
+        lines.append('}')
     return '\n'.join(lines) + '\n'
 
 

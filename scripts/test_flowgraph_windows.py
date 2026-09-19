@@ -4,6 +4,7 @@
     python scripts/test_flowgraph_windows.py                 # every app
     python scripts/test_flowgraph_windows.py amSineGenerator
     python scripts/test_flowgraph_windows.py --save /tmp/shots
+    python scripts/test_flowgraph_windows.py --theme reading-room
 
 The config dialogs have ``scripts/test_dialog_layout.py``; this is the same
 for the windows that come up once OK is pressed. Each app is built the way
@@ -18,7 +19,11 @@ launcher, and with any radio plugged in.
 What it checks, on the window as rendered:
 
 - **It carries the flowgraph theme** (``apply_flowgraph_theme``), and
-  almost nothing on it is still the light grey and white it used to be.
+  almost nothing on it is still the light grey and white it used to be -
+  or, on a light theme, near black, which is what something still
+  painting a dark theme of its own shows as. Slate unless ``--theme``
+  says otherwise, whatever the user has chosen: the settings the apps
+  read are patched, as below.
 - **Every plot's canvas is the well**, as the browser page draws its plots.
 - **Every trace can be seen against it.** The apps set their traces in
   GNU Radio's colours for a white canvas, and black is the commonest - on
@@ -61,6 +66,9 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from apps.theme import THEMES  # noqa: E402 - standard library only
 
 #: Every app with a flowgraph window, in launcher order.
 MODULES = [
@@ -87,8 +95,9 @@ SIZE = (1340, 700)
 TRACE_CONTRAST = 3.0
 TEXT_CONTRAST = 4.5
 
-#: At most this share of a window may be near white. Text in the theme's
-#: ink is near white, so it is not zero; an unthemed panel is far more.
+#: At most this share of a window may be near white - near black, on a
+#: light theme. Text in the theme's ink is near white (black), so it is
+#: not zero; an unthemed panel is far more.
 BRIGHT_SHARE = 0.03
 
 #: The window's control behind each attribute a ``SAVED_SETTINGS`` keeps -
@@ -123,11 +132,13 @@ def contrast(a, b):
     return (hi + 0.05) / (lo + 0.05)
 
 
-def install_stand_ins(media=None):
+def install_stand_ins(media=None, theme_name='slate'):
     """Swap every radio and sound card for a block that opens nothing.
 
     ``media``, if given, replaces the media folder in the settings the apps
-    read - ``''`` is a machine where Settings has never been opened.
+    read - ``''`` is a machine where Settings has never been opened. The
+    theme is always replaced, so the user's choice cannot change what is
+    being tested.
     """
     from gnuradio import analog, audio, blocks, gr, soapy
     import apps.utils as utils
@@ -202,13 +213,14 @@ def install_stand_ins(media=None):
     def read_settings():
         settings = real()
         settings['radio_type'] = 'hackrf'
+        settings['theme'] = theme_name
         if media is not None:
             settings['media_directory'] = media
         return settings
     utils.read_settings = read_settings
 
 
-def child(name, save, no_media=False):
+def child(name, save, no_media=False, theme_name='slate'):
     """One app, in this process. Prints result lines, then exits hard.
 
     With ``no_media`` the media folder is unset and the window is only run,
@@ -222,7 +234,7 @@ def child(name, save, no_media=False):
     from PyQt5 import Qt
 
     app = Qt.QApplication([])
-    install_stand_ins(media='' if no_media else None)
+    install_stand_ins(media='' if no_media else None, theme_name=theme_name)
 
     spec = importlib.util.spec_from_file_location(name, f'apps/{name}.py')
     module = importlib.util.module_from_spec(spec)
@@ -343,7 +355,10 @@ def inspect(Qt, tb, name, save):
 
     # Almost nothing near white outside the plots. The old window was light
     # grey all over; the theme's ink is near white too, but only as text.
-    # A trace may be as bright as it likes.
+    # A trace may be as bright as it likes. On a light theme it is the
+    # other way up: its ink is near black, and so is anything still
+    # painting a dark theme of its own.
+    light = theme.TOKENS['scheme'] == 'light'
     bright = total = 0
     for y in range(0, image.height(), 2):
         for x in range(0, image.width(), 2):
@@ -351,12 +366,14 @@ def inspect(Qt, tb, name, save):
                 continue
             c = image.pixel(x, y)
             total += 1
-            if min((c >> 16) & 255, (c >> 8) & 255, c & 255) > 200:
+            channels = ((c >> 16) & 255, (c >> 8) & 255, c & 255)
+            if (max(channels) < 55) if light else (min(channels) > 200):
                 bright += 1
     if total and bright / total > BRIGHT_SHARE:
+        far = 'black' if light else 'white'
         problems.append(f"{100 * bright / total:.1f}% of the window is near "
-                        f"white, against {100 * BRIGHT_SHARE:.0f}% allowed - "
-                        f"something is still in the old light theme")
+                        f"{far}, against {100 * BRIGHT_SHARE:.0f}% allowed - "
+                        f"something is not wearing the theme")
 
     for label in content.findChildren(Qt.QLabel):
         if not label.isVisible() or not label.isEnabled() or \
@@ -671,12 +688,15 @@ def main():
                         help=argparse.SUPPRESS)
     parser.add_argument('--no-media', action='store_true',
                         help=argparse.SUPPRESS)
+    parser.add_argument('--theme', default='slate',
+                        choices=list(THEMES),
+                        help='the theme to check the windows in')
     args = parser.parse_args()
     if args.geometry:
         geometry_child()
         return 0
     if args.child:
-        child(args.child, args.save, args.no_media)
+        child(args.child, args.save, args.no_media, args.theme)
         return 0
 
     failed = []
@@ -684,10 +704,10 @@ def main():
     if not run_child(['--geometry'], 'position, size, maximized'):
         failed.append('geometry')
 
-    print('\nthe windows, with no radio')
+    print(f'\nthe windows, with no radio, in {args.theme}')
     names = args.apps or MODULES
     for name in names:
-        tail = ['--child', name]
+        tail = ['--child', name, '--theme', args.theme]
         if args.save:
             tail += ['--save', os.path.abspath(args.save)]
         if not run_child(tail, name):
@@ -695,7 +715,8 @@ def main():
 
     print('\nthe windows, with no media folder')
     for name in names:
-        if not run_child(['--child', name, '--no-media'], name):
+        if not run_child(['--child', name, '--no-media',
+                          '--theme', args.theme], name):
             failed.append(f'{name} (no media)')
     print(f"\n{len(names)} windows checked, with media and without")
     if failed:

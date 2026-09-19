@@ -582,6 +582,13 @@ class atscReceiver(gr.top_block, Qt.QWidget):
         Qt.QWidget.__init__(self)
         self.setWindowTitle("ATSC Video Receiver")
         apply_flowgraph_theme(self)
+        # The lock line's colours are the theme's, since the window wears
+        # it: the old green and red were picked for Qt's light grey and read
+        # about 3:1 on its panels. Taken here, from the theme the window was
+        # just painted in, not at import - the launcher may have changed
+        # theme since this module was loaded.
+        self.GOOD, self.WARN, self.BAD = (TOKENS['good'], TOKENS['warn'],
+                                          TOKENS['bad'])
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
         except BaseException as exc:
@@ -1019,10 +1026,6 @@ class atscReceiver(gr.top_block, Qt.QWidget):
             self.ts.stop_player()
             self.watch_btn.setText("Watch")
             self.action_note.setText("")
-
-    #: The theme's, since the window wears it: the old green and red were
-    #: picked for Qt's light grey and read about 3:1 on its panels.
-    GOOD, WARN, BAD = TOKENS['good'], TOKENS['warn'], TOKENS['bad']
 
     def _status(self, packets, bad_pct):
         """What is actually happening, and a colour for how bad it is.

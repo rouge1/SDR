@@ -423,7 +423,7 @@ QSS equivalent at all.** They are done to the pixels instead, in
 | The page says | Qt has no such thing, so |
 |---|---|
 | `--ground` and the rest of `:root` | Python formats the tokens into the sheet, the way `icon_url()` already got absolute paths into a `url()` |
-| `object-fit: cover` with `filter: saturate(.82)` | `cover_pixmap()` crops each icon to 4:3 about its middle and pulls the colour back, once, with PIL and numpy |
+| `object-fit: cover` with `filter: saturate(.82)` | `cover_crop()` crops each icon to 4:3 about its middle, once, with PIL, and `picture_pixmap()` pulls the colour back with numpy - and brings it back under the pointer, as the page's `:hover` does |
 | `letter-spacing` on the TRANSMIT/RECEIVE line | `token_font()`, because only a QFont has it |
 | `.bank-name::after`, the hairline running off the heading | a `QFrame` in the row - Qt's `::` are sub-controls of a known widget, not pseudo-elements anyone can invent |
 
@@ -613,6 +613,111 @@ and drag to still move a slider. With the guard switched off it fails
 on all of them, the power slider included. It sends the events to the
 controls directly. On a real display, and a real scroll reaching the
 scroll area, it has not been tried.
+
+### Two themes, and the disc that picks one
+
+There are two themes, both from the same tokens: **Slate**, the dark
+blue-black the app has always had and still the default, and **Reading
+Room**, the light one, paper and iron-gall ink, from voice-summary. The
+way of choosing between them is voice-summary's too: the word "Themes" and
+a disc in the header, between the radio tag and the gear, in both front
+ends. The disc *is* the theme in force, and a click switches to the other.
+Its name is in the tooltip rather than on screen, because the window round
+the disc already shows it.
+
+**A dark and a light theme is all the user wants.** Three third themes
+were built and removed on 2026-09-18: voice-summary's Tape Room, a warm
+brown; Neon, violet with the tile pictures drawn through a magenta-to-cyan
+waterfall colour ramp; and 8-Bit, an NES role-playing game's menu with
+pixel fonts and pixel-art pictures. Don't offer another without being
+asked.
+
+- **A theme is a palette and nothing else.** `THEMES` in `apps/theme.py`
+  holds one palette per theme. The faces, the sizes, the radii and every
+  rule are shared, so no theme can move a control or change the size the
+  launcher measures for itself. Reading Room keeps Barlow. voice-summary
+  sets its transcripts in a serif because they are read at length, and
+  nothing here is.
+- **The choice is `theme` in `window_settings.json`, not the browser's own
+  storage**, which is where voice-summary keeps it. Here the dialogs and
+  the flowgraph windows have to read it too, including a window the
+  browser starts through `apps/_run.py`, which runs as a process of its
+  own. Every `apply_*_theme` calls `use_saved_theme()` first. A window
+  that is already open keeps the theme it was painted in. The launcher
+  repaints straight away, and the page picks up a change made at the
+  desktop on its next 3 s refresh. The desktop launcher does not pick up a
+  change made in the browser until it is started again.
+- **`TOKENS` is the theme in force, and `use()` changes it in place.** So
+  `from apps.theme import TOKENS` still works, but only for a colour read
+  at the moment it is needed. The three video receivers copied their lock
+  colours into class attributes when the module was imported, which would
+  have kept whatever theme was in force then. They now take them in
+  `__init__`, straight after `apply_flowgraph_theme`.
+- **Four things had a colour of their own, and each one broke on paper.**
+  Two hovers went to `#ffffff`, which put white behind white text on
+  Reading Room's OK button. They use `ink_0` now, the step beyond `ink`.
+  The settings dialog's radio list still carried the grey from before
+  there was a theme, and opened as a dark box in a light dialog. That
+  styling is gone. The spin arrows and the tick are pictures (see
+  [how every dialog gets laid out](#how-every-dialog-gets-laid-out)), and
+  a picture's colour is baked in. `themed_icon_url` keeps each picture's
+  shape, recolours it, and writes it once to a folder in the temp
+  directory. The file name includes the colour, so a palette edited later
+  gets a new file rather than a stale one.
+- **The disc shows the ground and the trace, not `live`.** The trace is
+  the colour that differs most between the two: pale ice and teal ink.
+  Both front ends draw the disc from the tokens. voice-summary writes each
+  disc's colours out separately, and nothing there notices when a disc
+  stops matching its theme.
+- **Its focus ring appears only when Tab brought the focus.** The disc is
+  the first thing in the launcher that takes focus, so Qt hands it focus
+  as the window opens. A ring drawn on any focus would have sat there from
+  the start. On the page, `:focus-visible` does the same job.
+- **The page opens in the saved theme.** The server puts `data-theme` on
+  `<html>` as it serves the page. If the page's script set it after
+  `/api/state` answered, every load would show Slate first and then
+  change. `/theme.css` gives the default as `:root` and the other as
+  `:root[data-theme=…]`, each with its own `color-scheme`. That property is
+  what makes the browser draw a `<select>`'s popup and the scroll bars in
+  the theme's colours.
+
+```sh
+python scripts/test_theme.py                                # both themes' contrast
+python scripts/test_flowgraph_windows.py --theme reading-room
+python scripts/test_dialog_layout.py --theme reading-room --save /tmp/shots
+```
+
+`test_theme.py` holds both palettes to the contrast Slate's colours give:
+labels 4.5:1 on the ground, panel and well, the status colours 4.5:1
+(they are the receivers' lock line), the trace 3:1 on the well, and the
+OK button's text on `ink` and `ink_0`. Given Reading Room's first `ink_3`
+it failed at 2.76:1 on the ground, and the colour was darkened. Both
+window tests now set the theme themselves, Slate unless `--theme` says
+otherwise, so the user's own choice cannot change what they test. On a
+light theme the window test checks for near black rather than near white.
+`scripts/test_launcher_gui.py` sets the theme to Slate for its run and
+puts the user's back afterwards, the same way it handles `tile_faces`. It
+finds the tiles as bright pictures on a dark window, and on Reading
+Room's paper the whole window is bright.
+All sixteen windows pass in both themes, and so do the dialogs, on
+the offscreen platform. On a real display and on Windows, the themes have
+not been tried. The page was checked in Chromium.
+
+**The title bar follows the theme on Windows only.** `match_title_bar` in
+`apps/utils.py` sets DWM's dark mode on each window: dark for Slate,
+light for Reading Room. On Windows 11 it also sets the caption,
+its text and the border to the theme's ground, ink and rule, so the
+launcher's title bar runs on into its rail. It has not been tried: the
+laptop runs anything started over SSH in session 0, where no window can
+be seen. On Linux it does nothing, because nothing works there. GNOME 46
+(Ubuntu 24.04, on both Linux machines here) draws X11 title bars with
+`mutter-x11-frames`. That program listens only to the desktop's own
+`color-scheme` setting and reads no hint from the window. Measured on
+2026-09-18: `_GTK_THEME_VARIANT=dark`, which older GNOME honoured, left
+the bar at #e8e8e8 whether it was set while the window was up or before
+it was mapped. A dark title bar on Linux would take either the desktop
+switched to dark, which changes every app's title bar, or a frameless
+window drawing a title bar of its own.
 
 ## The typefaces
 
