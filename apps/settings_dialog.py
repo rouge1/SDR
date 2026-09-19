@@ -3,68 +3,61 @@
 
 import os
 import json
-import re
-from PyQt5.QtWidgets import QDialog, QGroupBox, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit, QListWidget, QFileDialog, QMessageBox, QRadioButton, QComboBox, QLabel, QApplication # type: ignore
+from PyQt5.QtWidgets import (  # type: ignore
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QVBoxLayout)
 from PyQt5.QtCore import Qt # type: ignore
 
-from apps.utils import geometry_is_reachable
+from apps.utils import geometry_is_reachable, read_settings
+
+
+def valid_ip(ip):
+    """A dotted IPv4 address a radio could have: four octets of 0-255, and
+    neither the unspecified address nor the broadcast one."""
+    octets = ip.split('.')
+    if len(octets) != 4:
+        return False
+    if not all(o.isdigit() and 0 <= int(o) <= 255 for o in octets):
+        return False
+    return ip not in ("0.0.0.0", "255.255.255.255")
+
 
 class SettingsDialog(QDialog):
+    """The gear in the launcher's header: where media is, which radio is
+    connected, and - for an Ettus USRP, the one radio on the network rather
+    than USB - its IP address.
+
+    There was also a Single/Multi launcher mode and a list of IP addresses,
+    for driving several networked USRPs at once. That was never used or
+    tested, and is gone; the launcher always hides while an app runs.
+    """
+
     def __init__(self, settings_file, parent=None):
         super().__init__(parent)
         self.settings_file = settings_file
         self.setWindowTitle("Settings")
         self.setWindowFlags(Qt.Window)
-        self.setMinimumSize(500, 600)
-        self.resize(500, 600)
-        
-        # Load existing settings
-        self.settings = self.load_settings()
-        
-        # Ensure ip_addresses exists in settings
-        if 'ip_addresses' not in self.settings:
-            self.settings['ip_addresses'] = []
-            
+        self.setMinimumWidth(480)
+
+        settings = read_settings(settings_file)
         layout = QVBoxLayout(self)
-        
-        # Media Directory Section
+
+        # Media
         media_group = QGroupBox("Media Directory")
         media_layout = QHBoxLayout()
-        self.media_path = QLineEdit(self.settings.get('media_directory', ''))
+        self.media_path = QLineEdit(settings.get('media_directory', ''))
         browse_btn = QPushButton("Browse")
-        
-        # Make Browse button ignore Enter key
+        # Enter saves the dialog; it should not open a file picker.
         browse_btn.setAutoDefault(False)
-        browse_btn.setDefault(False)
         browse_btn.clicked.connect(self.browse_media_dir)
-        
         media_layout.addWidget(self.media_path)
         media_layout.addWidget(browse_btn)
         media_group.setLayout(media_layout)
-        
-        # Add Radio Mode Section (after media_group)
-        mode_group = QGroupBox("Launcher Mode")
-        mode_layout = QHBoxLayout()
-        self.single_mode = QRadioButton("Single")
-        self.multi_mode = QRadioButton("Multi")
-        
-        # Set default or load saved mode
-        current_mode = self.settings.get('radio_mode', 'single')
-        self.single_mode.setChecked(current_mode == 'single')
-        self.multi_mode.setChecked(current_mode == 'multi')
-        
-        # Connect mode change handlers
-        self.single_mode.clicked.connect(self.validate_mode)
-        self.multi_mode.clicked.connect(self.validate_mode)
-        
-        mode_layout.addWidget(self.single_mode)
-        mode_layout.addWidget(self.multi_mode)
-        mode_group.setLayout(mode_layout)
-        
-        # Radio Hardware Section
-        radio_hw_group = QGroupBox("Radio Hardware")
-        radio_hw_layout = QHBoxLayout()
-        radio_hw_layout.addWidget(QLabel("Select Radio:"))
+
+        # Radio, and the Ettus's address
+        radio_group = QGroupBox("Radio")
+        radio_layout = QVBoxLayout()
         self.radio_hw_combo = QComboBox()
         self.radio_hw_combo.addItem("HackRF One (USB)", "hackrf")
         self.radio_hw_combo.addItem("Ettus USRP (Network)", "usrp")
@@ -75,87 +68,62 @@ class SettingsDialog(QDialog):
                                     "vsg")
         self.radio_hw_combo.addItem("Signal Hound BB60D (USB, receive only)",
                                     "bb60")
-        current_radio = self.settings.get('radio_type', 'hackrf')
-        radio_index = self.radio_hw_combo.findData(current_radio)
-        self.radio_hw_combo.setCurrentIndex(radio_index if radio_index >= 0 else 0)
+        radio_index = self.radio_hw_combo.findData(
+            settings.get('radio_type', 'hackrf'))
+        self.radio_hw_combo.setCurrentIndex(max(radio_index, 0))
         # The list it drops down is painted by the dialog's stylesheet, in
         # whichever theme is in force. It had grey of its own, left over
         # from before there was a theme, which on Reading Room's paper
         # dropped a dark box out of a light dialog.
-        radio_hw_layout.addWidget(self.radio_hw_combo)
-        radio_hw_group.setLayout(radio_hw_layout)
+        radio_layout.addWidget(self.radio_hw_combo)
 
-        # IP Addresses Section
-        ip_group = QGroupBox("Software Defined Radio IP Addresses:")
-        ip_layout = QVBoxLayout()
-        
-        # IP input and add button
-        ip_input_layout = QHBoxLayout()
-        self.ip_input = QLineEdit()
-        self.ip_input.setPlaceholderText("Enter IP address")
-        add_ip_btn = QPushButton("Add")
-        
-        # Handle IP input enter key specifically
-        def handle_ip_return():
-            if self.ip_input.hasFocus():
-                self.add_ip()
-                return True
-            return False
-            
-        self.ip_input.returnPressed.connect(handle_ip_return)
-        add_ip_btn.clicked.connect(self.add_ip)
-        
-        ip_input_layout.addWidget(self.ip_input)
-        ip_input_layout.addWidget(add_ip_btn)
-        
-        # IP list
-        self.ip_list = QListWidget()
-        self.ip_list.addItems(self.settings['ip_addresses'])  # Now safe since we initialized it
-        
-        # Remove IP button
-        remove_ip_btn = QPushButton("Remove Selected")
-        remove_ip_btn.clicked.connect(self.remove_ip)
-        
-        ip_layout.addLayout(ip_input_layout)
-        ip_layout.addWidget(self.ip_list)
-        ip_layout.addWidget(remove_ip_btn)
-        ip_group.setLayout(ip_layout)
-        
-        # Add groups to main layout
+        # Only the Ettus is on the network, so only it has an address. The
+        # row stays in place for the others, greyed out, so it is plain
+        # where the address goes - and one typed in is kept.
+        ip_row = QHBoxLayout()
+        self.ip_label = QLabel("Ettus IP Address:")
+        self.ip_input = QLineEdit(settings.get('usrp_ip', ''))
+        self.ip_input.setPlaceholderText("192.168.10.2")
+        ip_row.addWidget(self.ip_label)
+        ip_row.addWidget(self.ip_input)
+        radio_layout.addLayout(ip_row)
+        radio_group.setLayout(radio_layout)
+        self.radio_hw_combo.currentIndexChanged.connect(self.update_ip_state)
+        self.update_ip_state()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save
+                                   | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
         layout.addWidget(media_group)
-        layout.addWidget(mode_group)
-        layout.addWidget(radio_hw_group)
-        layout.addWidget(ip_group)
+        layout.addWidget(radio_group)
+        layout.addWidget(buttons)
 
-        # Restore saved position and size
+        # Put it back where it was left. Only the width comes back with it:
+        # the height is whatever the contents need, and one saved from the
+        # longer dialog this replaced would leave a gap in the middle.
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
-                    saved = json.load(f)
-                pos = saved.get('settings_dialog_position')
+                    pos = json.load(f).get('settings_dialog_position')
                 # Unlike the other two restore sites this one never checked
                 # anything, so it would happily put the dialog somewhere the
                 # screen no longer reaches - the opposite failure, and just as
                 # awkward once a monitor is unplugged.
                 if pos and geometry_is_reachable(QApplication.instance(), pos):
-                    self.resize(pos['width'], pos['height'])
+                    self.resize(pos['width'], self.sizeHint().height())
                     self.move(pos['x'], pos['y'])
         except Exception as e:
             print(f"Error restoring settings dialog geometry: {e}")
-        
-        # Add Save/Cancel buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        cancel_btn = QPushButton("Cancel")
-        save_btn = QPushButton("Save")
-        cancel_btn.clicked.connect(self.reject)
-        save_btn.clicked.connect(self.accept)
-        
-        button_layout.addWidget(cancel_btn)
-        button_layout.addWidget(save_btn)
-        layout.addLayout(button_layout)
-    
+
+    def is_usrp(self):
+        return self.radio_hw_combo.currentData() == 'usrp'
+
+    def update_ip_state(self):
+        self.ip_label.setEnabled(self.is_usrp())
+        self.ip_input.setEnabled(self.is_usrp())
+
     def browse_media_dir(self):
         directory = QFileDialog.getExistingDirectory(
             self, "Select Media Directory",
@@ -164,98 +132,42 @@ class SettingsDialog(QDialog):
         )
         if directory:
             self.media_path.setText(directory)
-    
-    def add_ip(self):
-        ip_address = self.ip_input.text().strip()
-        if self.validate_ip(ip_address):
-            if ip_address not in self.settings['ip_addresses']:  # Check for duplicates
-                self.ip_list.addItem(ip_address)
-                self.settings['ip_addresses'].append(ip_address)
-                self.ip_input.clear()
-            else:
-                QMessageBox.warning(self, "Duplicate IP", "This IP address is already in the list.")
-        else:
-            QMessageBox.warning(self, "Invalid IP", "The IP address entered is invalid.")
-    
-    def validate_ip(self, ip):
-        # Check if IP address has 4 octets
-        octets = ip.split('.')
-        if len(octets) != 4:
-            return False
-        
-        # Check if each octet is a number between 0 and 255
-        for octet in octets:
-            if not octet.isdigit() or not 0 <= int(octet) <= 255:
-                return False
-        
-        # Check if IP address is forbidden
-        if ip == "0.0.0.0" or ip == "255.255.255.255":
-            return False
-        
-        return True
-    
-    def remove_ip(self):
-        for item in self.ip_list.selectedItems():
-            ip_address = item.text()
-            self.settings['ip_addresses'].remove(ip_address)  # Remove from settings
-            self.ip_list.takeItem(self.ip_list.row(item))
-    
-    def load_settings(self):
-        try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    return json.load(f)
-        except Exception as e:
-            print(f"Error loading settings: {e}")
-        return {'media_directory': '', 'ip_addresses': []}  # Initialize with empty list
-    
-    def validate_mode(self):
-        if self.multi_mode.isChecked() and len(self.settings['ip_addresses']) < 2:
-            QMessageBox.warning(self, "Invalid Mode", 
-                              "Multi mode requires at least 2 IP addresses.")
-            self.single_mode.setChecked(True)
-            return False
-        return True
 
     def accept(self):
-        if not self.validate_mode():
+        ip = self.ip_input.text().strip()
+        if self.is_usrp() and not valid_ip(ip):
+            QMessageBox.warning(
+                self, "Ettus IP Address",
+                "The Ettus USRP needs its IP address, as four numbers "
+                "from 0 to 255 separated by dots - 192.168.10.2, say."
+                if not ip else f"{ip} is not an IP address.")
+            self.ip_input.setFocus()
             return
-            
-        existing_settings = {}
+        if not valid_ip(ip):
+            ip = ''                 # greyed out, and nothing to keep
+
+        existing = {}
         try:
             if os.path.exists(self.settings_file):
                 with open(self.settings_file, 'r') as f:
-                    existing_settings = json.load(f)
+                    existing = json.load(f)
         except Exception as e:
             print(f"Error loading existing settings: {e}")
 
-        existing_settings.update({
+        # The launcher keeps its window position and theme in the same
+        # file, so this merges rather than writes it whole - and drops the
+        # two keys the multi-radio launcher kept.
+        existing.pop('ip_addresses', None)
+        existing.pop('radio_mode', None)
+        existing.update({
             'media_directory': self.media_path.text(),
-            'ip_addresses': self.settings['ip_addresses'],
-            'radio_mode': 'multi' if self.multi_mode.isChecked() else 'single',
-            'radio_type': self.radio_hw_combo.currentData()
+            'radio_type': self.radio_hw_combo.currentData(),
+            'usrp_ip': ip,
         })
-
-        # Save the combined settings
         try:
             with open(self.settings_file, 'w') as f:
-                json.dump(existing_settings, f, indent=4)
+                json.dump(existing, f, indent=4)
         except Exception as e:
             print(f"Error saving settings: {e}")
 
         super().accept()
-
-    def reject(self):
-        super().reject()
-
-    def closeEvent(self, event):
-        super().closeEvent(event)
-    
-    def keyPressEvent(self, event):
-        # Override default dialog key handling
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            # Only handle the event if IP input doesn't have focus
-            if not self.ip_input.hasFocus():
-                event.accept()
-            return
-        super().keyPressEvent(event)

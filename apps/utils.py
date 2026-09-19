@@ -1089,26 +1089,53 @@ class ClickToMove(QObject):
         return False
 
 
-def read_settings():
-    """Read settings from window_settings.json and ensure required fields exist"""
-    settings_file = os.path.join("config", "window_settings.json")
-    settings = {'media_directory': '', 'ip_addresses': [], 'radio_type': 'hackrf'}
-    
+def read_settings(settings_file=None):
+    """What Settings holds - the media folder, the radio, and the Ettus
+    USRP's IP address - with a default for anything never saved.
+
+    It only reads. ``usrp_ip`` was ``ip_addresses``, a list, when the
+    launcher was meant to drive several networked USRPs at once, which was
+    never done; the first address in a file saved then is the one used.
+    """
+    if settings_file is None:
+        settings_file = os.path.join("config", "window_settings.json")
+    settings = {'media_directory': '', 'usrp_ip': '', 'radio_type': 'hackrf'}
     try:
         if os.path.exists(settings_file):
             with open(settings_file) as f:
-                saved_settings = json.load(f)
-                settings.update(saved_settings)
-                
-                # If any defaults were missing, write them back
-                if 'media_directory' not in saved_settings or 'ip_addresses' not in saved_settings:
-                    with open(settings_file, 'w') as f:
-                        json.dump(settings, f, indent=4)
-                        
+                saved = json.load(f)
+            settings.update(saved)
+            if 'usrp_ip' not in saved and saved.get('ip_addresses'):
+                settings['usrp_ip'] = str(saved['ip_addresses'][0]).strip()
     except Exception as e:
-        print(f"Error reading settings:", e)
-        
+        print("Error reading settings:", e)
+    settings.pop('ip_addresses', None)
+    settings.pop('radio_mode', None)
     return settings
+
+
+#: What each radio in Settings is called on the first line of an app's
+#: dialog.
+RADIO_NAMES = {
+    'hackrf': "HackRF One (USB)",
+    'usrp': "Ettus USRP (network)",
+    'vsg': "Signal Hound VSG60 (USB)",
+    'bb60': "Signal Hound BB60D (USB)",
+}
+
+
+def radio_label(radio_type, usrp_ip=''):
+    """The first line of an app's dialog: which radio it will use.
+
+    The radio, and the Ettus's address, are chosen in Settings, so the
+    dialog only says what they are - and, for an Ettus with no address,
+    where to put one. Its OK stays dimmed until there is one.
+    """
+    if radio_type == 'usrp':
+        if usrp_ip:
+            return f"Radio: Ettus USRP at {usrp_ip}"
+        return "Radio: Ettus USRP - no IP address, add it in Settings"
+    return "Radio: " + RADIO_NAMES.get(radio_type, RADIO_NAMES['hackrf'])
 
 
 # --- Radio output power -----------------------------------------------------

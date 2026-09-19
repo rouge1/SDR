@@ -44,7 +44,7 @@ from PyQt5.QtCore import pyqtSlot # type: ignore
 # Local imports
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
@@ -73,9 +73,8 @@ class ConfigDialog(Qt.QDialog):
         
         # Read settings from window_settings.json
         settings = read_settings()
-        self.ipList = settings['ip_addresses']  # Get all IP addresses
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
-        self.N = len(self.ipList)
 
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
@@ -89,7 +88,7 @@ class ConfigDialog(Qt.QDialog):
         self.sine_container.setGraphicsEffect(self.sine_freq_opacity)
 
         # Create all controls
-        self.create_usrp_selector()
+        self.create_radio_label()
         self.create_frequency_control()
         self.create_power_control()
         self.create_modulation_controls()
@@ -110,33 +109,19 @@ class ConfigDialog(Qt.QDialog):
         # Apply dark theme
         apply_dark_theme(self)
         
-    def create_usrp_selector(self):
-        if self.radio_type in ('hackrf', 'vsg'):
-            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
-                     else "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
-            return
-        self.usrp_combo = Qt.QComboBox()
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
+        # An Ettus with no address in Settings has nothing to send to.
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
-        if not self.ipList:  # If list is empty
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-            ok_button.setEnabled(False)  # Disable the OK button
-            
-            # Add opacity effect to dim the button
-            opacity_effect = Qt.QGraphicsOpacityEffect()
-            opacity_effect.setOpacity(0.30)  # 30% opacity
-            ok_button.setGraphicsEffect(opacity_effect)
-        else:
-            for i in range(self.N):
-                self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
-            ok_button.setEnabled(True)
-            # Clear any existing opacity effect
+        ready = self.radio_type != 'usrp' or bool(self.usrp_ip)
+        ok_button.setEnabled(ready)
+        if ready:
             ok_button.setGraphicsEffect(None)
-                    
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
+        else:
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
 
     def create_frequency_control(self):
         # Not a whole-MHz slider: the window tunes far finer, and what it
@@ -216,7 +201,7 @@ class ConfigDialog(Qt.QDialog):
             self.source_combo.addItem("No Modulation", "none")
 
             ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')
-                                  or bool(self.ipList))
+                                  or bool(self.usrp_ip))
             ok_button.setGraphicsEffect(None)
 
         except Exception as e:
@@ -257,7 +242,6 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
 
-                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 self.cf_chooser.setValue(config.get('center_freq', 300))
                 self.pwr_slider.setValue(power_percent(config.get('power_level'), 50))
                 self.carrier_combo.setCurrentIndex(config.get('carrier_index', 0))
@@ -289,7 +273,6 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'carrier_index': self.carrier_combo.currentIndex(),
@@ -306,12 +289,7 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        if hasattr(self, 'usrp_combo') and self.ipList:
-            ipNum = self.usrp_combo.currentIndex() + 1
-            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-        else:
-            ipNum = 0
-            ipXmitAddr = ''
+        ipXmitAddr = self.usrp_ip if self.radio_type == 'usrp' else ''
 
         sidebandDefault = 1 if self.sideband_combo.currentIndex() == 1 else 0
         sidebandTypeDefault = (1 if self.upper_sideband.isChecked() else -1) if sidebandDefault == 1 else 1
@@ -329,9 +307,7 @@ class ConfigDialog(Qt.QDialog):
 
         return {
             'radio_type': self.radio_type,
-            'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
-            'mikePort': 2020 + ipNum,
             'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
             'carrierDefault': self.carrier_combo.currentIndex(),
@@ -393,9 +369,7 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         
         # Assign all values
         radio_type = values.get('radio_type', 'hackrf')
-        ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
-        mikePort = values['mikePort']
         cf = values['cf']
         pwr = values['pwr']
         carrierDefault = values['carrierDefault']
@@ -414,7 +388,6 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self.modIndexDefault = modIndexDefault = 1
         self.cfDefault = cfDefault = cf
         self.carrierDefault = carrierDefault
-        self.usrpNum = usrpNum = ipNum
         self.sidebandType = sidebandType = sidebandTypeDefault
         self.sideband = sideband = sidebandDefault
         self.samp_rate = samp_rate = 2e6
@@ -569,21 +542,6 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
         self._sineFreq_win = RangeWidget(self._sineFreq_range, self.set_sineFreq, "Sinusoid Frequency (Hz)", "counter", float, QtCore.Qt.Horizontal)
         self.top_grid_layout.addWidget(self._sineFreq_win, 3, 6, 1, 4)
 
-        self._usrpNum_tool_bar = Qt.QToolBar(self)
-
-        if None:
-            self._usrpNum_formatter = None
-        else:
-            self._usrpNum_formatter = lambda x: str(x)
-
-        self._usrpNum_tool_bar.addWidget(Qt.QLabel("USRP # "))
-        self._usrpNum_label = Qt.QLabel(str(self._usrpNum_formatter(self.usrpNum)))
-        self._usrpNum_tool_bar.addWidget(self._usrpNum_label)
-        self.top_grid_layout.addWidget(self._usrpNum_tool_bar, 0, 0, 1, 1)
-        for r in range(0, 1):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 1):
-            self.top_grid_layout.setColumnStretch(c, 1)
         self._power_range = resolve_power_range(radio_type)
         if radio_type == 'vsg':
             from apps.vsg_sink import vsg_sink
@@ -894,13 +852,6 @@ class amAudioInternalGeneratorLive(gr.top_block, Qt.QWidget):
     def set_carrierDefault(self, carrierDefault):
         self.carrierDefault = carrierDefault
         self.set_carrier(self.carrierDefault)
-
-    def get_usrpNum(self):
-        return self.usrpNum
-
-    def set_usrpNum(self, usrpNum):
-        self.usrpNum = usrpNum
-        Qt.QMetaObject.invokeMethod(self._usrpNum_label, "setText", Qt.Q_ARG("QString", str(self._usrpNum_formatter(self.usrpNum))))
 
     def get_sidebandType(self):
         return self.sidebandType

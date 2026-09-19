@@ -43,7 +43,7 @@ from apps.atsc_rx_core import channel_center_mhz, tv_channel_items
 from apps.atsc_source import (COLOUR_BARS, TransportStream, atsc_video_files,
                               describe, needs_encoding)
 from apps.ntsc_source import have_ffmpeg
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         adopt_legacy_config, FrequencyChooser)
@@ -70,9 +70,8 @@ class ConfigDialog(Qt.QDialog):
         
         # Read settings from window_settings.json
         settings = read_settings()
-        self.ipList = settings['ip_addresses']
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
-        self.N = len(self.ipList)
         
         # Add OK/Cancel buttons
         self.button_box = Qt.QDialogButtonBox(
@@ -81,7 +80,7 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.rejected.connect(self.reject)
         
         # Create widgets
-        self.create_usrp_selector()
+        self.create_radio_label()
         self.create_frequency_control()
         self.create_power_control()
         self.create_file_selector()
@@ -94,30 +93,19 @@ class ConfigDialog(Qt.QDialog):
         # Apply dark theme
         apply_dark_theme(self)
 
-    def create_usrp_selector(self):
-        if self.radio_type in ('hackrf', 'vsg'):
-            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
-                     else "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
-            return
-        self.usrp_combo = Qt.QComboBox()
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
+        # An Ettus with no address in Settings has nothing to send to.
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
-        if not self.ipList:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-            ok_button.setEnabled(False)
+        ready = self.radio_type != 'usrp' or bool(self.usrp_ip)
+        ok_button.setEnabled(ready)
+        if ready:
+            ok_button.setGraphicsEffect(None)
+        else:
             opacity_effect = Qt.QGraphicsOpacityEffect()
             opacity_effect.setOpacity(0.30)
             ok_button.setGraphicsEffect(opacity_effect)
-        else:
-            for i in range(self.N):
-                self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
-            ok_button.setEnabled(True)
-            ok_button.setGraphicsEffect(None)
-        
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
         # This was a bare QSlider in whole megahertz, 50 to 2200. Rendered a
@@ -209,7 +197,7 @@ class ConfigDialog(Qt.QDialog):
                     if self.file_combo.itemData(i)]
         if playable:
             self.file_combo.setCurrentIndex(playable[0])
-            ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg') or bool(self.ipList))
+            ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg') or bool(self.usrp_ip))
             ok_button.setGraphicsEffect(None)
         else:
             ok_button.setEnabled(False)
@@ -226,7 +214,6 @@ class ConfigDialog(Qt.QDialog):
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
                     
-                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 # Saved as an int by every version before the frequency
                 # control could express anything else; setValue takes both.
                 self.cf_chooser.setValue(config.get('center_freq',
@@ -265,7 +252,6 @@ class ConfigDialog(Qt.QDialog):
         path = self.file_combo.currentData()
 
         config = {
-            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_chooser.value(),
             'power_level': self.pwr_slider.value(),
             'video_file': os.path.basename(path) if path else None
@@ -278,18 +264,12 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        if hasattr(self, 'usrp_combo') and self.ipList:
-            ipNum = self.usrp_combo.currentIndex() + 1
-            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-        else:
-            ipNum = 0
-            ipXmitAddr = ''
+        ipXmitAddr = self.usrp_ip if self.radio_type == 'usrp' else ''
         # rfGain/atten used to be computed here from the old dBm-labelled
         # slider. The slider is 0-100% now and the flowgraph goes through
         # scale_power(), so those two were dead the moment that changed.
         return {
             'radio_type': self.radio_type,
-            'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),
@@ -343,7 +323,6 @@ class atscXmitter2(gr.top_block, Qt.QWidget):
         
         # Assign all values
         radio_type = values.get('radio_type', 'hackrf')
-        ipNum = values['ipNum']
         ipXmitAddr = values['ipXmitAddr']
         cf = values['cf']
         pwr = values['pwr']

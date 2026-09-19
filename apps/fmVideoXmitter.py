@@ -47,7 +47,7 @@ from apps.fm_video_core import (DEFAULT_PROFILE, PREEMPHASIS_CHOICES,
 from apps.ntsc_encode import NTSC, STANDARDS
 from apps.ntsc_source import (AudioTrack, TestPattern, VideoFile, has_audio,
                               have_ffmpeg, ntsc_source, video_files)
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS,
                         FrequencyChooser, TrimmedSpinBox)
@@ -209,17 +209,16 @@ class ConfigDialog(Qt.QDialog):
                                         "fmVideoXmitter_config.json")
 
         settings = read_settings()
-        self.ipList = settings['ip_addresses']
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
         self.media_dir = settings['media_directory']
-        self.N = len(self.ipList)
 
         self.button_box = Qt.QDialogButtonBox(
             Qt.QDialogButtonBox.Ok | Qt.QDialogButtonBox.Cancel)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
-        self.create_usrp_selector()
+        self.create_radio_label()
         self.create_profile_selector()
         self.create_format_selector()
         self.create_frequency_control()
@@ -233,28 +232,19 @@ class ConfigDialog(Qt.QDialog):
         self.load_config()
         apply_dark_theme(self)
 
-    def create_usrp_selector(self):
-        if self.radio_type in ('hackrf', 'vsg'):
-            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
-                     else "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
-            return
-        self.usrp_combo = Qt.QComboBox()
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
+        # An Ettus with no address in Settings has nothing to send to.
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        if not self.ipList:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-            ok_button.setEnabled(False)
+        ready = self.radio_type != 'usrp' or bool(self.usrp_ip)
+        ok_button.setEnabled(ready)
+        if ready:
+            ok_button.setGraphicsEffect(None)
+        else:
             opacity_effect = Qt.QGraphicsOpacityEffect()
             opacity_effect.setOpacity(0.30)
             ok_button.setGraphicsEffect(opacity_effect)
-        else:
-            for i in range(self.N):
-                self.usrp_combo.addItem(f"USRP {i+1} ({self.ipList[i].strip()})")
-            ok_button.setEnabled(True)
-            ok_button.setGraphicsEffect(None)
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
 
     def create_profile_selector(self):
         """The standard, which fills in everything below it.
@@ -446,10 +436,6 @@ class ConfigDialog(Qt.QDialog):
                 self.format_combo.setCurrentIndex(index)
                 self._format_changed()
 
-        def usrp():
-            if hasattr(self, 'usrp_combo'):
-                self.usrp_combo.setCurrentIndex(int(config.get('usrp_index', 0)))
-
         def video():
             saved = config.get('video_source')
             for i in range(self.video_combo.count()):
@@ -469,7 +455,6 @@ class ConfigDialog(Qt.QDialog):
 
         restore('the format', video_format)
         restore('the standard', profile)
-        restore('the USRP', usrp)
         restore('the frequency', lambda: self.cf_chooser.setValue(
             float(config['center_freq'])) if 'center_freq' in config else None)
         restore('the power', lambda: self.pwr_slider.setValue(
@@ -487,7 +472,6 @@ class ConfigDialog(Qt.QDialog):
         kind, path = self.video_combo.currentData() or ('pattern', None)
         audio_kind, audio_path = self.audio_combo.currentData() or ('silence', None)
         config = {
-            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'profile': self.profile_combo.currentData(),
             'video_format': self.format_combo.currentData(),
             'center_freq': self.cf_chooser.value(),
@@ -506,17 +490,11 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        if hasattr(self, 'usrp_combo') and self.ipList:
-            ipNum = self.usrp_combo.currentIndex() + 1
-            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-        else:
-            ipNum = 0
-            ipXmitAddr = ''
+        ipXmitAddr = self.usrp_ip if self.radio_type == 'usrp' else ''
         kind, path = self.video_combo.currentData() or ('pattern', None)
         audio_kind, audio_path = self.audio_combo.currentData() or ('silence', None)
         return {
             'radio_type': self.radio_type,
-            'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_chooser.value(),
             'pwr': self.pwr_slider.value(),

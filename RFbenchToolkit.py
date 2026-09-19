@@ -996,8 +996,8 @@ class RFbenchToolkit(QMainWindow):
 
         # One timer moves every line's pulse. It runs only while the
         # window is on screen and the theme has a pulse - see _sync_pulse -
-        # so in single mode, where the launcher hides while an app runs,
-        # it costs the app nothing.
+        # so while an app runs, with the launcher hidden, it costs the app
+        # nothing.
         self._pulse_clock = QElapsedTimer()
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(PULSE_FRAME_MS)
@@ -1329,7 +1329,7 @@ class RFbenchToolkit(QMainWindow):
         maximized = False
         # Normal first, or the move and resize below would be applied to a
         # window that is still maximized - which is the state it is hidden
-        # in, in single mode, while an app runs.
+        # in while an app runs.
         self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
         try:
             if os.path.exists(self.settings_file):
@@ -1632,21 +1632,11 @@ class RFbenchToolkit(QMainWindow):
                         )
                         return
 
-                # Load radio mode setting
-                radio_mode = 'single'
-                try:
-                    if os.path.exists(self.settings_file):
-                        with open(self.settings_file, 'r') as f:
-                            settings = json.load(f)
-                            radio_mode = settings.get('radio_mode', 'single')
-                except Exception as e:
-                    print(f"Error loading radio mode setting: {e}")
+                # The launcher steps aside while an app runs, and comes
+                # back when its window closes.
+                self.save_window_position()
+                self.hide()
 
-                # Only hide launcher in single mode
-                if radio_mode == 'single':
-                    self.save_window_position()
-                    self.hide()
-                
                 # Start the GNU Radio application
                 tb = module.main(app=self.app, config_values=config_values)
 
@@ -1674,11 +1664,8 @@ class RFbenchToolkit(QMainWindow):
                         save_flowgraph_settings(tb, module_name,
                                                 since=opened_with)
                         original_close_event(event)
-                        # Bringing the launcher back is single mode's job; in
-                        # multi mode it never went away.
-                        if radio_mode == 'single':
-                            self.load_window_position()
-                            self.show()
+                        self.load_window_position()
+                        self.show()
                     tb.closeEvent = new_close_event
 
         except Exception as e:

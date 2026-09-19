@@ -37,7 +37,7 @@ from PyQt5.QtCore import pyqtSlot  # type: ignore
 # Local imports
 from apps.audio_file import AudioFileSource
 from apps.media import AUDIO, choices
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, power_percent,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS, adopt_legacy_config)
 
@@ -54,7 +54,7 @@ class ConfigDialog(Qt.QDialog):
         adopt_legacy_config(self.config_dir, "subcarrierRecorded_config.json", self.config_file)
         
         settings = read_settings()
-        self.ipList = settings.get('ip_addresses', [])
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
 
         # Create button box FIRST before other controls that might need it
@@ -64,7 +64,7 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.rejected.connect(self.reject)
 
         # Then create controls
-        self.create_usrp_selector()
+        self.create_radio_label()
         self.create_frequency_control()
         self.create_power_control()
         self.create_audio_source_control()
@@ -77,30 +77,19 @@ class ConfigDialog(Qt.QDialog):
         self.load_config()
         apply_dark_theme(self)
 
-    def create_usrp_selector(self):
-        if self.radio_type in ('hackrf', 'vsg'):
-            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
-                     else "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
-            return
-        self.usrp_combo = Qt.QComboBox()
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
+        # An Ettus with no address in Settings has nothing to send to.
         ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        
-        if not self.ipList:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-            ok_button.setEnabled(False)
+        ready = self.radio_type != 'usrp' or bool(self.usrp_ip)
+        ok_button.setEnabled(ready)
+        if ready:
+            ok_button.setGraphicsEffect(None)
+        else:
             opacity_effect = Qt.QGraphicsOpacityEffect()
             opacity_effect.setOpacity(0.30)
             ok_button.setGraphicsEffect(opacity_effect)
-        else:
-            for i, ip in enumerate(self.ipList):
-                self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})")
-            ok_button.setEnabled(True)
-            ok_button.setGraphicsEffect(None)
-                    
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
 
     def create_frequency_control(self):
         self.cf_layout = Qt.QHBoxLayout()
@@ -151,7 +140,7 @@ class ConfigDialog(Qt.QDialog):
                 
             # Only enable OK button if we have both IP addresses and media files
             ok_button.setEnabled(self.radio_type in ('hackrf', 'vsg')
-                                  or bool(self.ipList))
+                                  or bool(self.usrp_ip))
             ok_button.setGraphicsEffect(None)
                 
         except Exception as e:
@@ -224,7 +213,6 @@ class ConfigDialog(Qt.QDialog):
             try:
                 with open(self.config_file, 'r') as f:
                     config = json.load(f)
-                if hasattr(self, 'usrp_combo'): self.usrp_combo.setCurrentIndex(config.get('usrp_index', 0))
                 # An int: the window saves what it was left at here,
                 # and a QSlider refuses a float - which load_config's
                 # bare except turns into losing every later setting.
@@ -256,7 +244,6 @@ class ConfigDialog(Qt.QDialog):
 
     def save_config(self):
         config = {
-            'usrp_index': self.usrp_combo.currentIndex() if hasattr(self, 'usrp_combo') else 0,
             'center_freq': self.cf_slider.value(),
             'power_level': self.pwr_slider.value(),
             'submod': self.submod_combo.currentIndex(),
@@ -274,16 +261,10 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        if hasattr(self, 'usrp_combo') and self.ipList:
-            ipNum = self.usrp_combo.currentIndex() + 1
-            ipXmitAddr = self.ipList[self.usrp_combo.currentIndex()].strip()
-        else:
-            ipNum = 0
-            ipXmitAddr = ''
+        ipXmitAddr = self.usrp_ip if self.radio_type == 'usrp' else ''
         
         values = {
             'radio_type': self.radio_type,
-            'ipNum': ipNum,
             'ipXmitAddr': ipXmitAddr,
             'cf': self.cf_slider.value(),
             'rfPwr': self.pwr_slider.value(),

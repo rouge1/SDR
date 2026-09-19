@@ -81,11 +81,14 @@ THEMES = {
         # shadow on a near-black ground has to be far darker to be seen at
         # all, so the resting one is two to three times Reading Room's. In
         # the dark a lifted card reads as lit rather than as shadowed: it
-        # keeps a dark contact shadow close under it, and gains a halo of
+        # keeps a dark contact shadow close under it, and gains a light of
         # the trace's pale ice, with no drop, so it is light and not a
-        # white shadow. The pulse is the same ice.
+        # white shadow - two halos, a tight bright ring round the edge and
+        # a wide soft one, as Walnut's; see there. The pulse is the same
+        # ice.
         'shadow': ((1, 2, 0.45), (4, 12, 0.40)),
-        'shadow_hover': ((3, 6, 0.55), (0, 22, 0.30, 'trace')),
+        'shadow_hover': ((3, 6, 0.55), (0, 12, 0.85, 'trace'),
+                         (0, 34, 0.55, 'trace')),
         'lift': 3,
         'pulse': '#cfe0e8',
     },
@@ -127,9 +130,12 @@ THEMES = {
         # pulse's blue came first, and gave way to this.)
         'ok_invert': True,
         # Under the pointer the card lifts: it rises ``lift`` pixels, and
-        # its shadow drops further below it and spreads wider and darker. The first, (2, 4, .16) and (10, 26, .26) with no
-        # rise, was found too faint.
-        'shadow_hover': ((3, 6, 0.18), (16, 34, 0.32)),
+        # its shadow darkens tight round its edge and drops further below
+        # it, wider and darker. The first, (2, 4, .16) and (10, 26, .26)
+        # with no rise, was found too faint, and so was the next, (3, 6,
+        # .18) and (16, 34, .32) - on 2026-09-19, with the dark themes'
+        # light, which became a tight ring and a wide one the same day.
+        'shadow_hover': ((3, 6, 0.45), (2, 12, 0.55), (20, 40, 0.70)),
         'lift': 3,
         # A pulse of ultramarine runs along the line beside each bank's name,
         # one row after another, like a signal going down a line - the blue
@@ -184,9 +190,13 @@ THEMES = {
         'trace': '#f0cf98',
         # Shadows and lift as Slate's, in a near-black brown rather than
         # black, and a lifted card lit by the tan - lamplight. The pulse is
-        # the tan too.
+        # the tan too. The light was one halo, (0, 22, .32), and was found
+        # too subtle (2026-09-19): the card covers the brightest of a blur,
+        # so little of it showed past the edge. Now a tight bright ring
+        # round the edge and a wide soft one beyond it, and Slate the same.
         'shadow': ((1, 2, 0.45), (4, 12, 0.40)),
-        'shadow_hover': ((3, 6, 0.55), (0, 22, 0.32, 'trace')),
+        'shadow_hover': ((3, 6, 0.55), (0, 12, 0.85, 'trace'),
+                         (0, 34, 0.55, 'trace')),
         'lift': 3,
         'pulse': '#f0cf98',
         # Old type for an old radio. The wordmark, the TRANSMIT line and

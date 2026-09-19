@@ -68,6 +68,34 @@ every time Settings closes:
 - **The single-face path is the same code.** `create_app_button` is kept as
   a one-face call into `create_tile`, so nothing else had to change.
 
+## Settings, and the one IP address
+
+The gear opens `apps/settings_dialog.py`: the media folder, the radio,
+and - for the Ettus USRP, the one radio reached over the network rather
+than USB - its IP address, kept as `usrp_ip`. The address row is greyed
+out for the other three and keeps what is in it, and Save refuses an
+Ettus with no address, or one that is not four numbers from 0 to 255.
+Each app's dialog names the radio on its first line - `radio_label` in
+`apps/utils.py` - and for an Ettus with no address it says to add one in
+Settings and keeps OK dimmed.
+
+- **There was a Single/Multi launcher mode, and a list of addresses**,
+  for driving several networked USRPs from one launcher: in Multi the
+  launcher stayed open while apps ran, and each app's dialog had a
+  "Select USRP" list. It was never used or tested, and went on
+  2026-09-19. The launcher always hides while an app runs now. The
+  dialogs' `usrp_index`, the `ipNum` and `mikePort` they handed the
+  flowgraph, and the "USRP #" box in three transmitter windows went with
+  it; `mikePort` was never read by anything.
+- **An old settings file still works.** `read_settings` takes the first
+  entry of an old `ip_addresses` as `usrp_ip`, and Settings drops
+  `ip_addresses` and `radio_mode` from the file the next time it saves.
+  An app's config may still hold a `usrp_index`, which nothing reads.
+- **`read_settings` only reads.** It wrote the file back whenever
+  `media_directory` or `ip_addresses` was missing from it - a write to
+  `config/` from anything that asked which radio was chosen, tests
+  included.
+
 ## Where the windows come back
 
 Three windows remember where they were left, and all three keep it the same
@@ -126,7 +154,7 @@ things about it:
   maximize button makes - but nobody has looked. On GNOME both are
   verified through the window manager rather than through Qt: the
   launcher maximized, closed, reopened maximized, restored to exactly the
-  geometry it had, and through single mode's hide and show, with no
+  geometry it had, and through its hide and show while an app ran, with no
   drift. The flowgraph window's check there called the save and restore
   directly, which is why it did not catch the dialog.
 
@@ -226,8 +254,8 @@ in `apps/utils.py` writes them from the same close hook as the geometry, in
 both launchers. **Only what was changed in the window is written**: each
 launcher takes `flowgraph_settings` as the window opens and passes it as
 `since`, so a control nobody touched is left as the dialog saved it - and
-two windows of one app open at once, in multi mode, cannot put back each
-other's unchanged values. To keep another control, add it to that dict.
+two windows of one app open at once cannot put back each other's
+unchanged values. To keep another control, add it to that dict.
 The dialog must read the key and the setter must update the attribute, or
 it saves the value the window started with.
 
@@ -620,8 +648,8 @@ faders, rendered through QtSvg, which retired twenty lines of PIL
 that brightened a photograph of a cog and keyed its background out.
 
 The launcher keeps **no list of running apps**, which the browser page
-had. In single mode it hides itself while an app runs, so there would be
-nothing to show it to.
+had. It hides itself while an app runs, so there would be nothing to
+show it to.
 
 ### The flowgraph windows wear it too
 
@@ -862,9 +890,11 @@ without being asked.
   seen at all, so the dark themes' layers are.
 - **Under the pointer a tile lifts**: it rises `lift`, 3 px, and its
   shadow changes to `shadow_hover`, over 150 ms and back. On paper that
-  is the same two layers dropped further, spread wider and darker. The
-  first try had no rise and a fainter shadow, and was found too faint. A
-  dimmed tile does not lift.
+  is a darker contact shadow, a dark ring tight round the edge - blur 12
+  at 0.55 - and a wide shadow dropped 20 px, blur 40 at 0.70. The first
+  try had no rise and a fainter shadow, and was found too faint; so was
+  the second, two layers at 0.18 and 0.32, on 2026-09-19. A dimmed tile
+  does not lift.
 - **In the dark a lifted card is lit, not shadowed.** A layer may name
   its own colour as a fourth item. Slate's and Walnut's `shadow_hover`
   keep a dark contact shadow close under the card and add a halo of the
@@ -872,6 +902,20 @@ without being asked.
   asked whether the shadow should be white. A light dropped below the
   card reads as a glow leaking from underneath; a halo all round it reads
   as the card lighting up.
+- **The light is two halos, and bright.** Both dark themes had one -
+  blur 22 at about 0.3 - and the user found it too subtle on Walnut, then
+  asked for Slate the same (2026-09-19). The card covers the brightest
+  part of a blur, so what shows past its edge is the faint tail. Now a
+  tight ring round the edge, blur 12 at 0.85, and a wide soft one, blur
+  34 at 0.55. At 0.60 the one halo read only as a soft haze, and on
+  Slate's pale ice 0.70 and 0.45 looked weak beside these.
+- **Start at the bold end.** Every one of these was first made gentle
+  and sent back as too faint, and each of the 2026-09-19 changes, in all
+  three themes, was the strongest of three or four strengths rendered
+  side by side. The user's word for the result was 3D. A hover shadow
+  reaches its drop plus its blur past the tile - on paper 20 px and 40,
+  so up to 60 px below it - and runs into the gap between rows, which is
+  meant.
 - **The launcher paints the shadows from the column the tiles sit in**
   (`ShadowColumn`), not with a `QGraphicsDropShadowEffect` on each tile:
   a tile's two caption labels already carry an opacity effect each, for
@@ -925,8 +969,8 @@ without being asked.
   `QGraphicsDropShadowEffect` with no offset. One timer moves every line
   and name at 30 frames a second, timed from `theme.PULSE`, and it runs
   only while the launcher is showing and the theme has a pulse. It stops
-  in `hideEvent`, so in single mode, where the launcher hides while an app
-  runs, it costs the app nothing.
+  in `hideEvent`, so while an app runs, with the launcher hidden, it
+  costs the app nothing.
 
 #### The disc
 

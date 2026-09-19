@@ -32,7 +32,7 @@ from apps.audio_file import PcmReader, audio_channels, is_wav, track_tags
 from apps.media import AUDIO, choices
 from apps.rds_core import PTY_RBDS, clock_text
 from apps.rds_encode import RdsEncoder, RdsSubcarrier, system_clock
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         power_percent, read_settings, update_app_config,
                         resolve_power_range, scale_power, SPECTRUM_Y_AXIS)
 
@@ -112,7 +112,7 @@ class ConfigDialog(Qt.QDialog):
         self.config_file = os.path.join(self.config_dir,
                                         "fmRdsTransmitter_config.json")
         settings = read_settings()
-        self.ipList = settings.get('ip_addresses', [])
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
 
         self.button_box = Qt.QDialogButtonBox(
@@ -120,7 +120,7 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
-        self.create_radio_selector()
+        self.create_radio_label()
         self.create_frequency_control()
         self.create_power_control()
         self.create_audio_control(settings)
@@ -130,28 +130,19 @@ class ConfigDialog(Qt.QDialog):
         self.load_config()
         apply_dark_theme(self)
 
-    def create_radio_selector(self):
-        if self.radio_type in ('hackrf', 'vsg'):
-            label = ("Radio: Signal Hound VSG60 (USB)" if self.radio_type == 'vsg'
-                     else "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            self.button_box.button(Qt.QDialogButtonBox.Ok).setEnabled(True)
-            return
-        self.usrp_combo = Qt.QComboBox()
-        ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        if not self.ipList:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-            ok.setEnabled(False)
-            dim = Qt.QGraphicsOpacityEffect()
-            dim.setOpacity(0.30)
-            ok.setGraphicsEffect(dim)
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
+        # An Ettus with no address in Settings has nothing to send to.
+        ok_button = self.button_box.button(Qt.QDialogButtonBox.Ok)
+        ready = self.radio_type != 'usrp' or bool(self.usrp_ip)
+        ok_button.setEnabled(ready)
+        if ready:
+            ok_button.setGraphicsEffect(None)
         else:
-            for i, ip in enumerate(self.ipList):
-                self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})", ip.strip())
-            ok.setEnabled(True)
-            ok.setGraphicsEffect(None)
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
+            opacity_effect = Qt.QGraphicsOpacityEffect()
+            opacity_effect.setOpacity(0.30)
+            ok_button.setGraphicsEffect(opacity_effect)
 
     def create_frequency_control(self):
         row = Qt.QHBoxLayout()
@@ -282,14 +273,9 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        ip = ''
-        if hasattr(self, 'usrp_combo') and self.ipList:
-            ip = self.usrp_combo.currentData() or ''
         return {
             'radio_type': self.radio_type,
-            'ipXmitAddr': ip,
-            'ipNum': (self.usrp_combo.currentIndex() + 1
-                      if hasattr(self, 'usrp_combo') and self.ipList else 0),
+            'ipXmitAddr': self.usrp_ip if self.radio_type == 'usrp' else '',
             'frequency_mhz': self.freq_spin.value(),
             'power_percent': self.pwr_slider.value(),
             'call': self.call_edit.text().strip().upper(),

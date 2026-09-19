@@ -28,7 +28,7 @@ from gnuradio.filter import firdes  # type: ignore
 from PyQt5 import Qt, QtCore  # type: ignore
 
 from apps.rds_core import RdsDemod, RdsProtocol, clock_text
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, SPECTRUM_Y_AXIS)
 
 MPX_RATE = 250e3          # everything after the channel filter runs here
@@ -76,7 +76,7 @@ class ConfigDialog(Qt.QDialog):
         self.config_file = os.path.join(self.config_dir, "rdsReceiver_config.json")
 
         settings = read_settings()
-        self.ipList = settings.get('ip_addresses', [])
+        self.usrp_ip = settings.get('usrp_ip', '')
         # The radio is the one chosen in Settings, as for every other app.
         self.radio_type = settings.get('radio_type', 'hackrf')
         if self.radio_type == 'vsg':
@@ -89,7 +89,7 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
-        self.create_receiver_selector()
+        self.create_radio_label()
         self.create_frequency_control()
         self.create_gain_control()
         self.create_options()
@@ -126,20 +126,9 @@ class ConfigDialog(Qt.QDialog):
         close.rejected.connect(self.reject)
         self.layout.addWidget(close)
 
-    def create_receiver_selector(self):
-        if self.radio_type != 'usrp':
-            label = {'bb60': "Radio: Signal Hound BB60D (USB)"}.get(
-                self.radio_type, "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            return
-        self.usrp_combo = Qt.QComboBox()
-        if self.ipList:
-            for i, ip in enumerate(self.ipList):
-                self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})", ip.strip())
-        else:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
 
     def create_frequency_control(self):
         row = Qt.QHBoxLayout()
@@ -182,7 +171,7 @@ class ConfigDialog(Qt.QDialog):
 
     def update_ok_state(self):
         ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        enabled = self.radio_type != 'usrp' or bool(self.ipList)
+        enabled = self.radio_type != 'usrp' or bool(self.usrp_ip)
         ok.setEnabled(enabled)
         if enabled:
             ok.setGraphicsEffect(None)
@@ -212,9 +201,6 @@ class ConfigDialog(Qt.QDialog):
                 1 if v == 'RDS' else 0)),
             ('audio', lambda v: self.audio_check.setChecked(bool(v))),
         ]
-        if hasattr(self, 'usrp_combo'):
-            restore.append(
-                ('usrp_index', lambda v: self.usrp_combo.setCurrentIndex(int(v))))
         for key, apply in restore:
             if key in config:
                 try:
@@ -231,8 +217,6 @@ class ConfigDialog(Qt.QDialog):
             'region': self.region_combo.currentData(),
             'audio': self.audio_check.isChecked(),
         }
-        if hasattr(self, 'usrp_combo'):
-            config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
         update_app_config(self.config_file, config)
 
     def accept(self):
@@ -240,11 +224,9 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        usrp = hasattr(self, 'usrp_combo') and bool(self.ipList)
         return {
             'radio_type': self.radio_type,
-            'ipXmitAddr': (self.usrp_combo.currentData() or '') if usrp else '',
-            'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
+            'ipXmitAddr': self.usrp_ip if self.radio_type == 'usrp' else '',
             'frequency_mhz': self.freq_spin.value(),
             'gain_percent': self.gain_slider.value(),
             'region': self.region_combo.currentData(),

@@ -75,7 +75,7 @@ fixed.
 | [fm-video.md](devnotes/fm-video.md) | `fmVideoXmitter`, `fmVideoReceiver`, `fm_video_core` | the FPV and F.405 profiles, the receiver as a measuring instrument, and a real FPV transmitter measured |
 | [media.md](devnotes/media.md) | `media`, `audio_file`, any file picker | how media is found, MP3, song tags, and plain-ASCII RDS text |
 | [radios.md](devnotes/radios.md) | `vsg_sink`, `bb60_source` | the VSG60's and the BB60D's limits, locks, gain and traps |
-| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog`, `apps/_run.py` | flip tiles, where windows come back and what their controls were left at, dialog layout, the themes (dark, light and walnut) and the disc that picks one, for launcher, dialogs and flowgraph windows, the fonts, the end-to-end GUI test, and running one app without the launcher |
+| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog`, `apps/_run.py` | flip tiles, Settings and the Ettus's one IP address, where windows come back and what their controls were left at, dialog layout, the themes (dark, light and walnut) and the disc that picks one, for launcher, dialogs and flowgraph windows, the fonts, the end-to-end GUI test, and running one app without the launcher |
 | [machines.md](devnotes/machines.md) | `windows/`, `linux/environment.yml`, anything run on TVAdemo or the Windows laptop | TVAdemo, running on Windows, and building the environment on a new Linux machine |
 
 Something learned goes into its subject's file. If it could bite anywhere,
@@ -174,7 +174,7 @@ This is a **PyQt5 launcher** for GNU Radio signal generation/transmission applic
 
 1. `RFbenchToolkit.py` — Main window (class `RFbenchToolkit`). Dynamically imports app modules from `apps/` using `importlib`.
 2. When a button is clicked → `launch_application(module_name)` instantiates the module's `ConfigDialog` → user configures parameters → on OK, calls `module.main(app=..., config_values=...)`.
-3. In **single mode**: launcher hides itself while the app runs, then shows again when the app closes. In **multi mode**: launcher stays visible.
+3. The launcher hides itself while the app runs, then shows again when the app closes.
 
 ### App Module Contract
 
@@ -195,16 +195,16 @@ The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block`
 - `apply_flowgraph_theme(window)` — the same tokens for a running
   flowgraph window, called first thing in its `__init__` — see [the
   flowgraph windows wear it too](devnotes/ui.md#the-flowgraph-windows-wear-it-too).
-- `read_settings()` — reads `config/window_settings.json`, returns dict with `media_directory` and `ip_addresses`.
+- `read_settings()` — reads `config/window_settings.json`, and only reads it; returns a dict with `media_directory`, `radio_type` and `usrp_ip`.
+- `radio_label(radio_type, usrp_ip)` — the first line of every app's dialog, naming the radio Settings has chosen.
 
 ### Settings / Persistence
 
 All settings are stored in `config/window_settings.json`:
 - `window_position` — launcher window geometry (saved/restored on open/close).
 - `dialog_position` — last config dialog position.
-- `ip_addresses` — list of USRP IP addresses (configured via the settings gear icon).
+- `usrp_ip` — the Ettus USRP's IP address, the one radio that has one. It replaced `ip_addresses`, a list, whose first entry `read_settings` still takes — see [Settings](devnotes/ui.md#settings-and-the-one-ip-address).
 - `media_directory` — path for recorded audio/video files.
-- `radio_mode` — `"single"` or `"multi"` (multi requires ≥2 IP addresses).
 - `radio_type` — `"hackrf"`, `"usrp"`, or `"vsg"`.
 - `theme` — `"slate"` (dark, the default), `"reading-room"` (light) or `"walnut"` (brown and tan), set by the disc in the launcher's header and read by every window as it opens — see [the themes](devnotes/ui.md#the-themes-and-the-disc-that-picks-one).
 
@@ -222,7 +222,7 @@ opened and then reported "no HackRF found" — which sends people to check a
 cable that is not the problem.
 
 - **HackRF One** — USB SDR via SoapySDR (`soapy.sink('driver=hackrf', ...)`). No IP address needed; OK button always enabled. Gain set via `set_gain(0, 'VGA', value)` (0–47 dB) and `set_gain(0, 'AMP', 0)`.
-- **Ettus USRP** — Network SDR via UHD (`gnuradio-uhd`). IP addresses configured in the settings gear dialog; OK button disabled when none are set. Gain set via `set_gain(value, 0)`.
+- **Ettus USRP** — Network SDR via UHD (`gnuradio-uhd`). IP address set in the settings gear dialog; OK button disabled until there is one. Gain set via `set_gain(value, 0)`.
 - **Signal Hound VSG60** — USB vector signal generator (VID:PID `2817:0008`). Transmit only. No SoapySDR module and no stock GNU Radio block exists, so `apps/vsg_sink.py` wraps the vendor C API (`libvsg_api.so`) with ctypes as a `gr.sync_block`. No IP address needed; OK button always enabled. Level set via `set_level(dBm)` — a *calibrated absolute* output power, not a relative gain index.
 - **Signal Hound BB60D** — USB spectrum analyser (VID:PID `2817:0007`). Receive only. It *is* a SoapySDR device, but not one `gr-soapy` can drive, so `apps/bb60_source.py` wraps the raw SoapySDR Python binding as a `gr.sync_block` — see [the BB60D section](devnotes/radios.md#signal-hound-bb60d-as-a-receiver) for why, and for the three things about it that are not like the other radios.
 
@@ -260,7 +260,7 @@ anything outside 0–100 on load and substitutes the 50% default.
 
 ### Adding a Radio Backend to an App
 
-Each app branches on `radio_type` at four sites: `create_usrp_selector()` in the
+Each app branches on `radio_type` at four sites: `create_radio_label()` in the
 dialog, the sink construction in the flowgraph `__init__`, and the `set_rfPwr` /
 `set_cf` / `set_samp_rate` callbacks. The flowgraph resolves `self._power_range`
 once at construction (re-resolving it for USRP after the sink exists, since the

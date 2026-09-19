@@ -63,7 +63,7 @@ from apps.fmVideoXmitter import (DEVIATION_MAX_MHZ, DEVIATION_MIN_MHZ,
 # plan come from the NTSC receiver, which is where they were written.
 from apps.ntscReceiver import CompositeFrameSink, find_player, rx_gain_plan
 from apps.theme import TOKENS
-from apps.utils import (apply_dark_theme, apply_flowgraph_theme,
+from apps.utils import (apply_dark_theme, apply_flowgraph_theme, radio_label,
                         read_settings, update_app_config, SPECTRUM_Y_AXIS,
                         FrequencyChooser)
 
@@ -544,7 +544,7 @@ class ConfigDialog(Qt.QDialog):
                                         "fmVideoReceiver_config.json")
 
         settings = read_settings()
-        self.ipList = settings.get('ip_addresses', [])
+        self.usrp_ip = settings.get('usrp_ip', '')
         self.radio_type = settings.get('radio_type', 'hackrf')
         if self.radio_type == 'vsg':
             self.create_cannot_receive()
@@ -556,7 +556,7 @@ class ConfigDialog(Qt.QDialog):
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
 
-        self.create_receiver_selector()
+        self.create_radio_label()
         self.create_profile_selector()
         self.create_format_selector()
         self.create_frequency_control()
@@ -591,20 +591,9 @@ class ConfigDialog(Qt.QDialog):
         close.rejected.connect(self.reject)
         self.layout.addWidget(close)
 
-    def create_receiver_selector(self):
-        if self.radio_type != 'usrp':
-            label = {'bb60': "Radio: Signal Hound BB60D (USB)"}.get(
-                self.radio_type, "Radio: HackRF One (USB)")
-            self.layout.addWidget(Qt.QLabel(label))
-            return
-        self.usrp_combo = Qt.QComboBox()
-        if self.ipList:
-            for i, ip in enumerate(self.ipList):
-                self.usrp_combo.addItem(f"USRP {i+1} ({ip.strip()})", ip.strip())
-        else:
-            self.usrp_combo.addItem("IP addr missing - Go to Settings")
-        self.layout.addWidget(Qt.QLabel("Select USRP:"))
-        self.layout.addWidget(self.usrp_combo)
+    def create_radio_label(self):
+        self.layout.addWidget(Qt.QLabel(radio_label(self.radio_type,
+                                                    self.usrp_ip)))
 
     def create_profile_selector(self):
         """The standard, which fills in the rest - as in the transmitter."""
@@ -739,7 +728,7 @@ class ConfigDialog(Qt.QDialog):
 
     def update_ok_state(self):
         ok = self.button_box.button(Qt.QDialogButtonBox.Ok)
-        enabled = self.radio_type != 'usrp' or bool(self.ipList)
+        enabled = self.radio_type != 'usrp' or bool(self.usrp_ip)
         ok.setEnabled(enabled)
         if enabled:
             ok.setGraphicsEffect(None)
@@ -788,9 +777,6 @@ class ConfigDialog(Qt.QDialog):
             ('sound', lambda: self.sound_check.setChecked(
                 bool(config['sound']))),
         ]
-        if hasattr(self, 'usrp_combo'):
-            restore.append(('usrp_index', lambda: self.usrp_combo.setCurrentIndex(
-                int(config['usrp_index']))))
         for key, apply in restore:
             if key not in config:
                 continue
@@ -812,8 +798,6 @@ class ConfigDialog(Qt.QDialog):
             'preemphasis': self.preemph_combo.currentData(),
             'sound': self.sound_check.isChecked(),
         }
-        if hasattr(self, 'usrp_combo'):
-            config['usrp_index'] = max(self.usrp_combo.currentIndex(), 0)
         update_app_config(self.config_file, config)
 
     def accept(self):
@@ -821,11 +805,9 @@ class ConfigDialog(Qt.QDialog):
         super().accept()
 
     def get_values(self):
-        usrp = hasattr(self, 'usrp_combo') and bool(self.ipList)
         return {
             'radio_type': self.radio_type,
-            'ipXmitAddr': (self.usrp_combo.currentData() or '') if usrp else '',
-            'ipNum': self.usrp_combo.currentIndex() + 1 if usrp else 0,
+            'ipXmitAddr': self.usrp_ip if self.radio_type == 'usrp' else '',
             'profile': self.profile_combo.currentData(),
             'video_format': self.format_combo.currentData(),
             'center_mhz': self.cf_chooser.value(),

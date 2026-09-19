@@ -85,8 +85,8 @@ def install_radio(radio, theme_name='slate'):
         settings = original()
         settings['radio_type'] = radio
         settings['theme'] = theme_name
-        if radio == 'usrp' and not settings.get('ip_addresses'):
-            settings['ip_addresses'] = ['192.168.10.2']
+        if radio == 'usrp' and not settings.get('usrp_ip'):
+            settings['usrp_ip'] = '192.168.10.2'
         return settings
 
     utils.read_settings = read_settings

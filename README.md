@@ -15,12 +15,13 @@ it up in its dialog, and the flowgraph runs on whichever radio is selected.
   (receive only). The grid arranges itself around whichever is selected
 - Three themes - **Slate** (dark), **Reading Room** (light) and **Walnut**
   (brown and tan) - picked with the dot by "Themes" in the launcher's
-  header. The dialogs and the app windows follow, and a pulse runs down the
-  line beside each row of tiles
+  header. The dialogs and the app windows follow, a tile under the pointer
+  lifts off the page - lit from behind in the dark themes, casting a deep
+  shadow on paper - and a pulse runs down the line beside each row of
+  tiles
 - Runs on Linux and Windows
 - Needs no network connection - the fonts ship with the repository
 - Remembers each app's settings, and where every window was left
-- Single and multi-radio operation modes
 
 ---
 
@@ -219,9 +220,8 @@ On first launch, open the **Settings** dialog (gear icon, top-right) and configu
 | Setting | Description |
 |---------|-------------|
 | Media Directory | Folder of audio and video clips. WAV and MP3 both play; subfolders are searched too, and `.WAV` counts as well as `.wav`; any video `ffmpeg` can read works |
-| Radio Hardware | **HackRF One (USB)**, **Ettus USRP (Network)**, **Signal Hound VSG60 (USB, transmit only)** or **Signal Hound BB60D (USB, receive only)**. With a one-way radio every tile turns to the side it can run and the rest are dimmed |
-| Launcher Mode | **Single** — launcher hides while an app runs; **Multi** — launcher stays open (requires ≥ 2 USRP IPs) |
-| SDR IP Addresses | USRP only — enter each USRP IP address and click Add |
+| Radio | **HackRF One (USB)**, **Ettus USRP (Network)**, **Signal Hound VSG60 (USB, transmit only)** or **Signal Hound BB60D (USB, receive only)**. With a one-way radio every tile turns to the side it can run and the rest are dimmed |
+| Ettus IP Address | Ettus USRP only, the one radio on the network rather than USB — its IP address (the factory default is 192.168.10.2). Greyed out for the other radios |
 
 The repository ships no audio or video, so a fresh clone has nothing to pick
 until **Media Directory** points at a folder: the audio lists are empty, the video
@@ -303,7 +303,7 @@ Directory** set in Settings.
 
 ## Configuration Details
 
-- **Global settings** — `config/window_settings.json` (radio type, IP addresses, media directory, launcher mode, window geometry)
+- **Global settings** — `config/window_settings.json` (media directory, radio type, the Ettus's IP address, theme, window geometry)
 - **Per-app settings** — `config/<module_name>_config.json` (last-used parameter values, and where its dialog and window were left)
 - Both files are created automatically and are excluded from version control
 

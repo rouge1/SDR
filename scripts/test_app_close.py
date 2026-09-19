@@ -4,14 +4,14 @@
     python scripts/test_app_close.py                # every app in apps/
     python scripts/test_app_close.py atscXmitter    # just the ones named
 
-In single mode the launcher hides while an app runs, and gets itself back by
-wrapping the ``closeEvent`` of whatever the app's ``main()`` returns. That
-only works if ``main()`` returns the window. The ATSC transmitter's called
-``app.exec_()`` instead - which, with the launcher's loop already running,
-returns -1 at once - and replaced the window's ``closeEvent`` with one that
-called ``app.quit()``. So the launcher got an int, never hooked the close,
-and closing the window quit the launcher's own event loop: the tile grid
-never came back, because the launcher was gone.
+The launcher hides while an app runs, and gets itself back by wrapping the
+``closeEvent`` of whatever the app's ``main()`` returns. That only works if
+``main()`` returns the window. The ATSC transmitter's called ``app.exec_()``
+instead - which, with the launcher's loop already running, returns -1 at
+once - and replaced the window's ``closeEvent`` with one that called
+``app.quit()``. So the launcher got an int, never hooked the close, and
+closing the window quit the launcher's own event loop: the tile grid never
+came back, because the launcher was gone.
 
 This runs each app's real ``main()`` the way ``launch_application`` does -
 the launcher's QApplication already running its loop, the launcher window
@@ -95,7 +95,7 @@ def child(name):
         launcher.hide()
         tb = module.main(top_block_cls=StandIn, app=app, config_values={})
         state['returned'] = type(tb).__name__
-        # As RFbenchToolkit.py launch_application does, in single mode.
+        # As RFbenchToolkit.py launch_application does.
         if hasattr(tb, 'closeEvent'):
             original_close_event = tb.closeEvent
 
