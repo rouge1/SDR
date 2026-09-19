@@ -15,6 +15,10 @@ it up in its dialog, and the flowgraph runs on whichever radio is selected.
 - Four radios: **HackRF One** (USB via SoapySDR), **Ettus USRP** (network via
   UHD), **Signal Hound VSG60** (transmit only) and **Signal Hound BB60D**
   (receive only). The grid arranges itself around whichever is selected
+- Three themes - **Slate** (dark), **Reading Room** (light) and **Walnut**
+  (brown and tan) - picked with the dot by "Themes" in either front end's
+  header. The dialogs and the app windows follow, and a pulse runs down the
+  line beside each row of tiles
 - Runs on Linux and Windows
 - Needs no network connection - the fonts ship with the repository
 - Remembers each app's settings, and where every window was left
@@ -225,7 +229,9 @@ transmitters offer only their built-in colour bars, and every app still runs on
 its tone or pattern. Any WAV or MP3 and any video `ffmpeg` reads will do - MP3
 and video need `ffmpeg`, which both environments install.
 
-Settings are saved to `config/window_settings.json` (created automatically on first run).
+Settings are saved to `config/window_settings.json` (created automatically on first run),
+the theme among them - so the dialogs and app windows, and the browser page,
+all open in the one chosen.
 Nothing in `config/` is committed - window positions, radio choice and the
 media folder are per machine - so a pull never overwrites them.
 The launcher opens at a size it works out for itself - the widest bank's tiles
@@ -245,7 +251,7 @@ SDR/
 │   ├── media.py                  # How every picker finds files in the media folder
 │   └── settings_dialog.py        # Global settings UI
 ├── web/                          # Browser front end: server.py and index.html
-├── fonts/                        # Barlow, shipped with its SIL OFL licence
+├── fonts/                        # Barlow and each theme's faces, each with its SIL OFL licence
 ├── icons/                        # Tile pictures and interface glyphs
 ├── scripts/
 │   └── test_*.py                 # Tests - most need no radio and no display

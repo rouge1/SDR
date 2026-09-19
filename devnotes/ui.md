@@ -25,6 +25,12 @@ every time Settings closes:
 | Signal Hound VSG60 | every tile turns to transmit; badges disappear |
 | Signal Hound BB60D | every tile turns to receive; the ten transmit-only tiles dim out |
 
+- **Only a tile that has something to say has a tooltip.** A usable
+  tile's would only repeat the name printed on it, so it has none, in
+  either front end; the user found them clutter on 2026-09-19. The flip
+  badge keeps its "Flip to …", because a glyph does not say what it does,
+  and a screen reader still gets each tile's name - the tile is a button
+  with no text of its own, so it is set as its accessible name.
 - **A dimmed tile says why.** Its tooltip names the direction it needs and
   the radio that cannot do it ("AM Sine Generator needs a radio that can
   transmit. The Signal Hound BB60D cannot."). A greyed square that explains
@@ -614,30 +620,49 @@ on all of them, the power slider included. It sends the events to the
 controls directly. On a real display, and a real scroll reaching the
 scroll area, it has not been tried.
 
-### Two themes, and the disc that picks one
+### The themes, and the disc that picks one
 
-There are two themes, both from the same tokens: **Slate**, the dark
-blue-black the app has always had and still the default, and **Reading
-Room**, the light one, paper and iron-gall ink, from voice-summary. The
-way of choosing between them is voice-summary's too: the word "Themes" and
-a disc in the header, between the radio tag and the gear, in both front
-ends. The disc *is* the theme in force, and a click switches to the other.
-Its name is in the tooltip rather than on screen, because the window round
-the disc already shows it.
+There are three themes, all from the same tokens: **Slate**, the dark
+blue-black the app has always had and still the default; **Reading
+Room**, the light one, paper and iron-gall ink, from voice-summary; and
+**Walnut**, brown with tan for its highlights, like a wooden radio's
+cabinet and the tan face of its dial. The way of choosing is
+voice-summary's too: the word "Themes" and a disc in the header, between
+the radio tag and the gear, in both front ends. The disc *is* the theme in
+force, and a click moves on to the next. Its tooltip is the theme's name
+alone - "Walnut", not "Theme: Walnut", since pointing at the disc already
+says it is the theme. The accessible name keeps the word, and says which
+theme a click goes to, for a screen reader that has no pointer to give it
+that.
 
-**A dark and a light theme is all the user wants.** Three third themes
-were built and removed on 2026-09-18: voice-summary's Tape Room, a warm
-brown; Neon, violet with the tile pictures drawn through a magenta-to-cyan
-waterfall colour ramp; and 8-Bit, an NES role-playing game's menu with
-pixel fonts and pixel-art pictures. Don't offer another without being
-asked.
+**The third theme took four tries, and what failed is worth knowing.**
+All were built and shown on 2026-09-18. voice-summary's Tape Room, a
+near-black brown with amber and red for highlights, was found flat. Neon,
+violet with the tile pictures drawn through a magenta-to-cyan waterfall
+colour ramp, was found awful. 8-Bit, an NES role-playing game's menu with
+pixel fonts and pixel-art pictures, was not liked either. The user then
+asked for brown with tan highlights, which is Walnut: lighter, warmer
+browns than Tape Room's, and one accent instead of three. Themes that
+restyled the pictures did not survive, so don't offer another theme
+without being asked.
 
-- **A theme is a palette and nothing else.** `THEMES` in `apps/theme.py`
-  holds one palette per theme. The faces, the sizes, the radii and every
-  rule are shared, so no theme can move a control or change the size the
-  launcher measures for itself. Reading Room keeps Barlow. voice-summary
-  sets its transcripts in a serif because they are read at length, and
-  nothing here is.
+#### What a theme is
+
+- **A palette, and optionally faces of its own.** `THEMES` in
+  `apps/theme.py` holds one palette per theme, and a theme's `type` names
+  faces of its own. The sizes, the radii and every rule are shared, so no
+  theme can move a control. The launcher measures its own size from
+  whichever faces are in force, and lays its grid out afresh after a
+  theme change, because the captions' height depends on the face.
+- **Things beyond colour are `EXTRAS`**: `shadow`, `shadow_hover` and
+  `lift` for the tiles, `pulse` for the bank lines, and `ok_invert` for
+  Reading Room's OK button - all below. A theme without one draws none.
+- **`TOKENS` is the theme in force, and `use()` changes it in place.** So
+  `from apps.theme import TOKENS` still works, but only for a colour read
+  at the moment it is needed. The three video receivers copied their lock
+  colours into class attributes when the module was imported, which would
+  have kept whatever theme was in force then. They now take them in
+  `__init__`, straight after `apply_flowgraph_theme`.
 - **The choice is `theme` in `window_settings.json`, not the browser's own
   storage**, which is where voice-summary keeps it. Here the dialogs and
   the flowgraph windows have to read it too, including a window the
@@ -647,28 +672,178 @@ asked.
   repaints straight away, and the page picks up a change made at the
   desktop on its next 3 s refresh. The desktop launcher does not pick up a
   change made in the browser until it is started again.
-- **`TOKENS` is the theme in force, and `use()` changes it in place.** So
-  `from apps.theme import TOKENS` still works, but only for a colour read
-  at the moment it is needed. The three video receivers copied their lock
-  colours into class attributes when the module was imported, which would
-  have kept whatever theme was in force then. They now take them in
-  `__init__`, straight after `apply_flowgraph_theme`.
+
+#### Each theme's type
+
+- **Each theme has a voice of its own.** Slate is the modern sans,
+  Barlow. Reading Room has voice-summary's own faces for it, a modern
+  library: Archivo, a grotesque, for the wordmark, the TRANSMIT line and
+  the headings, and Source Serif 4 for the rest, in its SmText cut, the
+  one drawn for small sizes. A "modern" Reading Room was the first idea,
+  and was dropped because Slate already is one. Walnut is the antique:
+  Limelight, 1930s Art Deco, the lettering of a radio's nameplate, for
+  the wordmark, the TRANSMIT line and the headings, and Libre Caslon Text,
+  a Caslon drawn for screens, for everything read at length. Fanwood and
+  IM Fell looked older still, but their old-style figures drop below the
+  line, and this app is mostly frequencies.
+- **Neither front end may fake a bold.** A face with no bold of its own
+  is thickened when one is asked for, which fills in Limelight's
+  hairlines and turns Archivo SemiBold into a smudge. So every face is a
+  static file, one weight to a file, because Qt 5 cannot choose a weight
+  from a variable one. The two text faces run to a real Bold, because the
+  receivers set their status line and their captions bold in whatever the
+  application font is. On the page, Limelight's `@font-face` covers
+  400-700, so the 600 the wordmark asks for is drawn from its one weight;
+  declared as 400 alone, the browser would fake the 600. In Qt the trap is
+  less obvious. **Qt 5 reads a stylesheet's `font-weight` divided by 8**,
+  so the `600` the wordmark, the TRANSMIT line and plot titles asked for
+  is Qt's 75, Bold. Barlow has a real Bold, so Slate never showed it.
+  Limelight and Archivo SemiBold do not, and FreeType thickened them - a
+  third more ink on each, found by measuring the ink rather than by eye.
+  Those rules now ask for `qss_bold`, a type token: 600 in Slate, as it
+  always was, and 500 - Qt's 62, which matches the semibold, or
+  Limelight's one weight, as drawn - in the two themes whose faces stop
+  short of bold.
+
+#### Each theme's colours
+
+- **Walnut's tan reads as trim, not as another brown.** Its tan is its
+  `ink_2`, `ink_3`, `rule` and `trace`, and its `ink_3` and `rule` sit
+  well above Slate's - 6:1 and 3:1 on a panel, against 3:1 and 1.4:1. Its
+  first tans, 4.5:1 and 2:1, were found too close to the walnut. The rule
+  stops at 3:1 because selected text sits on it, and cream on it is
+  already only 4.2:1.
+- **A tile's TRANSMIT or RECEIVE line has a colour of its own, `tag`.**
+  It is supplementary to the app's name, and in Walnut it was not acting
+  so: in `ink_3`'s bright tan, 6:1 on a panel, and Limelight's heavy
+  Deco, it caught the eye before the name did. Dimming `ink_3` would
+  have dimmed the tile outlines, the slider fill and the hover border
+  with it, so the line took a token of its own. In Walnut it is 3.5:1,
+  near Slate's, against the name's 12.6:1. Slate and Reading Room have
+  `tag` equal to `ink_3`.
+- **A bank's name has one too, `heading`.** Reading Room's is full ink:
+  in `ink_2` the names were too faint to head anything on paper. Slate's
+  and Walnut's are their `ink_2`.
 - **Four things had a colour of their own, and each one broke on paper.**
   Two hovers went to `#ffffff`, which put white behind white text on
-  Reading Room's OK button. They use `ink_0` now, the step beyond `ink`.
+  Reading Room's OK button; they use `ink_0` now, the step beyond `ink`.
   The settings dialog's radio list still carried the grey from before
-  there was a theme, and opened as a dark box in a light dialog. That
-  styling is gone. The spin arrows and the tick are pictures (see
+  there was a theme, and opened as a dark box in a light dialog; that
+  styling is gone. And the spin arrows and the tick are pictures (see
   [how every dialog gets laid out](#how-every-dialog-gets-laid-out)), and
   a picture's colour is baked in. `themed_icon_url` keeps each picture's
   shape, recolours it, and writes it once to a folder in the temp
   directory. The file name includes the colour, so a palette edited later
   gets a new file rather than a stale one.
+- **Reading Room's OK inverts under the pointer** (`ok_invert`). Its
+  `ink_0`, the step beyond ink, is a darker near-black on a near-black
+  button, and the user found the hover all but invisible. So OK takes
+  the look of the plain button beside it, Cancel's light panel and dark
+  text, and pressed goes back to black. The dark themes keep the step
+  brighter. `ok_hover()` in `apps/theme.py` gives OK's hover colours for
+  either kind of theme, and the launcher's stylesheet and the page's
+  `--ok-hover` variables both come from it. A turn to the pulse's blue
+  came first, and gave way to this. OK also shows when it is pressed now,
+  in every theme: `QPushButton:pressed` lost to `:default` at equal
+  specificity, so a click gave no sign. `:default:pressed` puts it back
+  at rest.
+
+#### Shadows, and the tile under the pointer
+
+- **Every theme's tiles have drop shadows and lift under the pointer.**
+  They were made for Reading Room and then asked for in the other two.
+  `shadow` is a tile's shadow as (drop, blur, opacity) layers, a contact
+  shadow close under it and a softer one further out, drawn in `shade`,
+  a colour of its own - the ink on paper, black in Slate, a near-black
+  brown in Walnut. Not the ink: in a dark theme that is near white. On a
+  near-black ground a shadow has to be two to three times as dark to be
+  seen at all, so the dark themes' layers are.
+- **Under the pointer a tile lifts**: it rises `lift`, 3 px, and its
+  shadow changes to `shadow_hover`, over 150 ms and back. On paper that
+  is the same two layers dropped further, spread wider and darker. The
+  first try had no rise and a fainter shadow, and was found too faint. A
+  dimmed tile does not lift.
+- **In the dark a lifted card is lit, not shadowed.** A layer may name
+  its own colour as a fourth item. Slate's and Walnut's `shadow_hover`
+  keep a dark contact shadow close under the card and add a halo of the
+  trace's colour with no drop - pale ice, and tan lamplight. The user
+  asked whether the shadow should be white. A light dropped below the
+  card reads as a glow leaking from underneath; a halo all round it reads
+  as the card lighting up.
+- **The launcher paints the shadows from the column the tiles sit in**
+  (`ShadowColumn`), not with a `QGraphicsDropShadowEffect` on each tile:
+  a tile's two caption labels already carry an opacity effect each, for
+  the flip, and effects do not nest predictably. `shadow_pixmap` blurs
+  each layer with PIL - a CSS blur of B is a Gaussian of B/2 - and
+  composites them in their own colours, premultiplied, first on top, as a
+  `box-shadow` list does, once per tile size. A shadow reaches past its
+  tile, so the column repaints whole whenever the grid is laid out, or a
+  moved tile would leave shadow behind. The launcher animates a `lift`
+  property on the tile, 0 to 1; the column cross-fades the two shadows by
+  it, and the tile is moved up by hand off the place the grid gave it.
+  `settle()` puts it back whenever the grid is laid out again, and
+  `moveEvent` takes any move the tile did not make as the grid placing
+  it, and rises from there - otherwise a layout pass mid-lift sent the
+  tile back to a place that no longer existed when the pointer left. The
+  page writes the same tokens as `--tile-shadow`, `--tile-shadow-hover`
+  and `--tile-lift`, and transitions `box-shadow` and `transform`.
+- **The grid decides its tile width from the window, never from the
+  scroll bar.** Walnut's Caslon captions made its page 3 px taller than a
+  window sized for Slate. The scroll bar came, the tiles narrowed from 185
+  to 183, a caption rewrapped, the page fit, the bar went - and the grid
+  flipped between the two for as long as the window stayed that size,
+  which also cancelled a lifted tile's lift. `_relayout` now lays the grid
+  out as though there were no bar. If the page then comes out taller than
+  the viewport, it lays out for the width the bar leaves, at once. The
+  answer depends only on the window's size, so it settles. A change of
+  theme lays the grid out twice, the second time once the event loop has
+  run: a stylesheet's fonts reach the labels by posted events, so
+  measured at once the page still had the previous theme's type, and Slate
+  after Walnut settled at 183 px with 10 px to spare.
+
+#### The pulse down each bank's line
+
+- **The heading charges, then fires the pulse down its line.** For 1.2 s
+  the name takes on the pulse's colour and a glow gathers round it,
+  faster as it goes. Then the pulse - a 160 px head and tail - leaves the
+  end of the name and crosses the line in 1.6 s, while the name's glow
+  dies away in 0.35 s. Each row goes 0.5 s after the one above, so the
+  signal runs down the page as well as along it, every 4.5 s. `pulse` is
+  its colour: ultramarine on paper - it was the trace's teal until the
+  user asked for blue - pale ice in Slate and tan in Walnut. The first
+  charge was 0.7 s and dimmer, and was asked to be longer and brighter.
+- **The text takes the colour, because a glow alone did not show.** Dark
+  text in a faint teal halo on paper barely read as charging. The page's
+  glow is three `text-shadow` layers. The launcher's is the effect's blur
+  plus a faint stroke of the pulse's colour round the letters, because
+  the effect only blurs the shape it is given and thin text gives it
+  little. At 2.4 px and 55% the stroke made the letters look bold and
+  smudged; it is 1.6 px at 30%.
+- **One timing, both front ends.** It is `theme.PULSE`. The launcher runs
+  from it, and `/theme.css` turns it into the page's `pulse` and `charge`
+  keyframes, so the two cannot drift. `test_theme.py` checks the page
+  uses the generated ones.
+- **The line is a `PulseLine`, painted, where it was a `QFrame`, and the
+  name a `ChargeLabel`.** The line is three pixels tall, the one-pixel
+  line in the middle and room for the pulse's glow either side. The name
+  paints its own text in a colour mixed by its `charge`, and its glow is
+  a `QGraphicsDropShadowEffect` with no offset. One timer moves every
+  line and name at 30 frames a second, and it runs only while the
+  launcher is showing and the theme has a pulse. It stops in
+  `hideEvent`, so in single mode, where the launcher hides while an app
+  runs, it costs the app nothing. The page animates three background
+  layers - the glow, the pulse and the line - and the name's colour and
+  `text-shadow`, staggered by a `--row` the grid sets on each heading,
+  with the animation paused where a theme has no pulse. A browser set to
+  reduce motion gets neither.
+
+#### The disc, and the page
+
 - **The disc shows the ground and the trace, not `live`.** The trace is
-  the colour that differs most between the two: pale ice and teal ink.
-  Both front ends draw the disc from the tokens. voice-summary writes each
-  disc's colours out separately, and nothing there notices when a disc
-  stops matching its theme.
+  the colour that differs most from one theme to the next: pale ice,
+  teal ink and tan. Both front ends draw the disc from the tokens.
+  voice-summary writes each disc's colours out separately, and nothing
+  there notices when a disc stops matching its theme.
 - **Its focus ring appears only when Tab brought the focus.** The disc is
   the first thing in the launcher that takes focus, so Qt hands it focus
   as the window opens. A ring drawn on any focus would have sat there from
@@ -676,36 +851,44 @@ asked.
 - **The page opens in the saved theme.** The server puts `data-theme` on
   `<html>` as it serves the page. If the page's script set it after
   `/api/state` answered, every load would show Slate first and then
-  change. `/theme.css` gives the default as `:root` and the other as
-  `:root[data-theme=…]`, each with its own `color-scheme`. That property is
-  what makes the browser draw a `<select>`'s popup and the scroll bars in
-  the theme's colours.
+  change. `/theme.css` gives the default as `:root` and each of the
+  others as `:root[data-theme=…]`, each with its own `color-scheme`. That
+  property is what makes the browser draw a `<select>`'s popup and the
+  scroll bars in the theme's colours.
+
+#### Testing them
 
 ```sh
-python scripts/test_theme.py                                # both themes' contrast
+python scripts/test_theme.py                                # every theme's contrast
 python scripts/test_flowgraph_windows.py --theme reading-room
-python scripts/test_dialog_layout.py --theme reading-room --save /tmp/shots
+python scripts/test_dialog_layout.py --theme walnut --save /tmp/shots
 ```
 
-`test_theme.py` holds both palettes to the contrast Slate's colours give:
+`test_theme.py` holds every palette to the contrast Slate's colours give:
 labels 4.5:1 on the ground, panel and well, the status colours 4.5:1
-(they are the receivers' lock line), the trace 3:1 on the well, and the
-OK button's text on `ink` and `ink_0`. Given Reading Room's first `ink_3`
-it failed at 2.76:1 on the ground, and the colour was darkened. Both
-window tests now set the theme themselves, Slate unless `--theme` says
-otherwise, so the user's own choice cannot change what they test. On a
-light theme the window test checks for near black rather than near white.
+(they are the receivers' lock line), a bank's name 4.5:1, a tile's
+TRANSMIT line 3:1, the trace 3:1 on the well, and the OK button's text at
+rest, under the pointer and in `ink_0`. Given Reading Room's first
+`ink_3` it failed at 2.76:1 on the ground, and the colour was darkened.
+It also checks every theme's faces ship in `fonts/` with their licences,
+and that the page's animations are the generated ones. Both window tests
+set the theme themselves, Slate unless `--theme` says otherwise, so the
+user's own choice cannot change what they test. On a light theme the
+window test checks for near black rather than near white.
 `scripts/test_launcher_gui.py` sets the theme to Slate for its run and
-puts the user's back afterwards, the same way it handles `tile_faces`. It
+puts the user's back afterwards, the same way it handles `tile_faces`: it
 finds the tiles as bright pictures on a dark window, and on Reading
-Room's paper the whole window is bright.
-All sixteen windows pass in both themes, and so do the dialogs, on
-the offscreen platform. On a real display and on Windows, the themes have
-not been tried. The page was checked in Chromium.
+Room's paper the whole window is bright. **Hover in an offscreen test
+needs a real pointer** - `QTest.mouseMove` on the window's handle.
+Setting `WA_UnderMouse`, or drawing with `State_MouseOver` in the style
+option, leaves a stylesheet `:hover` unapplied. All sixteen windows pass
+in all three themes, and so do the dialogs, on the offscreen platform. On
+a real display and on Windows, the themes have not been tried. The page
+was checked in Chromium.
 
 **The title bar follows the theme on Windows only.** `match_title_bar` in
-`apps/utils.py` sets DWM's dark mode on each window: dark for Slate,
-light for Reading Room. On Windows 11 it also sets the caption,
+`apps/utils.py` sets DWM's dark mode on each window: dark for Slate and
+Walnut, light for Reading Room. On Windows 11 it also sets the caption,
 its text and the border to the theme's ground, ink and rule, so the
 launcher's title bar runs on into its rail. It has not been tried: the
 laptop runs anything started over SSH in session 0, where no window can
@@ -725,6 +908,18 @@ window drawing a title bar of its own.
 the SIL OFL they are licensed under. They are *vendored* rather than
 installed, for the same reason `vendor/libvsg_api.so.1` is: Google Fonts is
 only where Barlow happens to ship.
+
+Reading Room's Archivo (SemiBold) and Source Serif 4 SmText (Regular,
+Semibold and Bold), and Walnut's Limelight and Libre Caslon Text (Regular,
+SemiBold and Bold), sit beside them, each with its own licence:
+`OFL-Archivo.txt`, `OFL-SourceSerif.txt`, `OFL-Limelight.txt` and
+`OFL-LibreCaslon.txt`. `LICENCES` in `apps/theme.py` says which is whose,
+and `test_theme.py` checks each is there. The static Archivo and Libre
+Caslon are from their own projects, and the static Source Serif is Adobe's
+own build: Google Fonts ships all three only as variable files, and Qt 5
+cannot choose a weight from a variable file. Adobe's and Limelight's
+licences reserve their names, 'Source' and 'Limelight'. That binds only a
+modified copy, so every file is shipped exactly as it came.
 
 - **There is no apt package.** `fonts-barlow` is not in the Ubuntu archive
   at all, and an apt install would only ever fix one of the three machines

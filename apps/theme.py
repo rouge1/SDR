@@ -28,22 +28,33 @@ import os
 FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         'fonts')
 
-#: The type: the faces and the sizes, the same in both themes. Sizes are
-#: in pixels here because that is what Qt takes; :func:`css` divides by 16
-#: to give the page the rem it had.
+#: The type: the faces and the sizes. A theme may name faces of its own -
+#: Reading Room and Walnut do - which are laid over these; the sizes are
+#: the same in every theme. Sizes are in pixels here because that is what Qt takes;
+#: :func:`css` divides by 16 to give the page the rem it had.
 TYPE = {
     'f_num': 'Barlow Semi Condensed',
     'f_ui': 'Barlow',
     's_xs': 12, 's_sm': 13, 's_md': 15, 's_lg': 18, 's_xl': 24,
+    # The weight the Qt stylesheets ask for the wordmark, the TRANSMIT line
+    # and a plot's title. Qt 5 reads a stylesheet's font-weight divided by
+    # 8, so 600 asks for Bold (75) - which Barlow has a real face for. A
+    # face with no bold of its own is then thickened by FreeType instead:
+    # measured, a third more ink on Archivo SemiBold and on Limelight. So
+    # a theme whose faces stop short of bold asks 500, which is 62 to Qt
+    # and matches the semibold, or Limelight's one weight, as drawn. The
+    # page is unaffected: CSS weights mean what they say.
+    'qss_bold': 600,
 }
 
 #: The palettes, in the order the disc in the header steps through them.
-#: A theme is a palette and nothing else: the faces, the sizes, the radii
-#: and every rule are written once and read these, so a theme can never
-#: move a control or change what the launcher measures its own size from.
+#: A theme is a palette, and may also name its own faces under ``type``.
+#: The sizes, the radii and every rule are written once and read these,
+#: so a theme can never move a control; the launcher measures its own size
+#: from whichever faces are in force.
 #:
-#: Each colour keeps the same job at the same contrast in both - ``ink_2``
-#: about 6:1 on a panel, ``ink_3`` about 3:1, the status colours at least
+#: Each colour keeps the same job in every theme - ``ink_2`` at least
+#: 4.5:1 on a panel, ``ink_3`` at least 3:1, the status colours at least
 #: 4.5:1 on the ground and the panel, because the receivers set their lock
 #: line in them. ``scripts/test_theme.py`` holds each theme to that.
 THEMES = {
@@ -57,21 +68,34 @@ THEMES = {
         'well': '#0c1013',        # anything typed into
         'rule': '#2e3a43',        # a border that should be seen
         'rule_soft': '#222c33',   # one that should barely be
+        'shade': '#000000',       # a shadow
+        'heading': '#93a3ad',     # a bank's name - Signal generators, Audio
         'ink': '#e6ecef',         # body text
         'ink_0': '#ffffff',       # something already in ink, under the pointer
         'ink_2': '#93a3ad',       # labels, captions
         'ink_3': '#5d6d78',       # the quietest thing still meant to be read
+        'tag': '#5d6d78',         # a tile's TRANSMIT or RECEIVE line
         'live': '#ff9b21',        # on air
         'warn': '#e8b04b',        # a banner that wants reading
         'good': '#6fcf97',        # a receiver that has locked
         'bad': '#f0716a',         # one that has lost it
         'trace': '#cfe0e8',       # a plotted signal, on the well
+        # The tiles' shadows, their lift under the pointer and the pulse
+        # down each bank's line, as Reading Room has them - see there. A
+        # shadow on a near-black ground has to be far darker to be seen at
+        # all, so the resting one is two to three times Reading Room's. In
+        # the dark a lifted card reads as lit rather than as shadowed: it
+        # keeps a dark contact shadow close under it, and gains a halo of
+        # the trace's pale ice, with no drop, so it is light and not a
+        # white shadow. The pulse is the same ice.
+        'shadow': ((1, 2, 0.45), (4, 12, 0.40)),
+        'shadow_hover': ((3, 6, 0.55), (0, 22, 0.30, 'trace')),
+        'lift': 3,
+        'pulse': '#cfe0e8',
     },
     # The light one: paper, from voice-summary. The panels sit lighter than
     # the ground, as they do in Slate - a sheet of paper on a desk - and the
-    # ink is iron-gall blue-black rather than black. Barlow stays:
-    # voice-summary sets its transcripts in a serif because they are read
-    # at length, and nothing here is.
+    # ink is iron-gall blue-black rather than black.
     'reading-room': {
         'scheme': 'light',
         'ground': '#e6e5df',
@@ -80,27 +104,138 @@ THEMES = {
         'well': '#fbfaf7',
         'rule': '#c8c5b9',
         'rule_soft': '#dcd9cf',
+        'shade': '#1c2229',
+        # The bank names in full ink: in ink_2 they were too faint to head
+        # anything on paper.
+        'heading': '#1c2229',
         'ink': '#1c2229',
         'ink_0': '#05080b',
         'ink_2': '#4f5966',
         'ink_3': '#7a818b',
+        'tag': '#7a818b',
         'live': '#a13f0c',
         'warn': '#765a00',
         'good': '#2a6d32',
         'bad': '#a8261f',
         'trace': '#12657a',
+        # A tile is a card on a desk, and a card on a desk has a shadow:
+        # (drop, blur, opacity) for each layer, in ``shade``, the ink's
+        # colour here, a contact shadow close under it and a soft one
+        # further out. A fourth item names another colour for that layer -
+        # Slate and Walnut light their lifted tiles that way. The
+        # page writes the same as a box-shadow.
+        'shadow': ((1, 2, 0.12), (4, 12, 0.14)),
+        # OK under the pointer inverts: it takes Cancel's look - the light
+        # button, dark text - and pressed goes back to black. Stepping to
+        # ink_0, as the dark themes do, was a darker near-black on a
+        # near-black button, and the hover all but vanished. (A turn to the
+        # pulse's blue came first, and gave way to this.)
+        'ok_invert': True,
+        # Under the pointer the card lifts: it rises ``lift`` pixels, and
+        # its shadow drops further below it and spreads wider and darker. The first, (2, 4, .16) and (10, 26, .26) with no
+        # rise, was found too faint.
+        'shadow_hover': ((3, 6, 0.18), (16, 34, 0.32)),
+        'lift': 3,
+        # A pulse of ultramarine runs along the line beside each bank's name,
+        # one row after another, like a signal going down a line - the blue
+        # of voice-summary's second voice on paper. It was the trace's teal
+        # first, and was asked to be blue.
+        'pulse': '#1a4fa0',
+        # voice-summary's own faces for it: a modern library. Archivo, a
+        # grotesque, for the wordmark, the TRANSMIT line and the headings;
+        # Source Serif 4 for everything else, in its SmText cut, the one
+        # drawn for small sizes. Slate is the modern sans already, and
+        # Walnut the antique, so this is the third voice rather than a
+        # second modern one.
+        'type': {'f_num': 'Archivo', 'f_ui': 'Source Serif 4 SmText',
+                 'qss_bold': 500},
+    },
+    # Brown, with tan the one highlight: a wooden radio's walnut cabinet
+    # and the tan face of its dial. Tan is the tile outlines, the TRANSMIT
+    # line, the headings and labels, a slider's fill, the trace and the
+    # disc, and it sits well clear of the wood - ink_3 at 6:1 on a panel,
+    # rule at 3:1, where Slate's are 3:1 and 1.4:1 - so it reads as trim
+    # rather than as one more shade of brown. Its first tans were 4.5:1
+    # and 2:1, and were found too close to the walnut. The rule is kept at
+    # 3:1 and no lighter because selected text sits on it: cream on it is
+    # 4.2:1 as it is. On air stays the orange of a valve's glow,
+    # the one thing on the page that is not brown or tan. voice-summary's
+    # Tape Room was a brown theme too, with amber and red for highlights,
+    # and was found flat: the browns here are lighter and warmer than its
+    # near-black, and there is one accent rather than three.
+    'walnut': {
+        'scheme': 'dark',
+        'ground': '#231a13',
+        'panel': '#33261c',
+        'panel_2': '#3d2e22',
+        'well': '#1a130e',
+        'rule': '#8c6c48',
+        'rule_soft': '#4d3a2b',
+        'shade': '#0a0604',
+        'heading': '#e8c896',
+        'ink': '#f5ede0',
+        'ink_0': '#fffaf2',
+        'ink_2': '#e8c896',
+        'ink_3': '#c4a070',
+        # The TRANSMIT line is supplementary, but in ink_3's bright tan and
+        # Limelight's heavy Deco it caught the eye before the app's name
+        # did. Dimmed to 3.5:1 on a panel, near Slate's, below the name's
+        # 12.6:1.
+        'tag': '#927656',
+        'live': '#f0874a',
+        'warn': '#e6bd5c',
+        'good': '#a8c97f',
+        'bad': '#e8806c',
+        'trace': '#f0cf98',
+        # Shadows and lift as Slate's, in a near-black brown rather than
+        # black, and a lifted card lit by the tan - lamplight. The pulse is
+        # the tan too.
+        'shadow': ((1, 2, 0.45), (4, 12, 0.40)),
+        'shadow_hover': ((3, 6, 0.55), (0, 22, 0.32, 'trace')),
+        'lift': 3,
+        'pulse': '#f0cf98',
+        # Old type for an old radio. The wordmark, the TRANSMIT line and
+        # the headings are in Limelight, the Art Deco of a 1930s nameplate;
+        # everything read at length is in Libre Caslon Text, a Caslon drawn
+        # for screens, which reads at 13 px. Old-style book faces with
+        # old-style figures - Fanwood, IM Fell - were tried and looked
+        # older still, but their numerals drop below the line, and in an
+        # app that is mostly frequencies that is the wrong kind of old.
+        'type': {'f_num': 'Limelight', 'f_ui': 'Libre Caslon Text',
+                 'qss_bold': 500},
     },
 }
 
 #: The colours every theme has to define, in the order /theme.css lists
 #: them. ``scheme`` is not one: it is a word, not a colour.
-PALETTE = ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft', 'ink',
-           'ink_0', 'ink_2', 'ink_3', 'live', 'warn', 'good', 'bad', 'trace')
+PALETTE = ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft',
+           'shade', 'heading', 'ink', 'ink_0', 'ink_2', 'ink_3', 'tag', 'live',
+           'warn', 'good', 'bad', 'trace')
+
+#: Things a theme may have that are not colours, and that the launcher and
+#: the page both draw from - all three themes have them now, in ``shade``: ``shadow``, the layers of a tile's drop shadow,
+#: and ``shadow_hover`` and ``lift``, the deeper one under the pointer and
+#: how many pixels the tile rises off it; and ``pulse``, the colour of the
+#: pulse that runs along each bank's line. Reading Room
+#: has all three; a theme without them draws none.
+EXTRAS = ('shadow', 'shadow_hover', 'lift', 'pulse', 'ok_invert')
 
 #: What the disc's tooltip calls each one.
-NAMES = {'slate': 'Slate', 'reading-room': 'Reading Room'}
+NAMES = {'slate': 'Slate', 'reading-room': 'Reading Room', 'walnut': 'Walnut'}
 
 DEFAULT = 'slate'
+
+#: The pulse down each bank's line, in seconds. The heading charges - a
+#: glow of the pulse's colour gathering round its name, faster as it goes -
+#: for ``charge`` (0.7 s at first, found too short), then fires: the pulse leaves the end of the name and
+#: crosses the line in ``sweep``, while the name's glow dies away over
+#: ``decay``. Each row ``stagger`` after the one above, so it runs down the
+#: page as well as along it, every ``period``. ``length`` is the pulse's,
+#: head and tail, in pixels. The launcher runs from these, and
+#: :func:`css` turns them into the page's keyframes, so the two cannot
+#: drift.
+PULSE = {'charge': 1.2, 'sweep': 1.6, 'decay': 0.35, 'stagger': 0.5,
+         'period': 4.5, 'length': 160}
 
 #: The tokens of the theme in force in this process: one palette and the
 #: type. It is one dict, changed in place by :func:`use`, so a module that
@@ -118,13 +253,29 @@ def valid(name):
     return name if name in THEMES else DEFAULT
 
 
+def ok_hover(chosen):
+    """OK under the pointer, as (background, text, border).
+
+    It steps to ``ink_0``, a brighter white on the dark themes' light
+    button, unless the theme has ``ok_invert``: then it takes the look of
+    a plain button - Cancel beside it - and pressed goes back to its own.
+    """
+    if chosen.get('ok_invert'):
+        return chosen['panel_2'], chosen['ink'], chosen['rule']
+    return chosen['ink_0'], chosen['ground'], chosen['ink_0']
+
+
 def use(name):
     """Make ``name`` the theme in force in this process, and return it."""
     global _current
     _current = valid(name)
+    chosen = THEMES[_current]
     TOKENS.clear()
-    TOKENS.update(THEMES[_current])
+    TOKENS.update({k: v for k, v in chosen.items() if k != 'type'})
     TOKENS.update(TYPE)
+    TOKENS.update(chosen.get('type', {}))
+    TOKENS['ok_hover'], TOKENS['ok_hover_ink'], TOKENS['ok_hover_edge'] = \
+        ok_hover(chosen)
     return _current
 
 
@@ -196,7 +347,7 @@ QToolTip { background: %(panel_2)s; color: %(ink)s;
    rule shows through across the full width. */
 #rail { background: %(ground)s; border-bottom: 1px solid %(rule)s; }
 #rail QWidget { background: transparent; }
-#mark { font-family: "%(f_num)s", %(fallback)s; font-weight: 600;
+#mark { font-family: "%(f_num)s", %(fallback)s; font-weight: %(qss_bold)s;
     font-size: %(s_lg)spx; color: %(ink)s; }
 #radio-tag { font-size: %(s_xs)spx; color: %(ink_2)s; padding: 4px 9px;
     border: 1px solid %(rule)s; border-radius: 2px; background: transparent; }
@@ -205,9 +356,10 @@ QToolTip { background: %(panel_2)s; color: %(ink)s;
     padding: 0; min-width: 0; }
 #gear:hover { background: %(panel)s; }
 
-/* A bank heading, and the hairline that is its ::after. */
-#bank-name { color: %(ink_2)s; font-size: %(s_sm)spx; background: transparent; }
-#hairline { background: %(rule_soft)s; border: none; }
+/* A bank heading. Its hairline, the page's ::after, is a PulseLine in
+   RFbenchToolkit.py, which paints itself - a pulse runs along it on a
+   theme that has one. */
+#bank-name { color: %(heading)s; font-size: %(s_sm)spx; background: transparent; }
 
 /* A tile. Dimming is painted rather than set here: QSS has no opacity
    property, and a QGraphicsOpacityEffect on the tile would have to nest
@@ -218,8 +370,8 @@ QToolTip { background: %(panel_2)s; color: %(ink)s;
 #tile:pressed { background: %(well)s; }
 #tile:disabled { background: %(panel)s; border-color: %(rule)s; }
 #tile QLabel { background: transparent; }
-#dir { font-family: "%(f_num)s", %(fallback)s; font-weight: 600;
-    font-size: %(s_xs)spx; color: %(ink_3)s; }
+#dir { font-family: "%(f_num)s", %(fallback)s; font-weight: %(qss_bold)s;
+    font-size: %(s_xs)spx; color: %(tag)s; }
 #name { font-size: %(s_sm)spx; color: %(ink)s; }
 /* A tile the radio cannot run. The picture is dimmed by the painter -
    see FlipTile._draw - and the caption here, because the two labels
@@ -281,7 +433,12 @@ QPushButton:pressed { background: %(well)s; }
 /* OK is the page's .btn.primary. */
 QPushButton:default { background: %(ink)s; color: %(ground)s;
     border-color: %(ink)s; }
-QPushButton:default:hover { background: %(ink_0)s; }
+QPushButton:default:hover { background: %(ok_hover)s; color: %(ok_hover_ink)s;
+    border-color: %(ok_hover_edge)s; }
+/* Pressed, it drops back to rest: without this the rule above for any
+   pressed button lost to :default, and OK gave no sign of being clicked. */
+QPushButton:default:pressed { background: %(ink)s; color: %(ground)s;
+    border-color: %(ink)s; }
 QPushButton:disabled { color: %(ink_3)s; border-color: %(rule_soft)s;
     background: %(panel)s; }
 
@@ -447,7 +604,7 @@ DisplayPlot QWidget { background: transparent; }
 DisplayPlot QwtPlotCanvas { background: %(well)s; }
 QwtTextLabel#QwtPlotTitle { color: %(ink)s; padding: 6px 0 2px 0;
     font-family: "%(f_ui)s", %(fallback)s; font-size: %(s_sm)spx;
-    font-weight: 600; }
+    font-weight: %(qss_bold)s; }
 QwtScaleWidget { color: %(ink_3)s; font-family: "%(f_ui)s", %(fallback)s;
     font-size: %(s_xs)spx; }
 QwtLegendLabel { color: %(ink_2)s; font-size: %(s_sm)spx; }
@@ -465,23 +622,51 @@ def flowgraph_qss(up, down, tick):
 
 # --- The browser page -------------------------------------------------------
 
-#: The six faces, as (token naming the family, file, CSS weight). Qt reads
-#: the same directory through :func:`load_fonts` and picks its own weights.
+#: The faces, as (family, file, CSS weight). Qt reads the same directory
+#: through :func:`load_fonts` and picks its own weights.
+#:
+#: Every face is a static file, one weight to a file: Qt 5 cannot choose a
+#: weight from a variable one. The text faces run to a real bold, because
+#: the receivers set their status and captions bold in whatever the
+#: application font is. Limelight has one weight, so it is declared over
+#: 400-700: declared as 400 alone, the browser would fake a bold for the
+#: 600 the wordmark asks for and smear the Deco. Qt fakes one too, and is
+#: kept from it another way - see ``qss_bold`` in :data:`TYPE`.
 FACES = [
-    ('f_ui', 'Barlow-Regular.ttf', 400),
-    ('f_ui', 'Barlow-Medium.ttf', 500),
-    ('f_ui', 'Barlow-SemiBold.ttf', 600),
-    ('f_num', 'BarlowSemiCondensed-Medium.ttf', 500),
-    ('f_num', 'BarlowSemiCondensed-SemiBold.ttf', 600),
-    ('f_num', 'BarlowSemiCondensed-Bold.ttf', 700),
+    ('Barlow', 'Barlow-Regular.ttf', 400),
+    ('Barlow', 'Barlow-Medium.ttf', 500),
+    ('Barlow', 'Barlow-SemiBold.ttf', 600),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Medium.ttf', 500),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-SemiBold.ttf', 600),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Bold.ttf', 700),
+    ('Archivo', 'Archivo-SemiBold.ttf', 600),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Regular.ttf', 400),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Semibold.ttf', 600),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Bold.ttf', 700),
+    ('Limelight', 'Limelight-Regular.ttf', '400 700'),
+    ('Libre Caslon Text', 'LibreCaslonText-Regular.ttf', 400),
+    ('Libre Caslon Text', 'LibreCaslonText-SemiBold.ttf', 600),
+    ('Libre Caslon Text', 'LibreCaslonText-Bold.ttf', 700),
 ]
+
+#: The SIL OFL each family is under, with its own copyright line. The
+#: licence has to travel with the fonts, so ``fonts/`` goes everywhere
+#: whole.
+LICENCES = {
+    'Barlow': 'OFL.txt',
+    'Barlow Semi Condensed': 'OFL.txt',
+    'Archivo': 'OFL-Archivo.txt',
+    'Source Serif 4 SmText': 'OFL-SourceSerif.txt',
+    'Limelight': 'OFL-Limelight.txt',
+    'Libre Caslon Text': 'OFL-LibreCaslon.txt',
+}
 
 
 def css():
-    """The page's ``@font-face`` rules and both themes' palettes, served as
+    """The page's ``@font-face`` rules and every theme's palette, served as
     /theme.css.
 
-    The default theme is ``:root`` and the other is
+    The default theme is ``:root`` and each of the others is
     ``:root[data-theme=...]``, so the page changes theme by setting one
     attribute on ``<html>`` and the browser re-resolves every ``var()``
     under it - nothing is re-rendered. That selector is (0,2,0) against
@@ -499,23 +684,80 @@ def css():
              '   here, so the launcher window and this page cannot drift. */']
     for family, filename, weight in FACES:
         lines.append(
-            '@font-face{font-family:"%s";font-style:normal;font-weight:%d;'
+            '@font-face{font-family:"%s";font-style:normal;font-weight:%s;'
             'font-display:swap;src:url("/fonts/%s") format("truetype")}'
-            % (TYPE[family], weight, filename))
-    for key, palette in THEMES.items():
+            % (family, weight, filename))
+    for key, chosen in THEMES.items():
         lines.append(':root{' if key == DEFAULT
                      else ':root[data-theme="%s"]{' % key)
-        lines.append('  color-scheme:%s;' % palette['scheme'])
+        lines.append('  color-scheme:%s;' % chosen['scheme'])
         for name in PALETTE:
-            lines.append('  --%s:%s;' % (name.replace('_', '-'), palette[name]))
+            lines.append('  --%s:%s;' % (name.replace('_', '-'), chosen[name]))
+        faces = chosen.get('type', TYPE if key == DEFAULT else {})
+        for name in ('f_num', 'f_ui'):
+            if name in faces:
+                lines.append('  --%s:"%s",%s;' % (name.replace('_', '-'),
+                                                  faces[name], FALLBACK))
+        # The tile's shadow and the bank lines' pulse. The default states
+        # none, so a theme without them inherits none; the pulse's
+        # animation is paused where there is no pulse, so it costs nothing.
+        def rgb(token):
+            value = chosen[token].lstrip('#')
+            return ' '.join(str(int(value[i:i + 2], 16)) for i in (0, 2, 4))
+        for token, prop in (('shadow', 'tile-shadow'),
+                            ('shadow_hover', 'tile-shadow-hover')):
+            shadow = chosen.get(token)
+            if shadow or key == DEFAULT:
+                lines.append('  --%s:%s;' % (prop, ', '.join(
+                    '0 %dpx %dpx rgb(%s / %g)'
+                    % (layer[0], layer[1],
+                       rgb(layer[3] if len(layer) > 3 else 'shade'), layer[2])
+                    for layer in shadow) if shadow else 'none'))
+        for name, value in zip(('ok-hover', 'ok-hover-ink', 'ok-hover-edge'),
+                               ok_hover(chosen)):
+            lines.append('  --%s:%s;' % (name, value))
+        if chosen.get('lift') or key == DEFAULT:
+            lines.append('  --tile-lift:%dpx;' % (chosen.get('lift') or 0))
+        if chosen.get('pulse') or key == DEFAULT:
+            lines.append('  --pulse:%s;' % (chosen.get('pulse') or 'transparent'))
+            lines.append('  --pulse-state:%s;'
+                         % ('running' if chosen.get('pulse') else 'paused'))
         if key == DEFAULT:
-            lines.append('  --f-num:"%s",%s;' % (TYPE['f_num'], FALLBACK))
-            lines.append('  --f-ui:"%s",%s;' % (TYPE['f_ui'], FALLBACK))
+            lines.append('  --pulse-period:%gs;' % PULSE['period'])
+            lines.append('  --pulse-stagger:%gs;' % PULSE['stagger'])
+            lines.append('  --pulse-length:%dpx;' % PULSE['length'])
             for name in ('s_xs', 's_sm', 's_md', 's_lg', 's_xl'):
                 lines.append('  --%s:%grem;'
                              % (name.replace('_', '-'), TYPE[name] / 16))
         lines.append('}')
+    lines += _pulse_keyframes()
     return '\n'.join(lines) + '\n'
+
+
+def _pulse_keyframes():
+    """The page's charge and pulse, timed from :data:`PULSE`."""
+    def at(seconds):
+        return '%g%%' % round(100 * seconds / PULSE['period'], 3)
+    fire = at(PULSE['charge'])
+    arrive = at(PULSE['charge'] + PULSE['sweep'])
+    spent = at(PULSE['charge'] + PULSE['decay'])
+    off = 'var(--pulse-length)'
+    left = 'calc(-1 * %s) 0,calc(-1 * %s) 1px,0 1px' % (off, off)
+    right = 'calc(100%% + %s) 0,calc(100%% + %s) 1px,0 1px' % (off, off)
+    # The name takes the pulse's colour as it charges, and a glow of it
+    # gathers round it: a glow alone barely showed on paper.
+    dark = ('color:var(--heading);text-shadow:0 0 0 transparent,'
+            '0 0 0 transparent,0 0 0 transparent')
+    lit = ('color:var(--pulse);text-shadow:0 0 3px var(--pulse),'
+           '0 0 10px var(--pulse),0 0 22px var(--pulse)')
+    return [
+        '@keyframes pulse{0%%,%s{background-position:%s}%s,100%%{'
+        'background-position:%s}}' % (fire, left, arrive, right),
+        # Charging gathers faster as it goes, then the glow falls away as
+        # the pulse leaves.
+        '@keyframes charge{0%%{%s;animation-timing-function:ease-in}'
+        '%s{%s}%s,100%%{%s}}' % (dark, fire, lit, spent, dark),
+    ]
 
 
 #: The settings glyph: three faders, which says "settings" without a

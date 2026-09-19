@@ -23,17 +23,22 @@ from PyQt5.QtWidgets import ( # type: ignore
     QSizePolicy,
     QVBoxLayout,
     QDialog,
+    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
-    QMessageBox
+    QMessageBox,
+    QStyle,
+    QStyleOption
 )
 from PyQt5.QtCore import (Qt, QEvent, QSize, QPoint, QPointF,  # type: ignore
+                          QRectF, QElapsedTimer, QTimer,
                           QPropertyAnimation, QEasingCurve, pyqtProperty)
 from PyQt5.QtGui import (QColor, QIcon, QImage, QPixmap, QFont,  # type: ignore
-                         QFontMetrics, QPainter, QPen)
+                         QFontMetrics, QLinearGradient, QPainter,
+                         QPainterPath, QPen)
 from PyQt5.QtSvg import QSvgRenderer # type: ignore
 
 # PIL and numpy prepare the tile pictures - see cover_crop and picture_pixmap.
-from PIL import Image # type: ignore
+from PIL import Image, ImageDraw, ImageFilter # type: ignore
 import numpy as np # type: ignore
 
 # Local imports 
@@ -149,6 +154,14 @@ BADGE_SIZE = 27
 BADGE_INSET = 6
 FLIP_MS = 380
 
+#: How often the pulse along each bank's line moves - 30 a second. Its
+#: timing is ``theme.PULSE``, which the page's keyframes are made from.
+PULSE_FRAME_MS = 33
+
+#: How long a tile takes to lift off the page under the pointer, on a
+#: theme whose shadow deepens then.
+LIFT_MS = 150
+
 #: A tile's picture is cover-cropped once at this width and scaled down to
 #: whatever the tile currently is, so resizing the window costs a blit
 #: rather than a fresh crop of eighteen photographs.
@@ -211,7 +224,7 @@ def token_font(size_token, family_token='f_ui', weight=None, spacing=None):
     return font
 
 
-def centred_column(parent):
+def centred_column(parent, column=None):
     """A column no wider than MAX_CONTENT, centred in ``parent``.
 
     The page's ``max-width: 1080px; margin: 0 auto``, which it applies to
@@ -228,7 +241,7 @@ def centred_column(parent):
     outer = QHBoxLayout(parent)
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(0)
-    column = QWidget()
+    column = column if column is not None else QWidget()
     column.setObjectName('column')
     column.setMaximumWidth(MAX_CONTENT + 2 * GUTTER)
     column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -246,6 +259,196 @@ def svg_icon(markup, size):
     QSvgRenderer(markup.encode()).render(painter)
     painter.end()
     return pixmap
+
+
+#: Drawn shadows, by (width, height, theme): every tile in a grid is the
+#: same size, so this is one picture per layout.
+_SHADOWS = {}
+
+
+def shadow_pixmap(width, height, hover=False):
+    """The theme's drop shadow for a tile this size - the deeper one under
+    the pointer, with ``hover`` - and how far it reaches past the tile on
+    every side.
+
+    The page's ``box-shadow`` done by hand: each (drop, blur, opacity)
+    layer is the tile's rectangle, moved down, blurred - a CSS blur of B
+    is a Gaussian of B/2 - and the layers laid over one another, each in
+    the theme's ``shade`` or the colour it names.
+    """
+    layers = theme.TOKENS.get('shadow_hover' if hover else 'shadow') or ()
+    key = (width, height, theme.current(), hover)
+    if key not in _SHADOWS:
+        margin = max((layer[0] + layer[1] for layer in layers), default=0) + 2
+        size = (width + 2 * margin, height + 2 * margin)
+        # Premultiplied colour and coverage, each layer laid under the ones
+        # before it: the first of a box-shadow's list is the one on top.
+        colour = np.zeros(size[::-1] + (3,), dtype=np.float32)
+        cover = np.zeros(size[::-1], dtype=np.float32)
+        for layer in reversed(layers):
+            drop, blur, alpha = layer[:3]
+            tint = QColor(theme.TOKENS[layer[3] if len(layer) > 3 else 'shade'])
+            mask = Image.new('L', size, 0)
+            ImageDraw.Draw(mask).rectangle(
+                (margin, margin + drop, margin + width - 1,
+                 margin + height - 1 + drop), fill=255)
+            mask = mask.filter(ImageFilter.GaussianBlur(blur / 2))
+            a = np.asarray(mask, dtype=np.float32) / 255 * alpha
+            rgb = np.array([tint.red(), tint.green(), tint.blue()],
+                           dtype=np.float32)
+            colour = rgb * a[..., None] + colour * (1 - a[..., None])
+            cover = a + cover * (1 - a)
+        rgba = np.zeros(size[::-1] + (4,), dtype=np.uint8)
+        # Back from premultiplied to straight colour, for the image format.
+        straight = colour / np.maximum(cover, 1e-6)[..., None]
+        rgba[..., :3] = np.clip(straight, 0, 255).astype(np.uint8)
+        rgba[..., 3] = np.clip(cover * 255, 0, 255).astype(np.uint8)
+        data = rgba.tobytes()
+        image = QImage(data, size[0], size[1], 4 * size[0],
+                       QImage.Format_RGBA8888)
+        _SHADOWS[key] = (QPixmap.fromImage(image.copy()), margin)
+    return _SHADOWS[key]
+
+
+class ShadowColumn(QWidget):
+    """The column the tiles sit in, which paints their drop shadows.
+
+    Under each tile, from here, rather than as a
+    ``QGraphicsDropShadowEffect`` on the tile: the tile's two caption
+    labels already carry an opacity effect each, for the flip, and
+    effects do not nest predictably. Only a theme with a ``shadow`` has
+    any - Reading Room, where a tile is a card on a desk. A tile under the
+    pointer lifts: its ``lift`` runs 0 to 1, and the two shadows are faded
+    across by it.
+    """
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        # A QWidget subclass paints its stylesheet background only when
+        # asked to.
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
+        if theme.TOKENS.get('shadow'):
+            for tile in self.findChildren(FlipTile):
+                if not tile.isVisible():
+                    continue
+                lift = tile.lift if theme.TOKENS.get('shadow_hover') else 0.0
+                # Drawn from where the tile is, risen or not, as the page's
+                # box-shadow moves with its tile: the deeper drop of the
+                # lifted shadow is what puts it further below the card.
+                for hover, weight in ((False, 1.0 - lift), (True, lift)):
+                    if weight <= 0:
+                        continue
+                    shadow, margin = shadow_pixmap(tile.width(), tile.height(),
+                                                   hover)
+                    painter.setOpacity(weight)
+                    painter.drawPixmap(tile.x() - margin, tile.y() - margin,
+                                       shadow)
+                painter.setOpacity(1.0)
+        painter.end()
+
+
+class ChargeLabel(QLabel):
+    """A bank's name, which charges up before its line's pulse fires.
+
+    ``charge`` runs 0 to 1: the text is painted that far from the heading
+    colour toward the pulse's, and the glow round it - a
+    ``QGraphicsDropShadowEffect`` with no offset - gathers with it. A glow
+    alone barely showed on Reading Room's paper, dark text in a faint teal
+    halo; the text itself taking the colour is what reads as lighting up.
+    """
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.charge = 0.0
+        self.glow = QGraphicsDropShadowEffect(self)
+        self.glow.setOffset(0, 0)
+        self.glow.setBlurRadius(0)
+        self.glow.setColor(QColor(0, 0, 0, 0))
+        self.setGraphicsEffect(self.glow)
+
+    def set_charge(self, charge):
+        pulse = theme.TOKENS.get('pulse')
+        charge = min(1.0, max(0.0, charge)) if pulse else 0.0
+        if abs(charge - self.charge) < 0.004 and charge not in (0.0, 1.0):
+            return
+        if charge == self.charge:
+            return
+        self.charge = charge
+        colour = QColor(pulse) if pulse else QColor(0, 0, 0)
+        colour.setAlphaF(charge)
+        self.glow.setColor(colour)
+        self.glow.setBlurRadius(6 + 24 * charge)
+        self.update()
+
+    def paintEvent(self, event):
+        if self.charge <= 0:
+            super().paintEvent(event)
+            return
+        rest = QColor(theme.TOKENS['heading'])
+        hot = QColor(theme.TOKENS.get('pulse') or theme.TOKENS['heading'])
+        mix = QColor(*(int(round(a + (b - a) * self.charge)) for a, b in
+                       zip(rest.getRgb()[:3], hot.getRgb()[:3])))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setFont(self.font())
+        # A stroke of the pulse's colour round the letters, fading in with
+        # the charge. The glow effect blurs the shape it is given, and thin
+        # text gives it little to spread: this is what makes it bright.
+        rect = self.contentsRect()
+        metrics = QFontMetrics(self.font())
+        x = rect.x()
+        y = rect.y() + (rect.height() + metrics.ascent() - metrics.descent()) / 2
+        outline = QPainterPath()
+        outline.addText(QPointF(x, y), self.font(), self.text())
+        halo = QColor(hot)
+        halo.setAlphaF(0.3 * self.charge)
+        painter.strokePath(outline, QPen(halo, 1.6, Qt.SolidLine, Qt.RoundCap,
+                                         Qt.RoundJoin))
+        painter.setPen(mix)
+        painter.drawText(rect, int(self.alignment()), self.text())
+        painter.end()
+
+
+class PulseLine(QWidget):
+    """The hairline that runs off a bank's name, with a pulse going down it.
+
+    It was a ``QFrame``; it is drawn now so that a theme with a ``pulse``
+    colour can send a signal along it - a short bright head with a tail
+    behind it, left to right, the launcher's timer setting where it is
+    (``phase``, 0 to 1, or None between pulses). Three pixels tall, so the
+    pulse can carry a faint glow either side of the one-pixel line.
+    """
+
+    #: How long the pulse is, head and tail, in pixels.
+    LENGTH = theme.PULSE['length']
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('hairline')
+        self.setFixedHeight(3)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.phase = None
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(0, 1, self.width(), 1, QColor(theme.TOKENS['rule_soft']))
+        pulse = theme.TOKENS.get('pulse')
+        if pulse and self.phase is not None:
+            head = -self.LENGTH + (self.width() + self.LENGTH) * self.phase
+            for top, height, strength in ((0, 3, 0.3), (1, 1, 1.0)):
+                colour = QColor(pulse)
+                clear = QColor(pulse)
+                clear.setAlpha(0)
+                colour.setAlphaF(strength)
+                gradient = QLinearGradient(head, 0, head + self.LENGTH, 0)
+                gradient.setColorAt(0.0, clear)
+                gradient.setColorAt(0.8, colour)
+                gradient.setColorAt(1.0, clear)
+                painter.fillRect(QRectF(head, top, self.LENGTH, height),
+                                 gradient)
+        painter.end()
 
 
 class ThemeDisc(QAbstractButton):
@@ -294,7 +497,10 @@ class ThemeDisc(QAbstractButton):
         """Say which theme this is and which comes next; repaint."""
         now = theme.current()
         name = theme.NAMES[now]
-        self.setToolTip(f"Theme: {name}")
+        # Pointing at the disc already says it is the theme; the tooltip
+        # only has to say which. A screen reader has no pointer to say so,
+        # which is why the accessible name keeps the word.
+        self.setToolTip(name)
         self.setAccessibleName(f"Theme: {name}. Activate for "
                                f"{theme.NAMES[theme.after(now)]}.")
         self.update()
@@ -364,6 +570,16 @@ class FlipTile(QPushButton):
         self._pixmaps = self._lit = []
         self._fraction = 1.0
         self._hover = False
+        # How far the tile has lifted off the page under the pointer, 0 to
+        # 1, for a theme whose shadow deepens then - see ShadowColumn.
+        self._lift = 0.0
+        # Where the layout put the tile, while it is risen off it, and where
+        # the tile last moved itself to.
+        self._rest = None
+        self._placed = None
+        self._lift_animation = QPropertyAnimation(self, b'lift', self)
+        self._lift_animation.setDuration(LIFT_MS)
+        self._lift_animation.setEasingCurve(QEasingCurve.OutCubic)
         self.load_pictures()
 
         layout = QVBoxLayout(self)
@@ -508,14 +724,18 @@ class FlipTile(QPushButton):
         name, _module, _icon, direction = self.current()
         self.text_label.setText(name)
         self.dir_label.setText(DIRECTION_KICKER.get(direction, ''))
+        # A screen reader's name for the tile; a button with no text of its
+        # own has none otherwise.
+        self.setAccessibleName(name)
         if not self.usable:
             return
+        # No tooltip on a tile that can be used: it would only repeat the
+        # name printed on it. The badge keeps one - it is a glyph that does
+        # not say what it does - and so does a dimmed tile, which says why.
+        self.setToolTip('')
         if self.badge is not None and len(self.allowed) > 1:
             nxt = self.faces[self._next_allowed()][0]
             self.badge.setToolTip(f"Flip to {nxt}")
-            self.setToolTip(f"{name} - the badge flips to {nxt}")
-        else:
-            self.setToolTip(name)
 
     def flip(self, remember=True):
         """Turn to the next face the radio can run."""
@@ -626,12 +846,74 @@ class FlipTile(QPushButton):
     def enterEvent(self, event):
         self._hover = True
         self._draw(self._fraction)
+        self._lift_to(1.0 if self.usable else 0.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hover = False
         self._draw(self._fraction)
+        self._lift_to(0.0)
         super().leaveEvent(event)
+
+    def _lift_to(self, target):
+        """Fade the tile's shadow toward lifted (1) or resting (0)."""
+        if not theme.TOKENS.get('shadow_hover'):
+            self._lift = 0.0
+            return
+        self._lift_animation.stop()
+        self._lift_animation.setStartValue(self._lift)
+        self._lift_animation.setEndValue(float(target))
+        self._lift_animation.start()
+
+    def _get_lift(self):
+        return self._lift
+
+    def _set_lift(self, value):
+        self._lift = float(value)
+        self._rise()
+        # The shadow is painted by the column the tile sits in.
+        if self.parentWidget() is not None:
+            self.parentWidget().update()
+
+    def _rise(self):
+        """Move the tile up off its place by as much as it is lifted.
+
+        By hand, off the place the grid layout gave it, which is remembered
+        to come back down to.
+        """
+        rise = int(round(self._lift * (theme.TOKENS.get('lift') or 0)))
+        if rise and self._rest is None:
+            self._rest = self.pos()
+        if self._rest is not None:
+            self._placed = QPoint(self._rest.x(), self._rest.y() - rise)
+            self.move(self._placed)
+            if not rise:
+                self._rest = self._placed = None
+
+    def moveEvent(self, event):
+        """A move the tile did not make itself is the grid placing it.
+
+        A layout pass puts every tile back in its cell, and one can land
+        while a tile is lifted - the grid is laid out afresh after a change
+        of theme, and applied a moment later. That cell is where the tile
+        rests now, so it rises from there; remembering the old one instead
+        sent the tile back to a place that no longer existed when the
+        pointer left.
+        """
+        super().moveEvent(event)
+        if self._rest is not None and self.pos() != self._placed:
+            self._rest = self.pos()
+            self._rise()
+
+    def settle(self):
+        """Back on the page at once: the grid is about to place it again."""
+        self._lift_animation.stop()
+        rest, self._rest, self._placed = self._rest, None, None
+        if rest is not None:
+            self.move(rest)
+        self._lift = 0.0
+
+    lift = pyqtProperty(float, _get_lift, _set_lift)
 
     def _draw(self, width_fraction):
         """Paint the current picture squeezed to a fraction of its width."""
@@ -693,7 +975,8 @@ class RFbenchToolkit(QMainWindow):
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
-        self._body = QVBoxLayout(centred_column(body))
+        self._column = ShadowColumn()
+        self._body = QVBoxLayout(centred_column(body, self._column))
         self._body.setContentsMargins(GUTTER, 0, GUTTER, 40)
         self._body.setSpacing(0)
         self._scroll.setWidget(body)
@@ -707,8 +990,19 @@ class RFbenchToolkit(QMainWindow):
         # The tiles, from the table at the top of this file.
         self.tiles = {}
         self._banks = []
+        self._lines = []
+        self._headings = []
         self._layout_at = None
         self._build_banks()
+
+        # One timer moves every line's pulse. It runs only while the
+        # window is on screen and the theme has a pulse - see _sync_pulse -
+        # so in single mode, where the launcher hides while an app runs,
+        # it costs the app nothing.
+        self._pulse_clock = QElapsedTimer()
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(PULSE_FRAME_MS)
+        self._pulse_timer.timeout.connect(self._move_pulse)
 
         # Arrange them around whichever radio is selected. No animation on
         # the way up - there is nothing to show a turn away from yet.
@@ -788,6 +1082,20 @@ class RFbenchToolkit(QMainWindow):
         # The two things drawn in the theme's colours rather than styled.
         self.gear.setIcon(QIcon(svg_icon(theme.gear_svg(), 17)))
         self.theme_disc.describe()
+        # A theme may bring its own faces, and every caption's height is
+        # measured from the face in force - so lay the grid out afresh, and
+        # again once the event loop has run: a stylesheet's fonts reach the
+        # labels by posted events, so measured at once the page still had
+        # the last theme's type, and left Slate after Walnut with 183 px
+        # tiles and 10 px to spare where 185 fit.
+        self._layout_at = None
+        self._relayout()
+        QTimer.singleShot(0, self._relayout_afresh)
+        # The shadows under the tiles, and the pulse, come and go with it.
+        for tile in self.tiles.values():
+            tile.settle()
+        self._column.update()
+        self._sync_pulse()
 
 
     def save_setting(self, key, value):
@@ -814,18 +1122,18 @@ class RFbenchToolkit(QMainWindow):
 
             head = QHBoxLayout()
             head.setSpacing(12)
-            name = QLabel(BANK_NAMES.get(row, f"Row {row}"))
+            # The heading charges before it fires its line's pulse.
+            name = ChargeLabel(BANK_NAMES.get(row, f"Row {row}"))
             name.setObjectName('bank-name')
             name.setFont(token_font('s_sm'))
+            self._headings.append(name)
             head.addWidget(name)
             # The hairline that runs off the end of the heading. In the
             # page that is a ::after with an empty content; Qt's :: are
             # sub-controls of a known widget, not pseudo-elements anyone
             # can invent, so it is a widget.
-            rule = QFrame()
-            rule.setObjectName('hairline')
-            rule.setFixedHeight(1)
-            rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            rule = PulseLine()
+            self._lines.append(rule)
             head.addWidget(rule, 1)
             self._body.addLayout(head)
             self._body.addSpacing(10)
@@ -859,12 +1167,35 @@ class RFbenchToolkit(QMainWindow):
         """
         if not self._banks:
             return
-        available = self._scroll.viewport().width() - 2 * GUTTER
+        # The width is decided from the window alone, never from whether
+        # the scroll bar happens to be showing. Lay out as though there were
+        # none; if the page then comes out taller than the viewport, the bar
+        # will appear, so lay out for the width it leaves straight away.
+        # Taken from the bar's state instead, the grid could not settle
+        # when the page sat within a caption's wrap of fitting: Walnut at
+        # Slate's window size was 3 px too tall with 185 px tiles, which
+        # brought the bar, which made them 183, which rewrapped a caption,
+        # which let the page fit, which took the bar away - for ever.
+        viewport = self._scroll.viewport()
+        bar = self._scroll.verticalScrollBar()
+        whole = viewport.width() + (bar.width() if bar.isVisible() else 0)
+        self._lay_out(*self._grid_for(whole))
+        self._body.invalidate()
+        if self._body.sizeHint().height() > viewport.height():
+            self._lay_out(*self._grid_for(whole - bar.sizeHint().width()))
+
+    def _relayout_afresh(self):
+        self._layout_at = None
+        self._relayout()
+
+    def _grid_for(self, viewport_width):
+        """(columns, tile width) for a viewport this wide."""
+        available = viewport_width - 2 * GUTTER
         content = max(MIN_TILE, min(MAX_CONTENT, available))
         columns = max(1, (content + TILE_GAP) // (MIN_TILE + TILE_GAP))
         columns = min(columns, self._widest_bank())
         width = min(MAX_TILE, (content - TILE_GAP * (columns - 1)) // columns)
-        self._lay_out(columns, width)
+        return columns, width
 
     def _widest_bank(self):
         return max(len(tiles) for _grid, tiles in self._banks)
@@ -879,6 +1210,7 @@ class RFbenchToolkit(QMainWindow):
                       for _grid, tiles in self._banks for tile in tiles)
         for grid, tiles in self._banks:
             for tile in tiles:
+                tile.settle()
                 grid.removeWidget(tile)
             for index, tile in enumerate(tiles):
                 tile.set_width(width)
@@ -889,6 +1221,9 @@ class RFbenchToolkit(QMainWindow):
             # with fewer tiles than columns still starts at the left.
             for column in range(columns + 1):
                 grid.setColumnStretch(column, 1 if column == columns else 0)
+        # A shadow reaches past its tile, so a tile that has moved leaves
+        # some behind outside the patch Qt repaints for it.
+        self._column.update()
 
     def eventFilter(self, obj, event):
         if (event.type() == QEvent.Resize
@@ -1032,10 +1367,57 @@ class RFbenchToolkit(QMainWindow):
             self.center_window()
         self._maximize_on_show = maximized
 
+    def _sync_pulse(self):
+        """Run the pulse if the theme has one and the window is showing."""
+        wanted = bool(theme.TOKENS.get('pulse')) and self.isVisible()
+        if wanted and not self._pulse_timer.isActive():
+            self._pulse_clock.start()
+            self._pulse_timer.start()
+        elif not wanted and self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+        if not wanted:
+            for line in self._lines:
+                if line.phase is not None:
+                    line.phase = None
+                    line.update()
+            for heading in self._headings:
+                heading.set_charge(0.0)
+
+    def _move_pulse(self):
+        """Charge each heading, then fire its pulse down the line.
+
+        Per row, ``into`` seconds through its own cycle: charging for
+        ``charge``, the glow gathering faster as it goes; then the pulse
+        crosses in ``sweep`` while the glow dies away over ``decay``; then
+        rest until ``period``. Each row ``stagger`` after the one above.
+        """
+        timing = theme.PULSE
+        seconds = self._pulse_clock.elapsed() / 1000
+        for row, (line, heading) in enumerate(zip(self._lines,
+                                                  self._headings)):
+            into = (seconds - row * timing['stagger']) % timing['period']
+            fired = into - timing['charge']
+            if fired < 0:
+                phase, charge = None, (into / timing['charge']) ** 2
+            elif fired < timing['sweep']:
+                phase = fired / timing['sweep']
+                charge = max(0.0, 1.0 - fired / timing['decay'])
+            else:
+                phase, charge = None, 0.0
+            if phase is not None or line.phase is not None:
+                line.phase = phase
+                line.update()
+            heading.set_charge(charge)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._sync_pulse()
+
     def showEvent(self, event):
         """Maximize here, not before, if the window was left maximized -
         see ``maximize_when_shown`` in apps/utils.py for why."""
         super().showEvent(event)
+        self._sync_pulse()
         if getattr(self, '_maximize_on_show', False):
             self._maximize_on_show = False
             maximize_when_shown(self)

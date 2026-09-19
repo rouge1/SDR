@@ -65,15 +65,35 @@ input,select{font:inherit}
 
 /* ------------------------------------------------------------------ grid */
 .bank{padding-block:26px 0}
-.bank-name{font-size:var(--s-sm);color:var(--ink-2);margin:0 0 10px;
-  display:flex;align-items:baseline;gap:12px}
-.bank-name::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
+.bank-name{font-size:var(--s-sm);color:var(--heading);margin:0 0 10px;
+  display:flex;align-items:baseline;gap:12px;
+  animation:charge var(--pulse-period) linear infinite;animation-play-state:var(--pulse-state);
+  animation-delay:calc(var(--row,0) * var(--pulse-stagger))}
+/* The hairline off a bank's name, and a pulse going down it on a theme with
+   one: the name charges - the "charge" keyframes glow it up - and fires, and
+   a short head with a tail, and a faint glow either side, runs left to right,
+   each row --row x --pulse-stagger after the one above. Three layers: the
+   glow, the pulse, the line. The keyframes and the timing come from
+   /theme.css, generated from apps/theme.py's PULSE, which the launcher runs
+   from too. Where there is no pulse its colour is transparent and the
+   animation paused, so it costs nothing. */
+.bank-name::after{content:"";flex:1;height:3px;
+  background:
+    linear-gradient(90deg,transparent,color-mix(in srgb,var(--pulse) 30%,transparent) 80%,transparent) no-repeat,
+    linear-gradient(90deg,transparent,var(--pulse) 80%,transparent) no-repeat,
+    linear-gradient(var(--rule-soft),var(--rule-soft)) no-repeat;
+  background-size:var(--pulse-length) 3px,var(--pulse-length) 1px,100% 1px;
+  background-position:calc(-1 * var(--pulse-length)) 0,calc(-1 * var(--pulse-length)) 1px,0 1px;
+  animation:pulse var(--pulse-period) linear infinite;animation-play-state:var(--pulse-state);
+  animation-delay:calc(var(--row,0) * var(--pulse-stagger))}
 .bank-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 
 .tile{position:relative;background:var(--panel);border:1px solid var(--rule);border-radius:2px;
+  box-shadow:var(--tile-shadow);
   padding:0 0 11px;text-align:left;display:flex;flex-direction:column;overflow:hidden;
-  transition:border-color .12s,background .12s}
-.tile:hover{border-color:var(--ink-3);background:var(--panel-2)}
+  transition:border-color .12s,background .12s,box-shadow .15s,transform .15s}
+.tile:hover{border-color:var(--ink-3);background:var(--panel-2);box-shadow:var(--tile-shadow-hover);
+  transform:translateY(calc(-1 * var(--tile-lift)))}
 .tile .face{display:flex;flex-direction:column;flex:1;
   transition:transform .19s ease-in,opacity .19s ease-in}
 .tile.turning .face{transform:scaleX(.02);opacity:.15}
@@ -81,10 +101,11 @@ input,select{font:inherit}
   filter:saturate(.82);transition:filter .16s}
 .tile:hover img{filter:saturate(1)}
 .tile .dir{font-family:var(--f-num);font-size:var(--s-xs);letter-spacing:.1em;font-weight:600;
-  color:var(--ink-3);padding:9px 11px 0}
+  color:var(--tag);padding:9px 11px 0}
 .tile .name{font-size:var(--s-sm);line-height:1.25;padding:1px 11px 0}
 .tile[data-blocked="1"]{opacity:.34}
-.tile[data-blocked="1"]:hover{border-color:var(--rule);background:var(--panel)}
+.tile[data-blocked="1"]:hover{border-color:var(--rule);background:var(--panel);box-shadow:var(--tile-shadow);
+  transform:none}
 .flip{position:absolute;top:6px;right:6px;width:27px;height:27px;border-radius:2px;
   display:grid;place-items:center;color:var(--ink);background:var(--panel);
   border:1px solid var(--ink-3)}
@@ -117,7 +138,8 @@ input[type=text]:focus,select:focus{border-color:var(--ink-3)}
   background:var(--panel-2);color:var(--ink);font-size:var(--s-sm)}
 .btn:hover{border-color:var(--ink-3)}
 .btn.primary{background:var(--ink);color:var(--ground);border-color:var(--ink)}
-.btn.primary:hover{background:var(--ink-0)}
+.btn.primary:hover{background:var(--ok-hover);color:var(--ok-hover-ink);border-color:var(--ok-hover-edge)}
+.btn.primary:active{background:var(--ink);color:var(--ground);border-color:var(--ink)}
 .sheet-foot{display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap}
 .saved{font-size:var(--s-sm);color:var(--ink-3)}
 
@@ -131,7 +153,8 @@ input[type=text]:focus,select:focus{border-color:var(--ink-3)}
 .alert p{margin:0;color:var(--ink-2);font-size:var(--s-sm);white-space:pre-line}
 .alert .btn{margin-top:12px}
 .empty{color:var(--ink-3);font-size:var(--s-sm);padding-block:24px}
-@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}}
+@media (prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}
+  .bank-name,.bank-name::after{animation:none}}
 </style>
 </head>
 <body>
@@ -143,7 +166,7 @@ input[type=text]:focus,select:focus{border-color:var(--ink-3)}
       <span class="radio-tag" id="radio-tag">—</span>
       <div class="theme-picker">
         <span class="theme-label">Themes</span>
-        <button class="theme-chip" id="theme-chip" type="button" title="Theme"></button>
+        <button class="theme-chip" id="theme-chip" type="button"></button>
       </div>
       <button class="gear" id="gear" type="button" aria-expanded="false" aria-controls="sheet" title="Settings">
         <svg width="17" height="17" viewBox="0 0 17 17" fill="none" aria-hidden="true">
@@ -277,9 +300,11 @@ function paintTile(tile){
     + '<img src="/icons/' + face.icon + '" alt="" loading="lazy">'
     + '<span class="dir">' + (face.dir === "tx" ? "TRANSMIT" : "RECEIVE") + '</span>'
     + '<span class="name">' + face.label + '</span></span>';
+  // No tooltip on a tile that can be used: it would only repeat the name
+  // printed on it. A dimmed one keeps its reason.
   tile.title = blocked(face)
     ? face.label + " — the selected radio cannot " + (face.dir === "tx" ? "transmit" : "receive")
-    : "Start " + face.label;
+    : "";
 
   const flip = tile.querySelector(".flip");
   if (flip){
@@ -302,10 +327,11 @@ function flipTile(tile, to){
 function buildGrid(){
   const host = document.getElementById("banks");
   host.innerHTML = "";
-  (STATE.banks || []).forEach(bank => {
+  (STATE.banks || []).forEach((bank, i) => {
     const sec = document.createElement("section");
     sec.className = "bank";
-    sec.innerHTML = '<h2 class="bank-name">' + bank.name + '</h2>';
+    // --row staggers the pulse along each bank's line, one row after another.
+    sec.innerHTML = '<h2 class="bank-name" style="--row:' + i + '">' + bank.name + '</h2>';
     const row = document.createElement("div");
     row.className = "bank-row";
     bank.tiles.forEach(faces => {
@@ -498,7 +524,9 @@ function setTheme(key){
   else document.documentElement.setAttribute("data-theme", key);
   // A cycling control has to say where it goes, or its only clue is the
   // colour you are already looking at.
-  chip.title = "Theme: " + themeName(liveTheme());
+  // Pointing at the disc already says it is the theme; the tooltip only
+  // has to say which. The aria-label keeps the word for a screen reader.
+  chip.title = themeName(liveTheme());
   chip.setAttribute("aria-label", "Theme: " + themeName(liveTheme())
     + ". Activate for " + themeName(nextTheme()) + ".");
 }

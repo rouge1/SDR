@@ -8,7 +8,7 @@ generates. That only stops them drifting if every name one side uses is a
 name the other side defines, which is what this checks. No radio, no
 display, no GNU Radio.
 
-It also holds both themes to the contrast their colours are there for,
+It also holds every theme to the contrast its colours are there for,
 since a colour that reads on Slate can vanish on Reading Room's paper, and
 nothing else would say so until somebody looked.
 
@@ -31,6 +31,8 @@ FAILURES = []
 CONTRAST = [
     ('ink', ('ground', 'panel', 'panel_2', 'well'), 7.0, 'body text'),
     ('ink_2', ('ground', 'panel', 'panel_2', 'well'), 4.5, 'labels'),
+    ('heading', ('ground',), 4.5, "a bank's name"),
+    ('tag', ('panel',), 3.0, "a tile's TRANSMIT line"),
     ('ink_3', ('ground', 'panel'), 3.0,
      'the quietest thing still meant to be read'),
     ('live', ('ground', 'panel'), 4.5, 'the ON AIR heading'),
@@ -76,6 +78,9 @@ def main():
           and 'https://' not in page,
           'the page asks nothing of the network')
     check('/theme.css' in page, 'the page links the generated stylesheet')
+    for name in ('pulse', 'charge'):
+        check(('@keyframes %s{' % name) in css and ('animation:%s ' % name) in page,
+              f"the page's {name} animation is one /theme.css generates")
     # web/server.py puts the saved theme on exactly this tag as it serves
     # the page; changed, the page would open in Slate every time.
     check(page.count('<html lang="en">') == 1,
@@ -90,7 +95,8 @@ def main():
           'the default is the first the disc shows')
     check(set(theme.NAMES) == set(theme.THEMES), 'every theme has a name')
     for key, palette in theme.THEMES.items():
-        extra = set(palette) - set(theme.PALETTE) - {'scheme'}
+        extra = (set(palette) - set(theme.PALETTE) - set(theme.EXTRAS)
+                 - {'scheme', 'type'})
         missing = set(theme.PALETTE) - set(palette)
         check(not extra and not missing and palette.get('scheme') in
               ('dark', 'light'),
@@ -100,6 +106,9 @@ def main():
         if missing:
             continue
         low = []
+        back, text, _edge = theme.ok_hover(palette)
+        if contrast(text, back) < 4.5:
+            low.append(f"OK under the pointer {contrast(text, back):.2f}:1")
         for fg, grounds, least, _why in CONTRAST:
             for bg in grounds:
                 ratio = contrast(palette[fg], palette[bg])
@@ -107,6 +116,13 @@ def main():
                     low.append(f"{fg} on {bg} {ratio:.2f}:1 < {least}")
         check(not low, f"{theme.NAMES[key]}'s colours read where they are used"
                        f"{'' if not low else ': ' + '; '.join(low)}")
+        faces = palette.get('type', {})
+        if faces:
+            shipped = {family for family, _f, _w in theme.FACES}
+            check(set(faces) <= {'f_num', 'f_ui', 'qss_bold'} and
+                  {faces.get('f_num', 'Barlow Semi Condensed'),
+                   faces.get('f_ui', 'Barlow')} <= shipped,
+                  f"{theme.NAMES[key]}'s faces are ones that ship in fonts/")
 
     print('\ntokens -> Qt')
     for key in theme.THEMES:
@@ -133,8 +149,11 @@ def main():
     for _family, filename, _weight in theme.FACES:
         path = os.path.join(theme.FONT_DIR, filename)
         check(os.path.exists(path), f"{filename} is in fonts/")
-    check(os.path.exists(os.path.join(theme.FONT_DIR, 'OFL.txt')),
-          'the licence ships beside them, as the OFL requires')
+    for family in sorted({family for family, _f, _w in theme.FACES}):
+        licence = theme.LICENCES.get(family)
+        check(bool(licence) and
+              os.path.exists(os.path.join(theme.FONT_DIR, licence)),
+              f"{family}'s licence ships beside it, as the OFL requires")
 
     print('\nthe tile tables')
     # Both front ends read these out of the launcher's source; the server

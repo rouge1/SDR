@@ -13,6 +13,16 @@ python web/server.py            # http://127.0.0.1:8730
 end onto the same `APP_TILES` table and the same
 `config/window_settings.json`, not a replacement - run either, or both.
 
+## Themes
+
+The page and the desktop launcher share one theme, kept in
+`config/window_settings.json`. The dot beside "Themes" in the header steps
+through them; the page opens in the saved one, and follows a change made at
+the desktop on its next refresh. Colours, faces, the tiles' shadows and the
+pulse along each row's line all come from `apps/theme.py` through
+`/theme.css`, so the two front ends cannot drift apart. See
+[the themes](../devnotes/ui.md#the-themes-and-the-disc-that-picks-one).
+
 ## Where the window appears
 
 On the display the *server* can reach, not in the browser. Start the server
@@ -41,7 +51,7 @@ way, so treat the URL as the key it is.
 
 | File | Does |
 |------|------|
-| `web/server.py` | Serves the page and icons, reads and writes the settings file, starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
+| `web/server.py` | Serves the page, its icons and fonts, and `/theme.css` - every theme's colours, faces and animation, generated from `apps/theme.py`. Reads and writes the settings file, the theme included, and starts and stops apps. Imports no GNU Radio, no Qt, no SoapySDR. |
 | `web/index.html` | The page. Grid, settings, and what is running. |
 | `apps/_run.py` | Runs one app module with its own Qt event loop - the piece the desktop launcher usually supplies. |
 | `scripts/probe_radio.py` | Asks whether a radio is there, in a process that then exits. |
