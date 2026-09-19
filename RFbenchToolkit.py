@@ -119,12 +119,11 @@ APP_TILES = [
 
 #: What each grid row holds, shown as a heading above it. Row 0 was the
 #: old title bar and no longer exists: the wordmark and the gear are in
-#: the rail now. ``web/server.py`` reads this table out of here with
-#: ``ast``, the way it already reads APP_TILES, so keep it a plain literal.
+#: the rail now. ``scripts/test_theme.py`` reads this table out of here
+#: with ``ast``, as it reads APP_TILES, so keep it a plain literal.
 BANK_NAMES = {1: 'Signal generators', 2: 'Audio', 3: 'Video'}
 
 #: The word a tile shows above its name, which is the direction it goes.
-#: The browser front end prints exactly these.
 DIRECTION_KICKER = {'tx': 'TRANSMIT', 'rx': 'RECEIVE'}
 
 
@@ -133,8 +132,8 @@ def face_directions():
     return {face[1]: face[3] for _row, _col, faces in APP_TILES
             for face in faces}
 
-# The grid follows the browser front end: tiles at least MIN_TILE wide, as
-# many to a row as fit, inside a column no wider than MAX_CONTENT.
+# The grid: tiles at least MIN_TILE wide, as many to a row as fit, inside
+# a column no wider than MAX_CONTENT.
 MIN_TILE = 150
 MAX_TILE = 230
 TILE_GAP = 10
@@ -155,7 +154,7 @@ BADGE_INSET = 6
 FLIP_MS = 380
 
 #: How often the pulse along each bank's line moves - 30 a second. Its
-#: timing is ``theme.PULSE``, which the page's keyframes are made from.
+#: timing is ``theme.PULSE``.
 PULSE_FRAME_MS = 33
 
 #: How long a tile takes to lift off the page under the pointer, on a
@@ -190,11 +189,11 @@ def cover_crop(path, width):
 
 
 def picture_pixmap(pixels, saturation=0.82):
-    """Pixels from :func:`cover_crop` at the page's ``saturate(.82)``.
+    """Pixels from :func:`cover_crop`, at 82% of their saturation.
 
     The colour is pulled back a little so the photographs sit down into
     the panel rather than shouting off it; under the pointer it comes back,
-    at 1.0, as the page's does.
+    at 1.0.
     """
     data = pixels.astype(np.float32)
     luma = (data * (0.299, 0.587, 0.114)).sum(axis=2, keepdims=True)
@@ -227,8 +226,8 @@ def token_font(size_token, family_token='f_ui', weight=None, spacing=None):
 def centred_column(parent, column=None):
     """A column no wider than MAX_CONTENT, centred in ``parent``.
 
-    The page's ``max-width: 1080px; margin: 0 auto``, which it applies to
-    the rail's contents and to the body alike. Without it a maximised
+    CSS's ``max-width: 1080px; margin: 0 auto``, done by hand, for the
+    rail's contents and the body alike. Without it a maximised
     launcher left its tiles in the leftmost 1080 px with the bank
     hairlines and the rail running on across the whole screen. Returns the
     column; lay its contents out on it.
@@ -271,7 +270,7 @@ def shadow_pixmap(width, height, hover=False):
     the pointer, with ``hover`` - and how far it reaches past the tile on
     every side.
 
-    The page's ``box-shadow`` done by hand: each (drop, blur, opacity)
+    A CSS ``box-shadow`` done by hand: each (drop, blur, opacity)
     layer is the tile's rectangle, moved down, blurred - a CSS blur of B
     is a Gaussian of B/2 - and the layers laid over one another, each in
     the theme's ``shade`` or the colour it names.
@@ -334,8 +333,8 @@ class ShadowColumn(QWidget):
                 if not tile.isVisible():
                     continue
                 lift = tile.lift if theme.TOKENS.get('shadow_hover') else 0.0
-                # Drawn from where the tile is, risen or not, as the page's
-                # box-shadow moves with its tile: the deeper drop of the
+                # Drawn from where the tile is, risen or not, as a CSS
+                # box-shadow moves with its box: the deeper drop of the
                 # lifted shadow is what puts it further below the card.
                 for hover, weight in ((False, 1.0 - lift), (True, lift)):
                     if weight <= 0:
@@ -475,7 +474,7 @@ class ThemeDisc(QAbstractButton):
         self.setFixedSize(32, 32)
         self.setCursor(Qt.PointingHandCursor)
         # Focus from the keyboard only, and the ring only when Tab brought
-        # it - the page's :focus-visible. It is the first thing in the
+        # it - CSS's :focus-visible. It is the first thing in the
         # window that takes focus, so Qt hands it focus as the window
         # opens, and a ring then would sit there from the start.
         self.setFocusPolicy(Qt.TabFocus)
@@ -528,7 +527,7 @@ class ThemeDisc(QAbstractButton):
 class FlipTile(QPushButton):
     """One tile of the launcher grid, which may have more than one face.
 
-    Its anatomy is the browser front end's: the picture full width across
+    Its anatomy: the picture full width across
     the top at 4:3, then the direction in condensed letter-spaced caps,
     then the app's name, both ranged left. Clicking it launches whichever
     app is showing; clicking the badge in its corner turns the tile over,
@@ -834,7 +833,7 @@ class FlipTile(QPushButton):
         """Colour the pictures from the crops, and redraw.
 
         The colour is pulled back a little, and brought out again under
-        the pointer, as the page's is.
+        the pointer.
         """
         self._pixmaps = [picture_pixmap(crop) for crop in self._crops]
         self._lit = [picture_pixmap(crop, saturation=1.0)
@@ -1017,12 +1016,7 @@ class RFbenchToolkit(QMainWindow):
     # ------------------------------------------------------------ the page
     def _build_rail(self):
         """The header: wordmark, which radio is selected, the theme, and
-        the gear.
-
-        The wordmark is the browser front end's, because these are two
-        front ends onto one bench and reading a different name on each
-        makes them look like different programs.
-        """
+        the gear."""
         rail = QWidget()
         rail.setObjectName('rail')
         rail.setFixedHeight(RAIL_HEIGHT)
@@ -1074,8 +1068,7 @@ class RFbenchToolkit(QMainWindow):
 
         Kept in ``window_settings.json``, beside the radio, rather than
         anywhere of the launcher's own: the dialogs and the flowgraph
-        windows read it from there when they open, and so does the
-        browser page, which is the same bench.
+        windows read it from there when they open.
         """
         self.save_setting('theme', theme.after(theme.current()))
         apply_launcher_theme(self)
@@ -1150,8 +1143,8 @@ class RFbenchToolkit(QMainWindow):
     def _relayout(self):
         """Fit as many tiles to a row as the window has room for.
 
-        The page says ``repeat(auto-fill, minmax(150px, 1fr))`` inside a
-        column capped at 1080; this is the same arithmetic, done by hand,
+        CSS would say ``repeat(auto-fill, minmax(150px, 1fr))`` inside a
+        column capped at 1080; this is that arithmetic done by hand,
         because a Qt stylesheet does no layout at all. Nothing moves unless
         the answer actually changed - a resize otherwise re-adds every tile
         to its grid on every pixel of drag.

@@ -24,7 +24,7 @@ What it checks, on the window as rendered:
   painting a dark theme of its own shows as. Slate unless ``--theme``
   says otherwise, whatever the user has chosen: the settings the apps
   read are patched, as below.
-- **Every plot's canvas is the well**, as the browser page draws its plots.
+- **Every plot's canvas is the well**, a sunken box with a rule round it.
 - **Every trace can be seen against it.** The apps set their traces in
   GNU Radio's colours for a white canvas, and black is the commonest - on
   the well it would be invisible. Each line in use needs 3:1 against the
@@ -45,8 +45,8 @@ What it checks, on the window as rendered:
 
 Then every app again with no media folder, which is how a machine starts
 before Settings has been opened: each must still build its flowgraph and
-run. Its dialog greys out OK there, but the browser launcher's
-``apps/_run.py --config`` goes straight to ``main()``, and a transmitter
+run. Its dialog greys out OK there, but ``apps/_run.py --config`` goes
+straight to ``main()``, and a transmitter
 handed no file once died on ``None`` - found only because this test ran on
 a new machine. The windows are not looked at again; that is the first
 pass's job.

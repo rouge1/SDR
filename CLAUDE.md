@@ -20,24 +20,27 @@ from `windows/environment.yml` rather than `linux/environment.yml` - see
 [Running on Windows](devnotes/machines.md#running-on-windows) and [where things
 live](#where-things-live-linux-and-windows).
 
-There is also a browser front end onto the same grid and the same settings,
-which starts the same apps as separate processes - see
-[Web launcher](devnotes/web.md#web-launcher-a-second-front-end):
+One app can also be run without the launcher - on a bench machine over
+ssh, say - with `apps/_run.py`, which supplies the event loop the launcher
+otherwise would; see [running one app without the
+launcher](devnotes/ui.md#running-one-app-without-the-launcher):
 
 ```sh
-conda activate gnu
-python web/server.py                 # http://127.0.0.1:8730
+python apps/_run.py amSineGenerator                        # its own dialog first
+python apps/_run.py amSineGenerator --config values.json   # no dialog
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 \
+    python apps/_run.py amSineGenerator --config values.json   # headless, 2 min
 ```
 
 ## Where things live: linux/ and windows/
 
 Every line of Python runs on both operating systems, so the code is not
-split by OS at all: `RFbenchToolkit.py`, `apps/`, `web/`, `icons/`,
-`fonts/` and `scripts/` are shared, and a difference between the two is a
-branch at run time in the one place it matters (`vsg_sink.py`'s library
-search, say), never a second copy of a file. Only the edges differ - how
-the launcher is started, what conda installs, and one-time setup - and
-those, and nothing else, go in a folder named for the OS:
+split by OS at all: `RFbenchToolkit.py`, `apps/`, `icons/`, `fonts/` and
+`scripts/` are shared, and a difference between the two is a branch at run
+time in the one place it matters (`vsg_sink.py`'s library search, say),
+never a second copy of a file. Only the edges differ - how the launcher is
+started, what conda installs, and one-time setup - and those, and nothing
+else, go in a folder named for the OS:
 
 | | `linux/` | `windows/` |
 |---|---|---|
@@ -57,9 +60,9 @@ still shared code and goes in `apps/`.
 ## Where the details are: `devnotes/`
 
 This file is read at the start of every session, so it keeps only what
-applies everywhere. What each app, radio and front end has taught - the
-measurements, the traps, and why the code is the way it is - is in
-`devnotes/`, one file per subject, read when that subject comes up.
+applies everywhere. What each app, each radio and the launcher have
+taught - the measurements, the traps, and why the code is the way it is -
+is in `devnotes/`, one file per subject, read when that subject comes up.
 **Before changing an app, read its file.** Much of it was found the hard
 way, and several of the fixes look like mistakes until you know what they
 fixed.
@@ -72,8 +75,7 @@ fixed.
 | [fm-video.md](devnotes/fm-video.md) | `fmVideoXmitter`, `fmVideoReceiver`, `fm_video_core` | the FPV and F.405 profiles, the receiver as a measuring instrument, and a real FPV transmitter measured |
 | [media.md](devnotes/media.md) | `media`, `audio_file`, any file picker | how media is found, MP3, song tags, and plain-ASCII RDS text |
 | [radios.md](devnotes/radios.md) | `vsg_sink`, `bb60_source` | the VSG60's and the BB60D's limits, locks, gain and traps |
-| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog` | flip tiles, where windows come back and what their controls were left at, dialog layout, the themes (dark, light and walnut) and the disc that picks one, for launcher, dialogs and flowgraph windows, the fonts, and the end-to-end GUI test |
-| [web.md](devnotes/web.md) | `web/`, `apps/_run.py`, `scripts/probe_radio.py` | the browser front end, and the Stop that does not stop |
+| [ui.md](devnotes/ui.md) | `RFbenchToolkit.py`, `apps/theme.py`, the window and dialog code in `apps/utils.py`, `settings_dialog`, `apps/_run.py` | flip tiles, where windows come back and what their controls were left at, dialog layout, the themes (dark, light and walnut) and the disc that picks one, for launcher, dialogs and flowgraph windows, the fonts, the end-to-end GUI test, and running one app without the launcher |
 | [machines.md](devnotes/machines.md) | `windows/`, `linux/environment.yml`, anything run on TVAdemo or the Windows laptop | TVAdemo, running on Windows, and building the environment on a new Linux machine |
 
 Something learned goes into its subject's file. If it could bite anywhere,
@@ -139,13 +141,13 @@ damage something. Each links to the why.
   for Bold, and a face with no bold of its own is thickened to fake one.
   A stylesheet weight comes from `qss_bold`, never a number written in.
   [ui](devnotes/ui.md#each-themes-type)
-- **`APP_TILES` stays a plain literal, and `apps/theme.py` imports only the
-  standard library**: the web server reads both without importing Qt, and
-  the GUI test reads `APP_TILES` with `ast`.
-  [web](devnotes/web.md#web-launcher-a-second-front-end),
-  [ui](devnotes/ui.md#one-design-two-front-ends)
-- **Anything run on TVAdemo gets a `timeout`**, and a transmitter and its
-  receiver are started as two separate commands.
+- **`APP_TILES` and `BANK_NAMES` stay plain literals**: the GUI test and
+  `scripts/test_theme.py` read them out of the launcher's source with
+  `ast` rather than importing it.
+  [ui](devnotes/ui.md#testing-the-launcher-end-to-end)
+- **Anything run on TVAdemo gets a `timeout -k`**, and a transmitter and
+  its receiver are started as two separate commands. A plain `timeout`
+  only sends `SIGTERM`, and never ends a process that ignores it.
   [machines](devnotes/machines.md#the-tvademo-laptop-and-why-there-is-a-second-machine)
 - **On a conda machine, `which ffmpeg` finding nothing proves nothing** - it
   is inside the environment.
@@ -153,9 +155,13 @@ damage something. Each links to the why.
 - **On Windows, activate the `gnu` environment; never call its `python.exe`
   directly** (`DLL load failed`). A GUI started there over SSH runs in
   session 0 and cannot be seen. [machines](devnotes/machines.md#running-on-windows)
-- **An app started through `apps/_run.py` ignores SIGTERM**, still
-  unsolved, so the browser's Stop does not stop it.
-  [web](devnotes/web.md#web-launcher-a-second-front-end)
+- **A Python signal handler does not run while Qt's event loop idles.**
+  Python runs it only when the main thread next runs Python, so a Qt
+  program that must answer `SIGTERM` needs a Python timer ticking, held
+  for the life of the loop - a local one is collected. Without one, an
+  app run through `apps/_run.py` ignored `SIGTERM` and `timeout` with a
+  transmitter on the air; `_run.py` now keeps one.
+  [ui](devnotes/ui.md#running-one-app-without-the-launcher)
 - **This repository is public.** No IP address, key name or account name of
   a bench machine goes into it; the notes use ssh aliases such as
   `ssh tvademo`.
@@ -181,8 +187,8 @@ The flowgraph class itself (e.g., `amSineGenerator`) extends both `gr.top_block`
 ### Shared Utilities (`apps/utils.py`)
 
 - `apply_launcher_theme(widget)` — paints the launcher window from the
-  shared tokens in `apps/theme.py` — see [one design, two front
-  ends](devnotes/ui.md#one-design-two-front-ends).
+  shared tokens in `apps/theme.py` — see [one design for every
+  window](devnotes/ui.md#one-design-for-every-window).
 - `apply_dark_theme(widget)` — the same tokens for a config dialog, and it
   also straightens the layout — see [how every dialog gets laid
   out](devnotes/ui.md#how-every-dialog-gets-laid-out).
@@ -200,7 +206,7 @@ All settings are stored in `config/window_settings.json`:
 - `media_directory` — path for recorded audio/video files.
 - `radio_mode` — `"single"` or `"multi"` (multi requires ≥2 IP addresses).
 - `radio_type` — `"hackrf"`, `"usrp"`, or `"vsg"`.
-- `theme` — `"slate"` (dark, the default), `"reading-room"` (light) or `"walnut"` (brown and tan), set by the disc in either front end's header and read by every window as it opens — see [the themes](devnotes/ui.md#the-themes-and-the-disc-that-picks-one).
+- `theme` — `"slate"` (dark, the default), `"reading-room"` (light) or `"walnut"` (brown and tan), set by the disc in the launcher's header and read by every window as it opens — see [the themes](devnotes/ui.md#the-themes-and-the-disc-that-picks-one).
 
 Per-app configs are saved separately as `config/<module_name>_config.json`: the dialog's settings, `dialog_position`, `flowgraph_position`, and whatever the window's `SAVED_SETTINGS` names, all merged in by `update_app_config`.
 
@@ -301,9 +307,9 @@ frequency and sample-rate callbacks work through the existing HackRF path.
    app transmits or receives. To give an existing app a second side instead
    of a square of its own - a receiver for a transmitter, say - add a face
    to that tile's list rather than a row. The direction is all the grid
-   needs to dim it, flip it and refuse it on the wrong radio. Both front ends and
-   `scripts/test_launcher_gui.py` read that one table, so a row added there
-   appears in all three.
+   needs to dim it, flip it and refuse it on the wrong radio. The launcher
+   and `scripts/test_launcher_gui.py` both read that one table, so a row
+   added there appears in both.
 4. Once the app has taught something worth keeping, write it into
    `devnotes/` - a file of its own for a new subject - and add a row to the
    table under [Where the details are](#where-the-details-are-devnotes).

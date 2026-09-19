@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Check the two front ends really are painted from the same tokens.
+"""Check every theme in ``apps/theme.py`` before anything is painted in it.
 
 ``apps/theme.py`` is the single source of the palette, the type scale and
-the faces: the launcher window and the config dialogs take it as Qt style
-sheets, and the browser page takes it as the ``/theme.css`` the server
-generates. That only stops them drifting if every name one side uses is a
-name the other side defines, which is what this checks. No radio, no
-display, no GNU Radio.
-
-It also holds every theme to the contrast its colours are there for,
-since a colour that reads on Slate can vanish on Reading Room's paper, and
-nothing else would say so until somebody looked.
+the faces: the launcher, the config dialogs and the app windows take it as
+Qt style sheets. This holds every theme to the contrast its colours are
+there for, since a colour that reads on Slate can vanish on Reading Room's
+paper, and nothing else would say so until somebody looked. It also checks
+that each stylesheet comes out whole, that the faces ship with their
+licences, and that the tile tables stay literals. No radio, no display, no
+GNU Radio.
 
     python scripts/test_theme.py
 """
@@ -66,31 +64,7 @@ def check(condition, message):
 
 
 def main():
-    print('tokens -> the browser page')
-    css = theme.css()
-    defined = set(re.findall(r'^\s*(--[a-z0-9-]+)\s*:', css, re.M))
-    page = open(os.path.join(ROOT, 'web', 'index.html')).read()
-    used = set(re.findall(r'var\((--[a-z0-9-]+)\)', page))
-    missing = sorted(used - defined)
-    check(not missing, f"every var() the page uses is defined ({len(used)} of "
-                       f"them){'' if not missing else ': missing ' + ', '.join(missing)}")
-    check('fonts.googleapis.com' not in page and 'http://' not in page
-          and 'https://' not in page,
-          'the page asks nothing of the network')
-    check('/theme.css' in page, 'the page links the generated stylesheet')
-    for name in ('pulse', 'charge'):
-        check(('@keyframes %s{' % name) in css and ('animation:%s ' % name) in page,
-              f"the page's {name} animation is one /theme.css generates")
-    # web/server.py puts the saved theme on exactly this tag as it serves
-    # the page; changed, the page would open in Slate every time.
-    check(page.count('<html lang="en">') == 1,
-          'the page\'s <html> tag is the one the server puts the theme on')
-    for key in theme.THEMES:
-        if key != theme.DEFAULT:
-            check(':root[data-theme="%s"]{' % key in css,
-                  f"/theme.css has a block for {theme.NAMES[key]}")
-
-    print('\nthe themes')
+    print('the themes')
     check(theme.DEFAULT == next(iter(theme.THEMES)),
           'the default is the first the disc shows')
     check(set(theme.NAMES) == set(theme.THEMES), 'every theme has a name')
@@ -118,7 +92,7 @@ def main():
                        f"{'' if not low else ': ' + '; '.join(low)}")
         faces = palette.get('type', {})
         if faces:
-            shipped = {family for family, _f, _w in theme.FACES}
+            shipped = {family for family, _f in theme.FACES}
             check(set(faces) <= {'f_num', 'f_ui', 'qss_bold'} and
                   {faces.get('f_num', 'Barlow Semi Condensed'),
                    faces.get('f_ui', 'Barlow')} <= shipped,
@@ -146,18 +120,18 @@ def main():
               f"the {name} stylesheet carries the palette")
 
     print('\nthe faces')
-    for _family, filename, _weight in theme.FACES:
+    for _family, filename in theme.FACES:
         path = os.path.join(theme.FONT_DIR, filename)
         check(os.path.exists(path), f"{filename} is in fonts/")
-    for family in sorted({family for family, _f, _w in theme.FACES}):
+    for family in sorted({family for family, _f in theme.FACES}):
         licence = theme.LICENCES.get(family)
         check(bool(licence) and
               os.path.exists(os.path.join(theme.FONT_DIR, licence)),
               f"{family}'s licence ships beside it, as the OFL requires")
 
     print('\nthe tile tables')
-    # Both front ends read these out of the launcher's source; the server
-    # parses them with ast, so they have to stay plain literals.
+    # scripts/test_launcher_gui.py and this script read these out of the
+    # launcher's source with ast, so they have to stay plain literals.
     import ast
     source = open(os.path.join(ROOT, 'RFbenchToolkit.py')).read()
     found = {}

@@ -37,8 +37,8 @@ def apps_with_main():
     found = []
     for name in sorted(os.listdir(os.path.join(ROOT, 'apps'))):
         # A leading underscore means a helper rather than an app. `_run.py`
-        # has a `main()` of its own - it is the thing that *runs* an app for
-        # the web launcher - and taking it for one failed here on every run
+        # has a `main()` of its own - it is the thing that *runs* an app
+        # without the launcher - and taking it for one failed here on every run
         # with a signature error that said nothing about any app.
         if not name.endswith('.py') or name.startswith('_'):
             continue

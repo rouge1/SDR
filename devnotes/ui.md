@@ -26,8 +26,8 @@ every time Settings closes:
 | Signal Hound BB60D | every tile turns to receive; the ten transmit-only tiles dim out |
 
 - **Only a tile that has something to say has a tooltip.** A usable
-  tile's would only repeat the name printed on it, so it has none, in
-  either front end; the user found them clutter on 2026-09-19. The flip
+  tile's would only repeat the name printed on it, so it has none; the
+  user found them clutter on 2026-09-19. The flip
   badge keeps its "Flip to …", because a glyph does not say what it does,
   and a screen reader still gets each tile's name - the tile is a button
   with no text of its own, so it is set as its accessible name.
@@ -154,13 +154,14 @@ x1161 at (215, 258) and so on. Two things stopped them coming back:
   size once the widgets are in.
 
 So the geometry is applied *after* `main()` has shown the window - and
-after the window manager has put it up, see above - by whichever launcher
-started it: `RFbenchToolkit.py` for the desktop grid, `apps/_run.py` for
-the browser. It is saved from the close-event wrapper the launcher already
-installs, read before the app's own `closeEvent` stops the flowgraph. Each
-app keeps its `QSettings` calls, which is what an app run directly still
-uses. `scripts/test_flowgraph_windows.py` checks the round trip, maximized
-and not, into a throwaway folder - and that a dialog's OK leaves the saved
+after the window manager has put it up, see above - by whichever started
+it: `RFbenchToolkit.py` for the grid, or `apps/_run.py` for an app [run on
+its own](#running-one-app-without-the-launcher). It is saved from the
+close-event wrapper the launcher already installs, read before the app's
+own `closeEvent` stops the flowgraph. Each app keeps its `QSettings`
+calls, which is what an app run directly still uses.
+`scripts/test_flowgraph_windows.py` checks the round trip, maximized and
+not, into a throwaway folder - and that a dialog's OK leaves the saved
 position alone, which for the first day it did not.
 
 The saved size is clamped to the current screen but the position is not:
@@ -395,54 +396,163 @@ it (see [its notes](atsc.md#atsc-transmitter)); nothing else did.
   hunting for its pixels. Window close buttons sit at `(X + WIDTH - 33,
   Y + 30)` from the frame geometry xdotool reports, *not* at its corner.
 
-## One design, two front ends
+## Running one app without the launcher
 
-The desktop launcher and the browser page are meant to look like one
-program, and for a while they did not: the page was drawn to a design and
-the launcher kept the grey stylesheet it had always had. So the palette,
-the type scale and the faces live in **`apps/theme.py`** and both sides
-read them - `apply_launcher_theme` and `apply_dark_theme` take Qt style
-sheets from it, and `web/server.py` generates `/theme.css` from the same
-`TOKENS` and the page links that instead of declaring its own `:root`.
-Edit a colour there and both front ends move.
+`apps/_run.py` runs one app on its own, with no grid - on a bench machine
+over ssh, say, or from a test, one machine transmitting and another
+receiving:
+
+```sh
+python apps/_run.py amSineGenerator                        # its own dialog first
+python apps/_run.py amSineGenerator --config values.json   # no dialog
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 \
+    python apps/_run.py amSineGenerator --config values.json   # headless, 2 min
+```
+
+`--config` holds what the app's dialog would return, and skips the
+dialog. `_run.py` alone does not make an app headless: it still builds
+its window, and with no screen - over ssh - `QT_QPA_PLATFORM=offscreen`
+draws that window into nothing while the flowgraph and the radio run as
+normal.
+
+It was written for a browser front end, `web/server.py`, which started
+each app as a process of its own. That front end was removed on
+2026-09-19 (see [one design for every
+window](#one-design-for-every-window)); this stayed, because nothing else
+runs an app without the launcher.
+
+- **It exists because a module cannot run itself.** Each app's `main()`
+  ends `if app.instance(): return tb else: return app.exec_()`, which is
+  the [launcher contract](../CLAUDE.md#app-module-contract) - the launcher
+  already owns a QApplication and its loop. But `app.instance()` is
+  truthy the moment a QApplication exists, so a module run directly takes
+  that same branch: it builds the flowgraph, shows the window, returns,
+  and the window never gets an event loop. `_run.py` is the piece the
+  launcher usually supplies. It also does the `XInitThreads()` each app's
+  own `__main__` block does, since importing a module skips that block,
+  and it restores and saves the window's place and controls as the
+  launcher does.
+- **`timeout`, `kill` and Ctrl+C stop it - since 2026-09-19.** Before
+  then an app run here ignored `SIGTERM` and `SIGINT`. On TVAdemo the FM
+  video transmitter was still on the air five minutes after `SIGTERM`, on
+  419% of a core across 53 threads, its main thread parked in Qt's poll,
+  and the NTSC transmitter did the same; only `SIGKILL` ended either.
+  **A plain `timeout` sends `SIGTERM`**, so the timeout every command on
+  TVAdemo gets ([machines](machines.md#the-tvademo-laptop-and-why-there-is-a-second-machine))
+  did not end the run at all: the transmitter stayed on the air, and
+  `timeout` itself waited on it for good. Only `timeout -k`, which follows
+  up with `SIGKILL`, ended it.
+- **Why it ignored them: nothing Python ran on the main thread.** Python
+  runs a signal's handler only when the main thread next runs Python,
+  and under `exec_()` the main thread sits in Qt's C++ event loop. Each
+  app's `main()` starts a 500 ms timer to give Python the thread, but
+  holds it in a local, so it is collected as `main()` returns. An app
+  with Python timers of its own never showed the fault - the FM + RDS
+  transmitter stopped on time with the old `_run.py` - and since
+  2026-09-18 `ClickToMove`'s Python event filter has hidden it in every
+  app. Swapping that filter for a C++ one brought it straight back: the
+  AM Sine Generator and the FM video transmitter, on a stand-in radio,
+  ignored `SIGTERM` exactly as on TVAdemo. This note once ruled the
+  collected timer out, on a stripped-down reproduction that took
+  `SIGTERM` at once; this one says otherwise.
+- **So `_run.py` makes sure of it, the same way for every app.** It
+  installs its own handler for both signals - stop the flowgraph, wait,
+  quit, as the apps' own does - and keeps its own timer ticking every
+  200 ms for the life of the loop. The ATSC and NTSC receivers install no
+  handler at all, so `SIGTERM` used to kill them outright, with no clean
+  stop, and Ctrl+C did nothing; they now stop like the rest. The handler
+  first sets an alarm: if the stop is stuck - a radio block that never
+  returns from `work()` - `SIGALRM`'s default action ends the process
+  5 s later, which needs no Python to run. Windows has no alarm, so a
+  thread does it there. A signal stops the app without saving its
+  window's place or controls, as closing the window would.
+- **Measured, 2026-09-19.** All sixteen apps on a stand-in radio, with
+  `ClickToMove` swapped out, exit 0.1-0.3 s after `SIGTERM`, and the ATSC
+  and NTSC receivers the same after `SIGINT`; a stop made to hang ends at
+  5.2 s. The RDS and ATSC receivers on a real BB60D exit 0.3 s after
+  either signal. And on the air: the AM Sine Generator on a VSG60, at
+  102.1 MHz and 81%, under a plain `timeout 20`, with a BB60D on another
+  laptop across the bench logging the carrier's power ten times a second
+  (the two clocks matched to a few tenths of a second):
+
+  | `_run.py` | carrier last heard | process gone |
+  |---|---|---|
+  | before the fix, `ClickToMove` swapped out | +29.8 s: `SIGTERM` at +20 s ignored, ended by `-k 10`'s `SIGKILL` | +30.0 s |
+  | fixed, `ClickToMove` swapped out | +20.0 s | +20.3 s |
+  | fixed, as shipped | +19.8 s | +20.2 s |
+
+  The FM + RDS transmitter, fixed, went quiet within 0.15 s of the
+  timeout both ways. On Windows, which has no `SIGTERM` to send from
+  outside - `Stop-Process` ends a process outright - it has not been
+  tried.
+- **Give `timeout` a `-k` on a bench machine all the same.** The fix
+  depends on the handler getting to run, and `-k 5` ends anything that
+  does not stop for any reason. A killed transmitter leaves
+  `config/.vsg60.lock` behind, which is only harmless because the lock is
+  keyed by a PID and a dead one is treated as stale.
+- **It has run a real app against a real radio**: the FM video
+  transmitter on TVAdemo's VSG60, from a `--config` file, headless, and
+  it transmitted correctly. `scripts/test_app_close.py` used to fail on
+  `_run.py`, which lives in `apps/` and has a `main()` of its own; it
+  skips names beginning with an underscore now, since a leading
+  underscore there means a helper rather than an app.
+
+## One design for every window
+
+The launcher, the config dialogs and the flowgraph windows are meant to
+look like one program. The palette, the type scale and the faces live in
+**`apps/theme.py`** and every window reads them - `apply_launcher_theme`,
+`apply_dark_theme` and `apply_flowgraph_theme` take Qt style sheets from
+it. Edit a colour there and all of them move.
+
+**The design was first drawn as a browser page**, a second front end onto
+the same grid and settings, served by `web/server.py`, while the launcher
+kept the grey stylesheet it had always had. The launcher was then given
+the page's look, which a Qt stylesheet does most of, with Python painting
+the rest - which is why the CSS each piece stands in for is named below.
+Once the launcher carried the whole design, the page was no longer
+needed, and it was removed on 2026-09-19 with its server,
+`scripts/probe_radio.py` and `/theme.css`, which `apps/theme.py` used to
+generate for it. Its one feature the launcher lacks is a list of running
+apps with a Stop button - and Stop could not stop one then (see [running
+one app without the launcher](#running-one-app-without-the-launcher)).
 
 `apps/theme.py` **imports nothing but the standard library at module
-level**, which is what lets the server import it: everything else in
-`apps/` pulls GNU Radio or Qt, and a web server must have neither. It is
-the one import the server makes from `apps/`; the tile tables it still
-reads out of the launcher's *source* with `ast`, as before.
+level**, so its test needs no Qt; `load_fonts` imports Qt inside itself.
 
 ```sh
 python scripts/test_theme.py    # no radio, no display, no GNU Radio
 ```
 
-checks that every `var()` the page uses is a name `/theme.css` defines,
-that the page asks nothing of the network, that neither Qt stylesheet has
-an unsubstituted token, that the six faces and their licence are in
-`fonts/`, and that every row of tiles has a heading. That is the check
-that stops the two drifting, which is the whole point of the arrangement.
+checks every theme's colours (see [testing them](#testing-them)), that no
+Qt stylesheet has an unsubstituted token, that every theme's faces and
+their licences are in `fonts/`, and that every row of tiles has a heading.
 
-**A Qt stylesheet is not CSS, and four of the things the page does have no
-QSS equivalent at all.** They are done to the pixels instead, in
-`RFbenchToolkit.py`:
+**A Qt stylesheet looks like CSS but is not, and four of the things the
+design needs have no QSS equivalent at all.** They are done to the pixels
+instead, in `RFbenchToolkit.py`:
 
-| The page says | Qt has no such thing, so |
+| CSS would say | Qt has no such thing, so |
 |---|---|
 | `--ground` and the rest of `:root` | Python formats the tokens into the sheet, the way `icon_url()` already got absolute paths into a `url()` |
-| `object-fit: cover` with `filter: saturate(.82)` | `cover_crop()` crops each icon to 4:3 about its middle, once, with PIL, and `picture_pixmap()` pulls the colour back with numpy - and brings it back under the pointer, as the page's `:hover` does |
+| `object-fit: cover` with `filter: saturate(.82)` | `cover_crop()` crops each icon to 4:3 about its middle, once, with PIL, and `picture_pixmap()` pulls the colour back with numpy - and brings it back under the pointer, as a `:hover` would |
 | `letter-spacing` on the TRANSMIT/RECEIVE line | `token_font()`, because only a QFont has it |
-| `.bank-name::after`, the hairline running off the heading | a `QFrame` in the row - Qt's `::` are sub-controls of a known widget, not pseudo-elements anyone can invent |
+| `::after`, the hairline running off a bank's heading | a `PulseLine` in the row, which paints itself - Qt's `::` are sub-controls of a known widget, not pseudo-elements anyone can invent |
 
 A fifth, `opacity` on a tile the radio cannot run, was already solved: the
 picture is dimmed by the painter in `_draw` and the caption by the
 stylesheet's own `:disabled` colours, because the two caption labels carry
 an opacity effect each for the flip and effects do not nest predictably.
 
-**The grid wraps now**, which is the page's
+Drop shadows, a tile's lift under the pointer and the pulse along each
+line came later, and have no QSS equivalent either - see [the
+themes](#the-themes-and-the-disc-that-picks-one).
+
+**The grid wraps now**, which is CSS's
 `repeat(auto-fill, minmax(150px, 1fr))` done by hand in `_relayout` -
 a stylesheet does no layout at all. Tiles are at least 150 px wide, as
 many to a row as fit, inside a column capped at 1080 and centred in the
-window, as the page's `max-width: 1080px; margin: 0 auto` does for both
+window, as CSS's `max-width: 1080px; margin: 0 auto` would, for both
 the rail's contents and the body (`centred_column`). Without the centring
 a maximised launcher kept its tiles in the leftmost 1080 px while the
 rail and the bank hairlines ran on across the whole screen.
@@ -505,23 +615,21 @@ it is shown - each one made it come out at its 600 px minimum:
 The launcher also gained a **header rail** - wordmark, the radio Settings
 has chosen, and the gear - and a **scroll area**, which it badly needed:
 the old grid had none, so on a 768-high laptop the video row sat below the
-bottom edge with no way to reach it. The gear is the page's own SVG of
-three faders, rendered through QtSvg, which retired twenty lines of PIL
+bottom edge with no way to reach it. The gear is an SVG of three
+faders, rendered through QtSvg, which retired twenty lines of PIL
 that brightened a photograph of a cog and keyed its background out.
 
-The one part of the browser page deliberately **not** carried across is the
-ON AIR panel. That is not paint, it is a running-apps list the desktop
-launcher has never kept - and in single mode it hides itself while an app
-runs, so there would be nothing to show it to.
+The launcher keeps **no list of running apps**, which the browser page
+had. In single mode it hides itself while an app runs, so there would be
+nothing to show it to.
 
 ### The flowgraph windows wear it too
 
 The windows an app opens once OK is pressed were the last thing still in
 Qt's light grey, with GNU Radio's white plots and black and blue traces.
-They now take the page's panel view (`web/prototype/index.html`): the
-window on the ground, each group of controls or readout a panel card,
-each plot a well with a rule round it, the first trace in `trace` and the
-second (Imag) in `ink_3`, as the prototype draws I and Q. Every control and
+They now take the same design: the window on the ground, each group of
+controls or readout a panel card, each plot a well with a rule round it,
+the first trace in `trace` and the second (Imag) in `ink_3`. Every control and
 every plot is the app's own - it is paint only, `theme.flowgraph_qss()`,
 which shares its buttons, inputs, sliders and ticks with the dialogs'
 (`_CONTROLS_QSS`), so a dialog and the window it opens read as one app.
@@ -557,7 +665,7 @@ Three things worth knowing before changing it:
   sheet one property at a time on a lone `freq_sink_c`. Every other
   property it sets is safe on every plot kind the apps use.
 - **The receivers' status colours are tokens now** - `good`, `warn` and
-  `bad`, added to `TOKENS` and to `/theme.css`. The old green and red were
+  `bad`, added to `TOKENS`. The old green and red were
   picked for Qt's light grey and read 3.2:1 and 3.0:1 on the new panel;
   the tokens read 8.5, 8.2 and 5.6:1 there - and 1.6-2.4:1 on the old
   grey, so the colours and the panel only work together.
@@ -628,7 +736,7 @@ Room**, the light one, paper and iron-gall ink, from voice-summary; and
 **Walnut**, brown with tan for its highlights, like a wooden radio's
 cabinet and the tan face of its dial. The way of choosing is
 voice-summary's too: the word "Themes" and a disc in the header, between
-the radio tag and the gear, in both front ends. The disc *is* the theme in
+the radio tag and the gear. The disc *is* the theme in
 force, and a click moves on to the next. Its tooltip is the theme's name
 alone - "Walnut", not "Theme: Walnut", since pointing at the disc already
 says it is the theme. The accessible name keeps the word, and says which
@@ -663,15 +771,13 @@ without being asked.
   colours into class attributes when the module was imported, which would
   have kept whatever theme was in force then. They now take them in
   `__init__`, straight after `apply_flowgraph_theme`.
-- **The choice is `theme` in `window_settings.json`, not the browser's own
-  storage**, which is where voice-summary keeps it. Here the dialogs and
-  the flowgraph windows have to read it too, including a window the
-  browser starts through `apps/_run.py`, which runs as a process of its
-  own. Every `apply_*_theme` calls `use_saved_theme()` first. A window
-  that is already open keeps the theme it was painted in. The launcher
-  repaints straight away, and the page picks up a change made at the
-  desktop on its next 3 s refresh. The desktop launcher does not pick up a
-  change made in the browser until it is started again.
+- **The choice is `theme` in `window_settings.json`**, not a browser's
+  storage, which is where voice-summary keeps it. Here the dialogs and
+  the flowgraph windows have to read it too, including one started by
+  `apps/_run.py`, which runs as a process of its own. Every
+  `apply_*_theme` calls `use_saved_theme()` first. A window that is
+  already open keeps the theme it was painted in; the launcher repaints
+  straight away.
 
 #### Each theme's type
 
@@ -686,24 +792,21 @@ without being asked.
   a Caslon drawn for screens, for everything read at length. Fanwood and
   IM Fell looked older still, but their old-style figures drop below the
   line, and this app is mostly frequencies.
-- **Neither front end may fake a bold.** A face with no bold of its own
-  is thickened when one is asked for, which fills in Limelight's
-  hairlines and turns Archivo SemiBold into a smudge. So every face is a
-  static file, one weight to a file, because Qt 5 cannot choose a weight
-  from a variable one. The two text faces run to a real Bold, because the
+- **No face may be given a fake bold.** A face with no bold of its own is
+  thickened when one is asked for, which fills in Limelight's hairlines
+  and turns Archivo SemiBold into a smudge. So every face is a static
+  file, one weight to a file, because Qt 5 cannot choose a weight from a
+  variable one. The two text faces run to a real Bold, because the
   receivers set their status line and their captions bold in whatever the
-  application font is. On the page, Limelight's `@font-face` covers
-  400-700, so the 600 the wordmark asks for is drawn from its one weight;
-  declared as 400 alone, the browser would fake the 600. In Qt the trap is
-  less obvious. **Qt 5 reads a stylesheet's `font-weight` divided by 8**,
-  so the `600` the wordmark, the TRANSMIT line and plot titles asked for
-  is Qt's 75, Bold. Barlow has a real Bold, so Slate never showed it.
-  Limelight and Archivo SemiBold do not, and FreeType thickened them - a
-  third more ink on each, found by measuring the ink rather than by eye.
-  Those rules now ask for `qss_bold`, a type token: 600 in Slate, as it
-  always was, and 500 - Qt's 62, which matches the semibold, or
-  Limelight's one weight, as drawn - in the two themes whose faces stop
-  short of bold.
+  application font is. The trap is not obvious: **Qt 5 reads a
+  stylesheet's `font-weight` divided by 8**, so the `600` the wordmark,
+  the TRANSMIT line and plot titles asked for is Qt's 75, Bold. Barlow has
+  a real Bold, so Slate never showed it. Limelight and Archivo SemiBold do
+  not, and FreeType thickened them - a third more ink on each, found by
+  measuring the ink rather than by eye. Those rules now ask for
+  `qss_bold`, a type token: 600 in Slate, as it always was, and 500 - Qt's
+  62, which matches the semibold, or Limelight's one weight, as drawn - in
+  the two themes whose faces stop short of bold.
 
 #### Each theme's colours
 
@@ -737,16 +840,15 @@ without being asked.
   gets a new file rather than a stale one.
 - **Reading Room's OK inverts under the pointer** (`ok_invert`). Its
   `ink_0`, the step beyond ink, is a darker near-black on a near-black
-  button, and the user found the hover all but invisible. So OK takes
-  the look of the plain button beside it, Cancel's light panel and dark
-  text, and pressed goes back to black. The dark themes keep the step
-  brighter. `ok_hover()` in `apps/theme.py` gives OK's hover colours for
-  either kind of theme, and the launcher's stylesheet and the page's
-  `--ok-hover` variables both come from it. A turn to the pulse's blue
-  came first, and gave way to this. OK also shows when it is pressed now,
-  in every theme: `QPushButton:pressed` lost to `:default` at equal
-  specificity, so a click gave no sign. `:default:pressed` puts it back
-  at rest.
+  button, and the user found the hover all but invisible. So OK takes the
+  look of the plain button beside it, Cancel's light panel and dark text,
+  and pressed goes back to black. The dark themes keep the step brighter.
+  `ok_hover()` in `apps/theme.py` gives OK's hover colours for either kind
+  of theme, and the stylesheets take them from it. A turn to the pulse's
+  blue came first, and gave way to this. OK also shows when it is pressed
+  now, in every theme: `QPushButton:pressed` lost to `:default` at equal
+  specificity, so a click gave no sign. `:default:pressed` puts it back at
+  rest.
 
 #### Shadows, and the tile under the pointer
 
@@ -784,9 +886,7 @@ without being asked.
   `settle()` puts it back whenever the grid is laid out again, and
   `moveEvent` takes any move the tile did not make as the grid placing
   it, and rises from there - otherwise a layout pass mid-lift sent the
-  tile back to a place that no longer existed when the pointer left. The
-  page writes the same tokens as `--tile-shadow`, `--tile-shadow-hover`
-  and `--tile-lift`, and transitions `box-shadow` and `transform`.
+  tile back to a place that no longer existed when the pointer left.
 - **The grid decides its tile width from the window, never from the
   scroll bar.** Walnut's Caslon captions made its page 3 px taller than a
   window sized for Slate. The scroll bar came, the tiles narrowed from 185
@@ -813,48 +913,32 @@ without being asked.
   user asked for blue - pale ice in Slate and tan in Walnut. The first
   charge was 0.7 s and dimmer, and was asked to be longer and brighter.
 - **The text takes the colour, because a glow alone did not show.** Dark
-  text in a faint teal halo on paper barely read as charging. The page's
-  glow is three `text-shadow` layers. The launcher's is the effect's blur
-  plus a faint stroke of the pulse's colour round the letters, because
-  the effect only blurs the shape it is given and thin text gives it
-  little. At 2.4 px and 55% the stroke made the letters look bold and
-  smudged; it is 1.6 px at 30%.
-- **One timing, both front ends.** It is `theme.PULSE`. The launcher runs
-  from it, and `/theme.css` turns it into the page's `pulse` and `charge`
-  keyframes, so the two cannot drift. `test_theme.py` checks the page
-  uses the generated ones.
+  text in a faint teal halo on paper barely read as charging. The glow is
+  the effect's blur plus a faint stroke of the pulse's colour round the
+  letters, because the effect only blurs the shape it is given and thin
+  text gives it little. At 2.4 px and 55% the stroke made the letters look
+  bold and smudged; it is 1.6 px at 30%.
 - **The line is a `PulseLine`, painted, where it was a `QFrame`, and the
   name a `ChargeLabel`.** The line is three pixels tall, the one-pixel
   line in the middle and room for the pulse's glow either side. The name
-  paints its own text in a colour mixed by its `charge`, and its glow is
-  a `QGraphicsDropShadowEffect` with no offset. One timer moves every
-  line and name at 30 frames a second, and it runs only while the
-  launcher is showing and the theme has a pulse. It stops in
-  `hideEvent`, so in single mode, where the launcher hides while an app
-  runs, it costs the app nothing. The page animates three background
-  layers - the glow, the pulse and the line - and the name's colour and
-  `text-shadow`, staggered by a `--row` the grid sets on each heading,
-  with the animation paused where a theme has no pulse. A browser set to
-  reduce motion gets neither.
+  paints its own text in a colour mixed by its `charge`, and its glow is a
+  `QGraphicsDropShadowEffect` with no offset. One timer moves every line
+  and name at 30 frames a second, timed from `theme.PULSE`, and it runs
+  only while the launcher is showing and the theme has a pulse. It stops
+  in `hideEvent`, so in single mode, where the launcher hides while an app
+  runs, it costs the app nothing.
 
-#### The disc, and the page
+#### The disc
 
 - **The disc shows the ground and the trace, not `live`.** The trace is
   the colour that differs most from one theme to the next: pale ice,
-  teal ink and tan. Both front ends draw the disc from the tokens.
+  teal ink and tan. The launcher draws the disc from the tokens.
   voice-summary writes each disc's colours out separately, and nothing
   there notices when a disc stops matching its theme.
 - **Its focus ring appears only when Tab brought the focus.** The disc is
   the first thing in the launcher that takes focus, so Qt hands it focus
   as the window opens. A ring drawn on any focus would have sat there from
-  the start. On the page, `:focus-visible` does the same job.
-- **The page opens in the saved theme.** The server puts `data-theme` on
-  `<html>` as it serves the page. If the page's script set it after
-  `/api/state` answered, every load would show Slate first and then
-  change. `/theme.css` gives the default as `:root` and each of the
-  others as `:root[data-theme=…]`, each with its own `color-scheme`. That
-  property is what makes the browser draw a `<select>`'s popup and the
-  scroll bars in the theme's colours.
+  the start.
 
 #### Testing them
 
@@ -865,26 +949,25 @@ python scripts/test_dialog_layout.py --theme walnut --save /tmp/shots
 ```
 
 `test_theme.py` holds every palette to the contrast Slate's colours give:
-labels 4.5:1 on the ground, panel and well, the status colours 4.5:1
-(they are the receivers' lock line), a bank's name 4.5:1, a tile's
-TRANSMIT line 3:1, the trace 3:1 on the well, and the OK button's text at
-rest, under the pointer and in `ink_0`. Given Reading Room's first
-`ink_3` it failed at 2.76:1 on the ground, and the colour was darkened.
-It also checks every theme's faces ship in `fonts/` with their licences,
-and that the page's animations are the generated ones. Both window tests
-set the theme themselves, Slate unless `--theme` says otherwise, so the
-user's own choice cannot change what they test. On a light theme the
-window test checks for near black rather than near white.
+labels 4.5:1 on the ground, panel and well, the status colours 4.5:1 (they
+are the receivers' lock line), a bank's name 4.5:1, a tile's TRANSMIT line
+3:1, the trace 3:1 on the well, and the OK button's text at rest, under
+the pointer and in `ink_0`. Given Reading Room's first `ink_3` it failed
+at 2.76:1 on the ground, and the colour was darkened. It also checks every
+theme's faces ship in `fonts/` with their licences. Both window tests set
+the theme themselves, Slate unless `--theme` says otherwise, so the user's
+own choice cannot change what they test. On a light theme the window test
+checks for near black rather than near white.
 `scripts/test_launcher_gui.py` sets the theme to Slate for its run and
 puts the user's back afterwards, the same way it handles `tile_faces`: it
-finds the tiles as bright pictures on a dark window, and on Reading
-Room's paper the whole window is bright. **Hover in an offscreen test
-needs a real pointer** - `QTest.mouseMove` on the window's handle.
-Setting `WA_UnderMouse`, or drawing with `State_MouseOver` in the style
-option, leaves a stylesheet `:hover` unapplied. All sixteen windows pass
-in all three themes, and so do the dialogs, on the offscreen platform. On
-a real display and on Windows, the themes have not been tried. The page
-was checked in Chromium.
+finds the tiles as bright pictures on a dark window, and on Reading Room's
+paper the whole window is bright. **Hover in an offscreen test needs a
+real pointer** - `QTest.mouseMove` on the window's handle. Setting
+`WA_UnderMouse`, or drawing with `State_MouseOver` in the style option,
+leaves a stylesheet `:hover` unapplied. All sixteen windows pass in all
+three themes, and so do the dialogs, on the offscreen platform. The user
+has since been using all three on a real display and found them good
+(2026-09-19). On Windows they are unconfirmed.
 
 **The title bar follows the theme on Windows only.** `match_title_bar` in
 `apps/utils.py` sets DWM's dark mode on each window: dark for Slate and
@@ -928,15 +1011,8 @@ modified copy, so every file is shipped exactly as it came.
   nothing checks, and a missing face does not raise: the app renders in
   something else, which is the kind of wrongness only ever found by looking
   at the screen.
-- **The browser front end serves them itself**, from a `/fonts/` route in
-  `web/server.py` with the same containment check as the icons, so the page
-  needs no network. It used to link `fonts.googleapis.com`, which on a bench
-  with no connection falls back to Helvetica without a word - and the two
-  front ends then stop matching for a reason nobody would guess.
-  `web/prototype/index.html` refers to them relatively, since that mockup is
-  opened as a file rather than served. Nothing else in the tree reaches the
-  network at run time: the two URLs left in `windows/bootstrap.ps1`
-  are for installing Windows from scratch.
+- **Nothing reaches the network at run time.** The two URLs in
+  `windows/bootstrap.ps1` are for installing Windows from scratch.
 - **Qt loads them with `QFontDatabase.addApplicationFont`**, so the desktop
   side needs no system install either and both platforms render the same.
 - **Qt clamps to the heaviest face shipped rather than synthesising one.**

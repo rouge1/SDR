@@ -7,8 +7,6 @@ it up in its dialog, and the flowgraph runs on whichever radio is selected.
 
 ## Features
 
-- Two front ends onto the same grid and the same settings: a desktop launcher,
-  and a browser page that starts the same apps
 - 16 apps: signal generators, AM and FM audio, FM broadcast with RDS, and ATSC,
   NTSC and FM video - transmitters and receivers, with the two ends of each
   standard sharing one tile
@@ -16,7 +14,7 @@ it up in its dialog, and the flowgraph runs on whichever radio is selected.
   UHD), **Signal Hound VSG60** (transmit only) and **Signal Hound BB60D**
   (receive only). The grid arranges itself around whichever is selected
 - Three themes - **Slate** (dark), **Reading Room** (light) and **Walnut**
-  (brown and tan) - picked with the dot by "Themes" in either front end's
+  (brown and tan) - picked with the dot by "Themes" in the launcher's
   header. The dialogs and the app windows follow, and a pulse runs down the
   line beside each row of tiles
 - Runs on Linux and Windows
@@ -197,18 +195,20 @@ python RFbenchToolkit.py
 
 > `linux/start_app.sh` assumes Miniconda is installed at `~/miniconda3`. If your installation is elsewhere (e.g., `/opt/miniconda3`), edit the `source` line in that script accordingly.
 
-### From a browser
+### One app, without the launcher
 
 ```sh
 conda activate gnu
-python web/server.py                 # http://127.0.0.1:8730
-python web/server.py --host 0.0.0.0  # prints a URL with a token in it
+python apps/_run.py amSineGenerator                        # its own dialog first
+python apps/_run.py amSineGenerator --config values.json   # no dialog
+QT_QPA_PLATFORM=offscreen timeout -k 5 120 \
+    python apps/_run.py amSineGenerator --config values.json   # headless, 2 min
 ```
 
-The page shows the same grid and settings and starts the same apps. Each app's
-window opens on the display the **server** runs on, not in the browser - so a
-phone can be the control surface for a bench monitor. Anything wider than this
-machine needs the token in the printed URL; every tile keys a transmitter.
+Useful on a bench machine over SSH - one machine transmitting, another
+receiving. `--config` holds what the app's dialog would return, and skips the
+dialog; `QT_QPA_PLATFORM=offscreen` runs it with no screen. Ctrl+C, `kill` or
+`timeout` stops it, and a stop that sticks ends the process 5 s later anyway.
 
 ---
 
@@ -230,8 +230,8 @@ its tone or pattern. Any WAV or MP3 and any video `ffmpeg` reads will do - MP3
 and video need `ffmpeg`, which both environments install.
 
 Settings are saved to `config/window_settings.json` (created automatically on first run),
-the theme among them - so the dialogs and app windows, and the browser page,
-all open in the one chosen.
+the theme among them - so the dialogs and app windows all open in the one
+chosen.
 Nothing in `config/` is committed - window positions, radio choice and the
 media folder are per machine - so a pull never overwrites them.
 The launcher opens at a size it works out for itself - the widest bank's tiles
@@ -247,10 +247,10 @@ SDR/
 ├── apps/
 │   ├── *.py                      # One module per app, plus the radio blocks
 │   ├── utils.py                  # Shared settings, dialog layout and window helpers
-│   ├── theme.py                  # Colours, type and fonts for both front ends
+│   ├── theme.py                  # Colours, type and fonts for every window
+│   ├── _run.py                   # Runs one app without the launcher
 │   ├── media.py                  # How every picker finds files in the media folder
 │   └── settings_dialog.py        # Global settings UI
-├── web/                          # Browser front end: server.py and index.html
 ├── fonts/                        # Barlow and each theme's faces, each with its SIL OFL licence
 ├── icons/                        # Tile pictures and interface glyphs
 ├── scripts/
@@ -318,7 +318,9 @@ Directory** set in Settings.
 3. Add a row to `APP_TILES` near the top of `RFbenchToolkit.py` -
    `(row, column, [(label, module, icon, 'tx' or 'rx')])`. To give an existing
    app its other end, such as a receiver for a transmitter, add a second face
-   to that tile's list instead of a new row. Both front ends read this table
+   to that tile's list instead of a new row. The launcher and
+   `scripts/test_launcher_gui.py` both read this table, so a row added there
+   appears in both.
 
 Refer to `apps/amSineGenerator.py` as a reference implementation.
 

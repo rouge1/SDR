@@ -1,24 +1,22 @@
-"""The one place the two front ends get their colours and type from.
+"""The one place the launcher, the dialogs and the app windows get their
+colours and type from.
 
-The desktop launcher and the browser page are meant to look like one
-program. They were drawn twice, which is how two front ends drift apart:
-the first edit to either one and they stop matching, for no reason anybody
-can see. So the palette, the type scale and the faces live here, and both
-read them - ``apply_launcher_theme``, ``apply_dark_theme`` and
+The palette, the type scale and the faces live here, and every window
+reads them - ``apply_launcher_theme``, ``apply_dark_theme`` and
 ``apply_flowgraph_theme`` in ``apps/utils.py`` through :func:`launcher_qss`,
-:func:`dialog_qss` and :func:`flowgraph_qss`, and ``web/server.py`` through
-:func:`css`, which it serves as ``/theme.css``.
+:func:`dialog_qss` and :func:`flowgraph_qss`. So a dialog and the window
+it opens read as one app, and a colour edited here moves in all of them.
 
-**This module imports nothing but the standard library at module level.**
-The web server imports it, and the server deliberately pulls in no GNU
-Radio, no Qt and no SoapySDR; :func:`load_fonts` is the one function that
-needs Qt and it imports inside itself.
+**This module imports nothing but the standard library at module level**,
+so ``scripts/test_theme.py`` can check every theme with no Qt and no
+display; :func:`load_fonts` is the one function that needs Qt and it
+imports inside itself.
 
-Qt Style Sheets are not CSS, and four of the things the page does have no
-QSS equivalent at all - custom properties, ``object-fit: cover`` with
-``filter: saturate()``, ``letter-spacing``, and the ``::after`` rule that
-runs a hairline off the end of a bank name. Those are done in Python, in
-``RFbenchToolkit.py``; everything that *is* expressible lives here.
+Qt Style Sheets look like CSS but are not, and some of what the launcher
+draws has no QSS equivalent at all - variables, cropping a picture to its
+box, desaturating it, ``letter-spacing``, drop shadows and anything that
+moves. Those are done in Python, in ``RFbenchToolkit.py``; everything that
+*is* expressible lives here.
 """
 
 import os
@@ -30,8 +28,7 @@ FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 
 #: The type: the faces and the sizes. A theme may name faces of its own -
 #: Reading Room and Walnut do - which are laid over these; the sizes are
-#: the same in every theme. Sizes are in pixels here because that is what Qt takes;
-#: :func:`css` divides by 16 to give the page the rem it had.
+#: the same in every theme. Sizes are in pixels, which is what Qt takes.
 TYPE = {
     'f_num': 'Barlow Semi Condensed',
     'f_ui': 'Barlow',
@@ -42,8 +39,7 @@ TYPE = {
     # face with no bold of its own is then thickened by FreeType instead:
     # measured, a third more ink on Archivo SemiBold and on Limelight. So
     # a theme whose faces stop short of bold asks 500, which is 62 to Qt
-    # and matches the semibold, or Limelight's one weight, as drawn. The
-    # page is unaffected: CSS weights mean what they say.
+    # and matches the semibold, or Limelight's one weight, as drawn.
     'qss_bold': 600,
 }
 
@@ -61,8 +57,8 @@ THEMES = {
     # The default, and the dark one: blue-black slate, with an orange that
     # means on air.
     'slate': {
-        'scheme': 'dark',         # what the browser draws its own controls in
-        'ground': '#10151a',      # the page behind everything
+        'scheme': 'dark',         # the title bar, on Windows
+        'ground': '#10151a',      # the window behind everything
         'panel': '#1a2228',       # a tile, a card, a dialog
         'panel_2': '#212b32',     # a tile under the pointer, a plain button
         'well': '#0c1013',        # anything typed into
@@ -122,8 +118,7 @@ THEMES = {
         # (drop, blur, opacity) for each layer, in ``shade``, the ink's
         # colour here, a contact shadow close under it and a soft one
         # further out. A fourth item names another colour for that layer -
-        # Slate and Walnut light their lifted tiles that way. The
-        # page writes the same as a box-shadow.
+        # Slate and Walnut light their lifted tiles that way.
         'shadow': ((1, 2, 0.12), (4, 12, 0.14)),
         # OK under the pointer inverts: it takes Cancel's look - the light
         # button, dark text - and pressed goes back to black. Stepping to
@@ -159,7 +154,7 @@ THEMES = {
     # and 2:1, and were found too close to the walnut. The rule is kept at
     # 3:1 and no lighter because selected text sits on it: cream on it is
     # 4.2:1 as it is. On air stays the orange of a valve's glow,
-    # the one thing on the page that is not brown or tan. voice-summary's
+    # the one thing in the window that is not brown or tan. voice-summary's
     # Tape Room was a brown theme too, with amber and red for highlights,
     # and was found flat: the browns here are lighter and warmer than its
     # near-black, and there is one accent rather than three.
@@ -206,18 +201,19 @@ THEMES = {
     },
 }
 
-#: The colours every theme has to define, in the order /theme.css lists
-#: them. ``scheme`` is not one: it is a word, not a colour.
+#: The colours every theme has to define. ``scheme`` is not one: it is a
+#: word, ``dark`` or ``light``, not a colour.
 PALETTE = ('ground', 'panel', 'panel_2', 'well', 'rule', 'rule_soft',
            'shade', 'heading', 'ink', 'ink_0', 'ink_2', 'ink_3', 'tag', 'live',
            'warn', 'good', 'bad', 'trace')
 
-#: Things a theme may have that are not colours, and that the launcher and
-#: the page both draw from - all three themes have them now, in ``shade``: ``shadow``, the layers of a tile's drop shadow,
-#: and ``shadow_hover`` and ``lift``, the deeper one under the pointer and
-#: how many pixels the tile rises off it; and ``pulse``, the colour of the
-#: pulse that runs along each bank's line. Reading Room
-#: has all three; a theme without them draws none.
+#: Things a theme may have that are not colours, which the launcher draws
+#: from: ``shadow``, the layers of a tile's drop shadow, in ``shade``;
+#: ``shadow_hover`` and ``lift``, the deeper one under the pointer and how
+#: many pixels the tile rises off it; ``pulse``, the colour of the pulse
+#: that runs along each bank's line; and ``ok_invert`` - see
+#: :func:`ok_hover`. All three themes have the first four; a theme without
+#: one draws none.
 EXTRAS = ('shadow', 'shadow_hover', 'lift', 'pulse', 'ok_invert')
 
 #: What the disc's tooltip calls each one.
@@ -227,13 +223,11 @@ DEFAULT = 'slate'
 
 #: The pulse down each bank's line, in seconds. The heading charges - a
 #: glow of the pulse's colour gathering round its name, faster as it goes -
-#: for ``charge`` (0.7 s at first, found too short), then fires: the pulse leaves the end of the name and
-#: crosses the line in ``sweep``, while the name's glow dies away over
-#: ``decay``. Each row ``stagger`` after the one above, so it runs down the
-#: page as well as along it, every ``period``. ``length`` is the pulse's,
-#: head and tail, in pixels. The launcher runs from these, and
-#: :func:`css` turns them into the page's keyframes, so the two cannot
-#: drift.
+#: for ``charge`` (0.7 s at first, found too short), then fires: the pulse
+#: leaves the end of the name and crosses the line in ``sweep``, while the
+#: name's glow dies away over ``decay``. Each row ``stagger`` after the one
+#: above, so it runs down the window as well as along it, every
+#: ``period``. ``length`` is the pulse's, head and tail, in pixels.
 PULSE = {'charge': 1.2, 'sweep': 1.6, 'decay': 0.35, 'stagger': 0.5,
          'period': 4.5, 'length': 160}
 
@@ -293,7 +287,7 @@ def after(name):
 use(DEFAULT)
 
 #: What to fall back to before the vendored faces are loaded, or if they
-#: cannot be. Both front ends name the same stack.
+#: cannot be.
 FALLBACK = '"Helvetica Neue", Arial, sans-serif'
 
 
@@ -356,7 +350,7 @@ QToolTip { background: %(panel_2)s; color: %(ink)s;
     padding: 0; min-width: 0; }
 #gear:hover { background: %(panel)s; }
 
-/* A bank heading. Its hairline, the page's ::after, is a PulseLine in
+/* A bank heading. The hairline running off it is a PulseLine in
    RFbenchToolkit.py, which paints itself - a pulse runs along it on a
    theme that has one. */
 #bank-name { color: %(heading)s; font-size: %(s_sm)spx; background: transparent; }
@@ -408,8 +402,8 @@ def launcher_qss():
 
 # --- The config dialogs -----------------------------------------------------
 
-# The page's .sheet: a panel card, a well for anything typed into, one
-# primary button. tidy_dialog still does the layout - this is paint only.
+# A panel card, a well for anything typed into, one primary button.
+# tidy_dialog still does the layout - this is paint only.
 _DIALOG_BASE_QSS = """
 QDialog, QWidget { background: %(panel)s; color: %(ink)s;
     font-family: "%(f_ui)s", %(fallback)s; font-size: %(s_md)spx; }
@@ -430,7 +424,7 @@ QPushButton { background: %(panel_2)s; color: %(ink)s;
     padding: 8px 16px; min-width: 80px; font-size: %(s_sm)spx; }
 QPushButton:hover { border-color: %(ink_3)s; }
 QPushButton:pressed { background: %(well)s; }
-/* OK is the page's .btn.primary. */
+/* OK, the one primary button. */
 QPushButton:default { background: %(ink)s; color: %(ground)s;
     border-color: %(ink)s; }
 QPushButton:default:hover { background: %(ok_hover)s; color: %(ok_hover_ink)s;
@@ -507,9 +501,8 @@ def dialog_qss(up, down, tick):
 
 # --- The flowgraph windows --------------------------------------------------
 
-# The page's panel view (web/prototype/index.html): the window on the
-# ground, each group of controls a panel card, each plot a well with a
-# rule round it, traces in the trace colour.
+# The window on the ground, each group of controls a panel card, each
+# plot a well with a rule round it, traces in the trace colour.
 #
 # **No font-family or font-size on QWidget, QLabel or the plots' own
 # frames**, unlike the dialog. A stylesheet font beats setFont(), and the
@@ -573,7 +566,7 @@ QMenu::item:selected { background: %(rule)s; }
 QMenu::separator { height: 1px; background: %(rule_soft)s; margin: 4px 0; }
 QDialog { background: %(panel)s; }
 
-/* A plot is a well with a rule round it, as on the page. */
+/* A plot is a well with a rule round it. */
 DisplayPlot { background: %(well)s; border: 1px solid %(rule)s;
     border-radius: 2px;
     qproperty-palette_color: %(well)s;
@@ -620,33 +613,33 @@ def flowgraph_qss(up, down, tick):
                                  up=up, down=down, tick=tick)
 
 
-# --- The browser page -------------------------------------------------------
+# --- The faces --------------------------------------------------------------
 
-#: The faces, as (family, file, CSS weight). Qt reads the same directory
-#: through :func:`load_fonts` and picks its own weights.
+#: The faces that ship in ``fonts/``, as (family, file). :func:`load_fonts`
+#: registers every file there; this says which family each one is, so
+#: ``scripts/test_theme.py`` can check a theme names only faces that ship,
+#: each with its licence.
 #:
 #: Every face is a static file, one weight to a file: Qt 5 cannot choose a
 #: weight from a variable one. The text faces run to a real bold, because
 #: the receivers set their status and captions bold in whatever the
-#: application font is. Limelight has one weight, so it is declared over
-#: 400-700: declared as 400 alone, the browser would fake a bold for the
-#: 600 the wordmark asks for and smear the Deco. Qt fakes one too, and is
-#: kept from it another way - see ``qss_bold`` in :data:`TYPE`.
+#: application font is. Limelight has one weight, and Qt would fake a bold
+#: from it - see ``qss_bold`` in :data:`TYPE`.
 FACES = [
-    ('Barlow', 'Barlow-Regular.ttf', 400),
-    ('Barlow', 'Barlow-Medium.ttf', 500),
-    ('Barlow', 'Barlow-SemiBold.ttf', 600),
-    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Medium.ttf', 500),
-    ('Barlow Semi Condensed', 'BarlowSemiCondensed-SemiBold.ttf', 600),
-    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Bold.ttf', 700),
-    ('Archivo', 'Archivo-SemiBold.ttf', 600),
-    ('Source Serif 4 SmText', 'SourceSerif4SmText-Regular.ttf', 400),
-    ('Source Serif 4 SmText', 'SourceSerif4SmText-Semibold.ttf', 600),
-    ('Source Serif 4 SmText', 'SourceSerif4SmText-Bold.ttf', 700),
-    ('Limelight', 'Limelight-Regular.ttf', '400 700'),
-    ('Libre Caslon Text', 'LibreCaslonText-Regular.ttf', 400),
-    ('Libre Caslon Text', 'LibreCaslonText-SemiBold.ttf', 600),
-    ('Libre Caslon Text', 'LibreCaslonText-Bold.ttf', 700),
+    ('Barlow', 'Barlow-Regular.ttf'),
+    ('Barlow', 'Barlow-Medium.ttf'),
+    ('Barlow', 'Barlow-SemiBold.ttf'),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Medium.ttf'),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-SemiBold.ttf'),
+    ('Barlow Semi Condensed', 'BarlowSemiCondensed-Bold.ttf'),
+    ('Archivo', 'Archivo-SemiBold.ttf'),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Regular.ttf'),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Semibold.ttf'),
+    ('Source Serif 4 SmText', 'SourceSerif4SmText-Bold.ttf'),
+    ('Limelight', 'Limelight-Regular.ttf'),
+    ('Libre Caslon Text', 'LibreCaslonText-Regular.ttf'),
+    ('Libre Caslon Text', 'LibreCaslonText-SemiBold.ttf'),
+    ('Libre Caslon Text', 'LibreCaslonText-Bold.ttf'),
 ]
 
 #: The SIL OFL each family is under, with its own copyright line. The
@@ -662,108 +655,10 @@ LICENCES = {
 }
 
 
-def css():
-    """The page's ``@font-face`` rules and every theme's palette, served as
-    /theme.css.
-
-    The default theme is ``:root`` and each of the others is
-    ``:root[data-theme=...]``, so the page changes theme by setting one
-    attribute on ``<html>`` and the browser re-resolves every ``var()``
-    under it - nothing is re-rendered. That selector is (0,2,0) against
-    ``:root``'s (0,1,0), so it wins wherever it sits in the file.
-
-    ``color-scheme`` goes out per theme and is not decoration: it is what
-    makes the browser draw a ``<select>``'s popup and the scroll bars to
-    match. CSS on the control itself only reaches the closed box.
-
-    Sizes go out in rem, as the page has always had them, so a reader who
-    scales their browser text still gets it; Qt has no such idea and takes
-    the pixels directly.
-    """
-    lines = ['/* Generated from apps/theme.py - edit the tokens there, not',
-             '   here, so the launcher window and this page cannot drift. */']
-    for family, filename, weight in FACES:
-        lines.append(
-            '@font-face{font-family:"%s";font-style:normal;font-weight:%s;'
-            'font-display:swap;src:url("/fonts/%s") format("truetype")}'
-            % (family, weight, filename))
-    for key, chosen in THEMES.items():
-        lines.append(':root{' if key == DEFAULT
-                     else ':root[data-theme="%s"]{' % key)
-        lines.append('  color-scheme:%s;' % chosen['scheme'])
-        for name in PALETTE:
-            lines.append('  --%s:%s;' % (name.replace('_', '-'), chosen[name]))
-        faces = chosen.get('type', TYPE if key == DEFAULT else {})
-        for name in ('f_num', 'f_ui'):
-            if name in faces:
-                lines.append('  --%s:"%s",%s;' % (name.replace('_', '-'),
-                                                  faces[name], FALLBACK))
-        # The tile's shadow and the bank lines' pulse. The default states
-        # none, so a theme without them inherits none; the pulse's
-        # animation is paused where there is no pulse, so it costs nothing.
-        def rgb(token):
-            value = chosen[token].lstrip('#')
-            return ' '.join(str(int(value[i:i + 2], 16)) for i in (0, 2, 4))
-        for token, prop in (('shadow', 'tile-shadow'),
-                            ('shadow_hover', 'tile-shadow-hover')):
-            shadow = chosen.get(token)
-            if shadow or key == DEFAULT:
-                lines.append('  --%s:%s;' % (prop, ', '.join(
-                    '0 %dpx %dpx rgb(%s / %g)'
-                    % (layer[0], layer[1],
-                       rgb(layer[3] if len(layer) > 3 else 'shade'), layer[2])
-                    for layer in shadow) if shadow else 'none'))
-        for name, value in zip(('ok-hover', 'ok-hover-ink', 'ok-hover-edge'),
-                               ok_hover(chosen)):
-            lines.append('  --%s:%s;' % (name, value))
-        if chosen.get('lift') or key == DEFAULT:
-            lines.append('  --tile-lift:%dpx;' % (chosen.get('lift') or 0))
-        if chosen.get('pulse') or key == DEFAULT:
-            lines.append('  --pulse:%s;' % (chosen.get('pulse') or 'transparent'))
-            lines.append('  --pulse-state:%s;'
-                         % ('running' if chosen.get('pulse') else 'paused'))
-        if key == DEFAULT:
-            lines.append('  --pulse-period:%gs;' % PULSE['period'])
-            lines.append('  --pulse-stagger:%gs;' % PULSE['stagger'])
-            lines.append('  --pulse-length:%dpx;' % PULSE['length'])
-            for name in ('s_xs', 's_sm', 's_md', 's_lg', 's_xl'):
-                lines.append('  --%s:%grem;'
-                             % (name.replace('_', '-'), TYPE[name] / 16))
-        lines.append('}')
-    lines += _pulse_keyframes()
-    return '\n'.join(lines) + '\n'
-
-
-def _pulse_keyframes():
-    """The page's charge and pulse, timed from :data:`PULSE`."""
-    def at(seconds):
-        return '%g%%' % round(100 * seconds / PULSE['period'], 3)
-    fire = at(PULSE['charge'])
-    arrive = at(PULSE['charge'] + PULSE['sweep'])
-    spent = at(PULSE['charge'] + PULSE['decay'])
-    off = 'var(--pulse-length)'
-    left = 'calc(-1 * %s) 0,calc(-1 * %s) 1px,0 1px' % (off, off)
-    right = 'calc(100%% + %s) 0,calc(100%% + %s) 1px,0 1px' % (off, off)
-    # The name takes the pulse's colour as it charges, and a glow of it
-    # gathers round it: a glow alone barely showed on paper.
-    dark = ('color:var(--heading);text-shadow:0 0 0 transparent,'
-            '0 0 0 transparent,0 0 0 transparent')
-    lit = ('color:var(--pulse);text-shadow:0 0 3px var(--pulse),'
-           '0 0 10px var(--pulse),0 0 22px var(--pulse)')
-    return [
-        '@keyframes pulse{0%%,%s{background-position:%s}%s,100%%{'
-        'background-position:%s}}' % (fire, left, arrive, right),
-        # Charging gathers faster as it goes, then the glow falls away as
-        # the pulse leaves.
-        '@keyframes charge{0%%{%s;animation-timing-function:ease-in}'
-        '%s{%s}%s,100%%{%s}}' % (dark, fire, lit, spent, dark),
-    ]
-
-
 #: The settings glyph: three faders, which says "settings" without a
-#: photograph of a cog, and which the browser front end already draws. It
-#: is inline SVG rather than a file because QtSvg has no ``currentColor``,
-#: so the ink has to be put in before it is rendered.
+#: photograph of a cog. It is inline SVG rather than a file because QtSvg
+#: has no ``currentColor``, so the ink has to be put in before it is
+#: rendered.
 _GEAR = """<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17"
  viewBox="0 0 17 17" fill="none">
 <path d="M2 4h5M10 4h5M2 8.5h9M14 8.5h1M2 13h3M8 13h7"

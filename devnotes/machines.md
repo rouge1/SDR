@@ -44,7 +44,12 @@ video clips are 322 MB and took 47 seconds.
   PAL frame-boundary fault (see [PAL](ntsc.md#pal-625-lines)) and ran for ten hours
   with three threads spinning, holding up the off-air job waiting behind
   it. `timeout` on the remote command turns that into a failure within
-  minutes.
+  minutes. **Give it `-k`**: `timeout -k 5 120 ...`. A plain `timeout`
+  sends `SIGTERM` and then waits, and a process that ignores `SIGTERM`
+  is never ended - an app run through `apps/_run.py` did, and stayed on
+  the air, until 2026-09-19 (see [running one app without the
+  launcher](ui.md#running-one-app-without-the-launcher)). `-k 5` follows
+  up with `SIGKILL` five seconds later.
 - **Launch the transmitter and start the receiver as two commands.** A job
   put in the background inside an SSH command can hold that command open
   until the job ends: with `setsid nohup bash -ic ... > log 2>&1 < /dev/null

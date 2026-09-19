@@ -653,9 +653,8 @@ def apply_launcher_theme(widget):
     """Paint the launcher window from the shared design tokens.
 
     The palette, the type scale and the faces live in ``apps/theme.py``,
-    which the browser front end reads too - they are deliberately not
-    written down twice, because two front ends drawn separately drift on
-    the first edit to either.
+    which the dialogs and the flowgraph windows read too, so all of them
+    move together when a colour is edited.
     """
     use_saved_theme()
     theme.load_fonts()
@@ -667,11 +666,11 @@ def use_saved_theme():
     """Put the saved theme in force, and return its name.
 
     It is ``theme`` in ``config/window_settings.json``, which the disc in
-    the launcher's header and the browser page's both write. Every
-    ``apply_*_theme`` calls this first, so a dialog or a flowgraph window
-    opened after a change wears the new one - including a window the
-    browser started, which is a process of its own that never saw the
-    change happen. A window already open keeps what it was painted in.
+    the launcher's header writes. Every ``apply_*_theme`` calls this
+    first, so a dialog or a flowgraph window opened after a change wears
+    the new one - including one started by ``apps/_run.py``, which is a
+    process of its own that never saw the change happen. A window already
+    open keeps what it was painted in.
     """
     return theme.use(read_settings().get('theme'))
 
@@ -973,9 +972,9 @@ def _control_pictures():
 def apply_dark_theme(widget):
     """Paint a config dialog, and straighten its layout.
 
-    The paint comes from the same tokens as the launcher window and the
-    browser page; the layout is ``tidy_dialog``, which is unchanged - a Qt
-    stylesheet does no layout at all.
+    The paint comes from the same tokens as the launcher window; the
+    layout is ``tidy_dialog``, which is unchanged - a Qt stylesheet does
+    no layout at all.
 
     The three image paths are absolute, worked out from this file rather
     than the working directory, because a stylesheet resolves ``url()``
